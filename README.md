@@ -8,7 +8,7 @@
 ## 启动方法
 
 ```bash
-git clone https://github.com/xiaozhejeffgm-svg/OpusMC.git
+git clone https://github.com/X1aoZhe/OpusMC.git
 ```
 
 1. **双击 `启动游戏.bat`**（或直接用浏览器打开 `game/index.html`）。无需安装、无需构建。
