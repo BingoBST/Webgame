@@ -1,4 +1,4 @@
-# Minecraft JS 复刻版
+# X1aoZhe's OpusMC
 
 一个在浏览器里运行的 Minecraft 复刻作品：纯 JavaScript + WebGL2 从零实现（无游戏引擎、无第三方库），
 画面素材来自 Minecraft 26.2 官方材质（`tools/build_assets.py` 从 `26.2.jar` 中提取并打包）。
@@ -8,7 +8,7 @@
 ## 启动方法
 
 ```bash
-git clone https://github.com/<你的用户名>/minecraft-js-v1.git
+git clone https://github.com/xiaozhejeffgm-svg/OpusMC.git
 ```
 
 1. **双击 `启动游戏.bat`**（或直接用浏览器打开 `game/index.html`）。无需安装、无需构建。
