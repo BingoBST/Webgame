@@ -1,24 +1,96 @@
-# Builds game/js/assets.js from the official Minecraft 26.2 jar textures.
-# Usage: py tools/build_assets.py <path/to/26.2.jar>   (or set the MC_JAR environment variable)
-import base64, io, json, os, sys, zipfile
+# Builds game/js/assets.js from an official Minecraft jar or a resource pack (zip).
+# Usage: py tools/build_assets.py [path/to/jar_or_resource_pack.zip]
+import base64, io, glob, json, os, sys, zipfile
 from PIL import Image
 
-JAR = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('MC_JAR')
-if not JAR:
-    sys.exit('Usage: py tools/build_assets.py <path/to/26.2.jar>  (or set MC_JAR)')
-OUT = os.path.join(os.path.dirname(__file__), '..', 'game', 'js', 'assets.js')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+HTG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
+
+TARGET = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('MC_JAR')
+if not TARGET:
+    # Auto-detect resource pack or jar
+    candidates = (
+        glob.glob(os.path.join(HTG_DIR, '*Pixel*.zip')) +
+        glob.glob(os.path.join(HTG_DIR, '*.zip')) +
+        glob.glob(os.path.join(HTG_DIR, '*.jar')) +
+        glob.glob(os.path.join(SCRIPT_DIR, '..', '*.jar'))
+    )
+    if candidates:
+        TARGET = candidates[0]
+    else:
+        sys.exit('Usage: py tools/build_assets.py <path/to/26.2.jar or resource_pack.zip>')
+
+print(f"Building assets from: {TARGET}")
+
+FALLBACK_JS = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.vanilla.js')
+OUT = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.js')
 T = 'assets/minecraft/textures/'
 
-z = zipfile.ZipFile(JAR)
+# Load Fallback assets if available
+orig_strip = None
+orig_tiles = {}
+orig_anims = {}
+orig_images = {}
+if os.path.exists(FALLBACK_JS):
+    try:
+        with open(FALLBACK_JS, 'r', encoding='utf-8') as f:
+            orig_data = json.loads(f.read().split('window.ASSETS = ', 1)[1].rstrip(';\n'))
+        orig_strip = Image.open(io.BytesIO(base64.b64decode(orig_data['strip'].split(',', 1)[1]))).convert('RGBA')
+        orig_tiles = orig_data.get('tiles', {})
+        orig_anims = orig_data.get('anims', {})
+        orig_images = orig_data.get('images', {})
+    except Exception as e:
+        print(f"Note: Could not load fallback assets: {e}")
+
+def get_fallback_frames(name):
+    if not orig_strip or name not in orig_tiles:
+        return [Image.new('RGBA', (16, 16), (255, 255, 255, 255))]
+    idx = orig_tiles[name]
+    cnt = orig_anims.get(name, 1)
+    return [orig_strip.crop((0, (idx + f) * 16, 16, (idx + f + 1) * 16)) for f in range(cnt)]
+
+z = zipfile.ZipFile(TARGET)
+namelist = set(z.namelist())
+
+ALIASES = {
+    'block/wheat_stage7': ['block/wheat_stage7', 'block/wheat_stage_full_7'],
+    'environment/celestial/sun': ['environment/celestial/sun', 'environment/sun'],
+    'entity/pig/pig_temperate': ['entity/pig/pig_temperate', 'entity/pig/pig'],
+    'entity/cow/cow_temperate': ['entity/cow/cow_temperate', 'entity/cow/cow'],
+    'entity/chicken/chicken_temperate': ['entity/chicken/chicken_temperate', 'entity/chicken/chicken', 'entity/chicken'],
+    'entity/sheep/sheep_wool': ['entity/sheep/sheep_wool', 'entity/sheep/sheep_fur'],
+    'entity/spider/spider_eyes': ['entity/spider/spider_eyes', 'entity/spider_eyes'],
+    'gui/sprites/container/slot/helmet': ['gui/sprites/container/slot/helmet', 'item/empty_armor_slot_helmet'],
+    'gui/sprites/container/slot/chestplate': ['gui/sprites/container/slot/chestplate', 'item/empty_armor_slot_chestplate'],
+    'gui/sprites/container/slot/leggings': ['gui/sprites/container/slot/leggings', 'item/empty_armor_slot_leggings'],
+    'gui/sprites/container/slot/boots': ['gui/sprites/container/slot/boots', 'item/empty_armor_slot_boots'],
+    'gui/sprites/hud/air_empty': ['gui/sprites/hud/air_empty', 'gui/sprites/hud/air_bursting', 'gui/sprites/hud/air'],
+}
+
+def resolve_path(path):
+    candidates = ALIASES.get(path, [path])
+    for c in candidates:
+        full = T + c + '.png'
+        if full in namelist:
+            return full
+    return None
 
 def load(path):
-    return Image.open(io.BytesIO(z.read(T + path + '.png'))).convert('RGBA')
+    rp = resolve_path(path)
+    if rp:
+        return Image.open(io.BytesIO(z.read(rp))).convert('RGBA')
+    return None
 
 def meta(path):
-    try:
-        return json.loads(z.read(T + path + '.png.mcmeta'))
-    except KeyError:
-        return None
+    rp = resolve_path(path)
+    if rp:
+        meta_name = rp + '.mcmeta'
+        if meta_name in namelist:
+            try:
+                return json.loads(z.read(meta_name))
+            except Exception:
+                return None
+    return None
 
 BLOCK_TEX = '''stone cobblestone dirt grass_block_top grass_block_side grass_block_side_overlay grass_block_snow
 bedrock sand gravel sandstone sandstone_top sandstone_bottom red_sand
@@ -67,9 +139,9 @@ PARTICLES = ['generic_%d' % i for i in range(8)] + ['big_smoke_%d' % i for i in 
     'critical_hit', 'heart', 'angry', 'bubble', 'note', 'damage', 'glint', 'effect_0', 'effect_1', 'effect_2',
     'leaf_0', 'leaf_1', 'leaf_2']
 
-tiles = []      # list of 16x16 RGBA images
-index = {}      # name -> first layer
-anims = {}      # name -> frame count
+tiles = []
+index = {}
+anims = {}
 
 def to16(im):
     if im.size == (16, 16):
@@ -78,70 +150,79 @@ def to16(im):
         return im.resize((16, 16), Image.NEAREST)
     return im.resize((16, 16), Image.BOX)
 
-def add_tile(name, im):
-    w, h = im.size
-    m = None
-    if h > w:
-        frames = [im.crop((0, i * w, w, i * w + w)) for i in range(h // w)]
-        m = (meta_cache.get(name) or {}).get('animation', {})
-        order = m.get('frames')
-        if order:
-            order = [f['index'] if isinstance(f, dict) else f for f in order]
-            frames = [frames[i] for i in order]
-        index[name] = len(tiles)
+def add_tile_frames(name, frames):
+    index[name] = len(tiles)
+    if len(frames) > 1:
         anims[name] = len(frames)
-        for f in frames:
-            tiles.append(to16(f))
-    else:
-        index[name] = len(tiles)
-        tiles.append(to16(im))
+    for f in frames:
+        tiles.append(to16(f))
 
-meta_cache = {}
-missing = []
+# Blocks
 for n in BLOCK_TEX:
-    try:
-        meta_cache[n] = meta('block/' + n)
-        add_tile(n, load('block/' + n))
-    except KeyError:
-        missing.append('block/' + n)
+    im = load('block/' + n)
+    if im:
+        w, h = im.size
+        m = meta('block/' + n)
+        if h > w:
+            frames = [im.crop((0, i * w, w, i * w + w)) for i in range(h // w)]
+            m_anim = (m or {}).get('animation', {})
+            order = m_anim.get('frames')
+            if order:
+                order = [f['index'] if isinstance(f, dict) else f for f in order]
+                frames = [frames[i] for i in order]
+            add_tile_frames(n, frames)
+        else:
+            add_tile_frames(n, [im])
+    else:
+        add_tile_frames(n, get_fallback_frames(n))
+
+# Items
 for n in ITEM_TEX:
-    try:
-        add_tile('i_' + n, load('item/' + n))
-    except KeyError:
-        missing.append('item/' + n)
+    key = 'i_' + n
+    im = load('item/' + n)
+    if im:
+        add_tile_frames(key, [im])
+    else:
+        add_tile_frames(key, get_fallback_frames(key))
+
+# Particles
 for n in PARTICLES:
-    try:
-        add_tile('p_' + n, load('particle/' + n))
-    except KeyError:
-        missing.append('particle/' + n)
+    key = 'p_' + n
+    im = load('particle/' + n)
+    if im:
+        add_tile_frames(key, [im])
+    else:
+        add_tile_frames(key, get_fallback_frames(key))
 
-# --- composed tiles -------------------------------------------------------
+# Composed tiles
 chest = load('entity/chest/normal')
-def chest_tile(side_x, with_latch):
-    t = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
-    lid = chest.crop((side_x, 14, side_x + 14, 19))
-    base = chest.crop((side_x, 33, side_x + 14, 43))
-    t.paste(lid, (1, 2))
-    t.paste(base, (1, 6))
-    if with_latch:
-        latch = chest.crop((1, 1, 3, 5))
-        t.paste(latch, (7, 4))
-    return t
-top = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
-top.paste(chest.crop((28, 0, 42, 14)), (1, 1))
-add_tile('chest_top', top)
-add_tile('chest_front', chest_tile(42, True))
-add_tile('chest_side', chest_tile(0, False))
+if chest:
+    def chest_tile(side_x, with_latch):
+        t = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+        lid = chest.crop((side_x, 14, side_x + 14, 19))
+        base = chest.crop((side_x, 33, side_x + 14, 43))
+        t.paste(lid, (1, 2))
+        t.paste(base, (1, 6))
+        if with_latch:
+            latch = chest.crop((1, 1, 3, 5))
+            t.paste(latch, (7, 4))
+        return t
+    top = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    top.paste(chest.crop((28, 0, 42, 14)), (1, 1))
+    add_tile_frames('chest_top', [top])
+    add_tile_frames('chest_front', [chest_tile(42, True)])
+    add_tile_frames('chest_side', [chest_tile(0, False)])
+else:
+    for cn in ['chest_top', 'chest_front', 'chest_side']:
+        add_tile_frames(cn, get_fallback_frames(cn))
 
-# grass side base: dirt everywhere the overlay would be drawn, base keeps dirt
 gs = load('block/grass_block_side')
-add_tile('grass_side_base', gs)
+if gs:
+    add_tile_frames('grass_side_base', [gs])
+else:
+    add_tile_frames('grass_side_base', get_fallback_frames('grass_side_base'))
 
-# solid white tile (for untextured things like the selection overlay / sheep wool undercoat fallback)
-add_tile('white', Image.new('RGBA', (16, 16), (255, 255, 255, 255)))
-
-if missing:
-    print('MISSING:', missing)
+add_tile_frames('white', [Image.new('RGBA', (16, 16), (255, 255, 255, 255))])
 
 strip = Image.new('RGBA', (16, 16 * len(tiles)))
 for i, t in enumerate(tiles):
@@ -192,21 +273,40 @@ IMAGES = {
 for i in range(1, 8):
     IMAGES['tab_top_selected_%d' % i] = 'gui/sprites/container/creative_inventory/tab_top_selected_%d' % i
     IMAGES['tab_top_unselected_%d' % i] = 'gui/sprites/container/creative_inventory/tab_top_unselected_%d' % i
-for i, ph in enumerate(['full_moon', 'waning_gibbous', 'third_quarter', 'waning_crescent', 'new_moon', 'waxing_crescent', 'first_quarter', 'waxing_gibbous']):
-    IMAGES['moon%d' % i] = 'environment/celestial/moon/' + ph
+
+moon_phases_img = None
+if 'assets/minecraft/textures/environment/moon_phases.png' in namelist:
+    moon_phases_img = Image.open(io.BytesIO(z.read('assets/minecraft/textures/environment/moon_phases.png'))).convert('RGBA')
 
 images = {}
-for k, p in IMAGES.items():
-    try:
-        images[k] = uri(load(p))
-    except KeyError:
-        missing.append(p)
-        print('MISSING image', p)
+for i, ph in enumerate(['full_moon', 'waning_gibbous', 'third_quarter', 'waning_crescent', 'new_moon', 'waxing_crescent', 'first_quarter', 'waxing_gibbous']):
+    key = 'moon%d' % i
+    im = load('environment/celestial/moon/' + ph)
+    if im:
+        images[key] = uri(im)
+    elif moon_phases_img:
+        mw, mh = moon_phases_img.size
+        cw, ch = mw // 4, mh // 2
+        col, row = i % 4, i // 4
+        crop_phase = moon_phases_img.crop((col * cw, row * ch, (col + 1) * cw, (row + 1) * ch))
+        images[key] = uri(crop_phase)
+    elif key in orig_images:
+        images[key] = orig_images[key]
 
-js = '// Generated by tools/build_assets.py from the official Minecraft textures. Do not edit.\n'
+for k, p in IMAGES.items():
+    im = load(p)
+    if im:
+        images[k] = uri(im)
+    elif k in orig_images:
+        images[k] = orig_images[k]
+    else:
+        print('Missing image:', k, p)
+
+js = '// Generated by build_assets.py from resource pack / jar. Do not edit.\n'
 js += 'window.ASSETS = ' + json.dumps({
     'strip': uri(strip), 'tiles': index, 'anims': anims, 'count': len(tiles), 'images': images,
 }, separators=(',', ':')) + ';\n'
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
-open(OUT, 'w', encoding='utf-8').write(js)
-print('tiles', len(tiles), 'bytes', len(js))
+with open(OUT, 'w', encoding='utf-8') as f:
+    f.write(js)
+print(f'Tiles: {len(tiles)}, Images: {len(images)}, File size: {len(js)} bytes')
