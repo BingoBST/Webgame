@@ -222,7 +222,7 @@ class Renderer {
     // ---- 2D images
     this.images = {};
     for (const k in ASSETS.images) this.images[k] = await loadImage(ASSETS.images[k]);
-    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
+    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'villager', 'enchant_book', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
       this.entityTex[k] = this.tex2D(this.images[k], k === 'rain' || k === 'snowfall');
     }
     // colormaps
@@ -452,7 +452,15 @@ class Renderer {
   }
   initModels() {
     const M = this.models = {};
-    const P = (tw, th, parts) => { for (const p of parts) p.mesh = this.makeModelPart(p.boxes, tw, th); return { parts }; };
+    const dim = (k, dw, dh) => {
+      const im = this.images && this.images[k];
+      return im && im.width && im.height ? [im.width, im.height] : [dw, dh];
+    };
+    const P = (tw, th, parts, texKey) => {
+      const [W, H] = texKey ? dim(texKey, tw, th) : [tw, th];
+      for (const p of parts) p.mesh = this.makeModelPart(p.boxes, W, H);
+      return { parts };
+    };
     const R = -Math.PI / 2;
     const humanoid = (aw, lu, lv, llu, llv, mirrorLeft, hat) => [
       { name: 'head', pivot: [0, 24, 0], boxes: [[0, 0, -4, 0, -4, 8, 8, 8], ...(hat ? [[32, 0, -4, 0, -4, 8, 8, 8, 0.5]] : [])] },
@@ -462,9 +470,9 @@ class Renderer {
       { name: 'rleg', pivot: [2, 12, 0], boxes: [[0, 16, -aw / 2, -12, -aw / 2, aw, 12, aw]] },
       { name: 'lleg', pivot: [-2, 12, 0], boxes: [[llu, llv, -aw / 2, -12, -aw / 2, aw, 12, aw, 0, mirrorLeft]] },
     ];
-    M.zombie = P(64, 64, humanoid(4, 40, 16, 0, 16, true, true));
-    M.steve = P(64, 64, humanoid(4, 32, 48, 16, 48, false, true));
-    M.skeleton = P(64, 32, humanoid(2, 40, 16, 0, 16, true, false));
+    M.zombie = P(64, 64, humanoid(4, 40, 16, 0, 16, true, true), 'zombie');
+    M.steve = P(64, 64, humanoid(4, 32, 48, 16, 48, false, true), 'steve');
+    M.skeleton = P(64, 32, humanoid(2, 40, 16, 0, 16, true, false), 'skeleton');
     M.creeper = P(64, 32, [
       { name: 'head', pivot: [0, 18, 0], boxes: [[0, 0, -4, 0, -4, 8, 8, 8]] },
       { name: 'body', pivot: [0, 6, 0], boxes: [[16, 16, -4, 0, -2, 8, 12, 4]] },
@@ -472,23 +480,23 @@ class Renderer {
       { name: 'leg1', pivot: [-2, 6, 4], boxes: [[0, 16, -2, -6, -2, 4, 6, 4]] },
       { name: 'leg2', pivot: [2, 6, -4], boxes: [[0, 16, -2, -6, -2, 4, 6, 4]] },
       { name: 'leg3', pivot: [-2, 6, -4], boxes: [[0, 16, -2, -6, -2, 4, 6, 4]] },
-    ]);
+    ], 'creeper');
     const legs4 = (y, zb, zf, x, h) => [
       { name: 'leg0', pivot: [x, y, zb], boxes: [[0, 16, -2, -h, -2, 4, h, 4]] },
       { name: 'leg1', pivot: [-x, y, zb], boxes: [[0, 16, -2, -h, -2, 4, h, 4]] },
       { name: 'leg2', pivot: [x, y, zf], boxes: [[0, 16, -2, -h, -2, 4, h, 4]] },
       { name: 'leg3', pivot: [-x, y, zf], boxes: [[0, 16, -2, -h, -2, 4, h, 4]] },
     ];
-    M.pig = P(64, 64, [
+    M.pig = P(64, 32, [
       { name: 'head', pivot: [0, 12, -6], boxes: [[0, 0, -4, -4, -8, 8, 8, 8], [16, 16, -2, -3, -9, 4, 3, 1]] },
       { name: 'body', pivot: [0, 10, 0], boxes: [[28, 8, -5, -8, -4, 10, 16, 8]], rotX: R },
       ...legs4(6, 7, -5, 3, 6),
-    ]);
-    M.cow = P(64, 64, [
+    ], 'pig');
+    M.cow = P(64, 32, [
       { name: 'head', pivot: [0, 20, -8], boxes: [[0, 0, -4, -4, -6, 8, 8, 6], [22, 0, 4, 2, -4, 1, 3, 1], [22, 0, -5, 2, -4, 1, 3, 1]] },
       { name: 'body', pivot: [0, 17, 1], boxes: [[18, 4, -6, -9, -5, 12, 18, 10]], rotX: R },
       ...legs4(12, 7, -6, 4, 12),
-    ]);
+    ], 'cow');
     M.sheep = P(64, 32, [
       { name: 'head', pivot: [0, 18, -8], boxes: [[0, 0, -3, -2, -6, 6, 6, 8]] },
       { name: 'body', pivot: [0, 15, 0], boxes: [[28, 8, -4, -8, -3, 8, 16, 6]], rotX: R },
@@ -521,6 +529,20 @@ class Renderer {
       { name: 'body', pivot: [0, 9, 9], boxes: [[0, 12, -5, -4, -6, 10, 8, 12]] },
       ...spiderLegs,
     ]);
+    M.villager = P(64, 64, [
+      { name: 'head', pivot: [0, 24, 0], boxes: [[0, 0, -4, 0, -4, 8, 10, 8], [24, 0, -1, 0, -6, 2, 4, 2]] },
+      { name: 'body', pivot: [0, 12, 0], boxes: [[16, 20, -4, 0, -3, 8, 12, 6], [0, 38, -4, -6, -3, 8, 18, 6, 0.5]] },
+      { name: 'arms', pivot: [0, 21, -1], boxes: [[44, 22, -8, -7, -2, 4, 8, 4], [44, 22, 4, -7, -2, 4, 8, 4, 0, true], [40, 38, -4, -7, -2, 8, 4, 4]], rotX: 0.75 },
+      { name: 'rleg', pivot: [2, 12, 0], boxes: [[0, 22, -2, -12, -2, 4, 12, 4]] },
+      { name: 'lleg', pivot: [-2, 12, 0], boxes: [[0, 22, -2, -12, -2, 4, 12, 4, 0, true]] },
+    ], 'villager');
+        M.enchant_book = P(64, 32, [
+      { name: 'seam', pivot: [0, 0, 0], boxes: [[12, 0, -1, -5, 0, 2, 10, 0.8]] },
+      { name: 'cover_l', pivot: [-0.2, 0, 0], boxes: [[0, 0, -6, -5, 0, 6, 10, 0.5], [12, 10, -5.2, -4, -0.9, 5, 8, 1]] },
+      { name: 'cover_r', pivot: [0.2, 0, 0], boxes: [[16, 0, 0, -5, 0, 6, 10, 0.5], [0, 10, 0.2, -4, -0.9, 5, 8, 1]] },
+      { name: 'page_l', pivot: [0, 0, -0.8], boxes: [[24, 10, -4.8, -4, -0.1, 5, 8, 0.1]] },
+      { name: 'page_r', pivot: [0, 0, -0.8], boxes: [[24, 10, -0.2, -4, -0.1, 5, 8, 0.1]] },
+    ], 'enchant_book');
     M.arm = P(64, 64, [{ name: 'arm', pivot: [0, 0, 0], boxes: [[40, 16, -2, -10, -2, 4, 12, 4]] }]);
   }
 
@@ -630,7 +652,7 @@ class Renderer {
     const gl = this.gl;
     const P = this.useChunkProg(env);
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
     gl.depthMask(false);
     gl.uniform1f(P.u.u_alphaTest, 0.01);
     const vis = this.visSections || [];

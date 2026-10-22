@@ -131,11 +131,44 @@ class UI {
     if (!stack) return;
     const r = this.game.renderer, S = r.iconSize, cols = r.iconCols, c = this.ctx;
     const id = stack.id;
-    c.imageSmoothingEnabled = !!(ITEMS[id] && ITEMS[id].block && !ITEMS[id].flat && BLOCKS[id] && BLOCKS[id].shape !== SH_CROSS);
-    c.imageSmoothingQuality = 'high';
-    c.drawImage(r.iconAtlas, (id % cols) * S, Math.floor(id / cols) * S, S, S, x, y, 16, 16);
-    c.imageSmoothingEnabled = false;
+    const smooth = !!(ITEMS[id] && ITEMS[id].block && !ITEMS[id].flat && BLOCKS[id] && BLOCKS[id].shape !== SH_CROSS);
     const def = ITEMS[id];
+    if (typeof Enchant !== 'undefined' && Enchant.hasEnch(stack)) {
+      if (!this._glintCanvas) {
+        this._glintCanvas = document.createElement('canvas');
+        this._glintCanvas.width = 16;
+        this._glintCanvas.height = 16;
+        this._glintCtx = this._glintCanvas.getContext('2d');
+      }
+      const gc = this._glintCtx;
+      gc.globalCompositeOperation = 'source-over';
+      gc.clearRect(0, 0, 16, 16);
+      gc.imageSmoothingEnabled = smooth;
+      gc.imageSmoothingQuality = 'high';
+      gc.drawImage(r.iconAtlas, (id % cols) * S, Math.floor(id / cols) * S, S, S, 0, 0, 16, 16);
+      gc.imageSmoothingEnabled = false;
+      // Mask animated purple glint strictly to non-transparent item pixels
+      gc.globalCompositeOperation = 'source-atop';
+      const t = (performance.now() * 0.022) % 28;
+      for (const off of [t - 14, t]) {
+        const g = gc.createLinearGradient(off - 6, -2, off + 6, 18);
+        g.addColorStop(0, 'rgba(150, 50, 255, 0.0)');
+        g.addColorStop(0.35, 'rgba(185, 85, 255, 0.42)');
+        g.addColorStop(0.5, 'rgba(235, 165, 255, 0.62)');
+        g.addColorStop(0.65, 'rgba(185, 85, 255, 0.42)');
+        g.addColorStop(1, 'rgba(150, 50, 255, 0.0)');
+        gc.fillStyle = g;
+        gc.fillRect(0, 0, 16, 16);
+      }
+      gc.globalCompositeOperation = 'source-over';
+      c.imageSmoothingEnabled = false;
+      c.drawImage(this._glintCanvas, x, y);
+    } else {
+      c.imageSmoothingEnabled = smooth;
+      c.imageSmoothingQuality = 'high';
+      c.drawImage(r.iconAtlas, (id % cols) * S, Math.floor(id / cols) * S, S, S, x, y, 16, 16);
+      c.imageSmoothingEnabled = false;
+    }
     if (def && def.durability && stack.dmg > 0) {
       const f = 1 - stack.dmg / def.durability;
       c.fillStyle = '#000'; c.fillRect(x + 2, y + 13, 13, 2);
@@ -162,10 +195,19 @@ class UI {
   }
   itemLines(stack) {
     const d = ITEMS[stack.id];
-    const lines = [{ text: d.cn, color: d.key.includes('diamond') || d.key === 'golden_apple' ? '#55FFFF' : '#FFFFFF' }];
+    const hasEnch = typeof Enchant !== 'undefined' && Enchant.hasEnch(stack);
+    const titleColor = d.key === 'enchanted_book' ? '#FFFF55' : (hasEnch || d.key.includes('diamond') || d.key === 'golden_apple' ? '#55FFFF' : '#FFFFFF');
+    const titleText = stack.name ? `${stack.name} (${d.cn})` : d.cn;
+    const lines = [{ text: titleText, color: titleColor }];
+    if (stack.ench && typeof Enchant !== 'undefined') {
+      for (const ek of Object.keys(stack.ench)) {
+        lines.push({ text: Enchant.formatEnch(ek, stack.ench[ek]), color: d.key === 'enchanted_book' ? '#FFFF55' : '#AA88FF' });
+      }
+    }
     if (d.food) lines.push({ text: `食物: +${d.food[0]} 饥饿值`, color: '#AAAAAA' });
-    if (d.tool) lines.push({ text: `攻击伤害: ${d.attack}`, color: '#00AA00' });
-    else if (d.attack) lines.push({ text: `攻击伤害: ${d.attack}`, color: '#00AA00' });
+    const sharpBonus = (stack.ench && stack.ench.sharpness) ? (0.5 * stack.ench.sharpness + 0.5) : 0;
+    if (d.tool) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
+    else if (d.attack) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
     if (d.armor) lines.push({ text: `护甲值: +${d.armor.points}`, color: '#5555FF' });
     if (d.durability) lines.push({ text: `耐久度: ${d.durability - (stack.dmg || 0)} / ${d.durability}`, color: '#AAAAAA' });
     if (fuelValue(stack.id)) lines.push({ text: `燃料: ${(fuelValue(stack.id) / 200).toFixed(1)} 个物品`, color: '#777777' });
@@ -264,7 +306,7 @@ class UI {
     if (held && dt < 2500) {
       const a = dt > 2000 ? 1 - (dt - 2000) / 500 : 1;
       c.globalAlpha = a;
-      Font.center(c, ITEMS[held.id].cn, W / 2, H - (p.creative ? 38 : 58), '#FFFFFF');
+      Font.center(c, held.name || ITEMS[held.id].cn, W / 2, H - (p.creative ? 38 : 58), (typeof Enchant !== 'undefined' && Enchant.hasEnch(held)) ? '#55FFFF' : '#FFFFFF');
       c.globalAlpha = 1;
     }
     // action bar message
@@ -338,7 +380,17 @@ class UI {
       `时间: 第 ${Math.floor(g.worldTime / 24000) + 1} 天  ${String(Math.floor((t / 1000 + 6) % 24)).padStart(2, '0')}:${String(Math.floor((t % 1000) * 0.06)).padStart(2, '0')}`,
       `种子: ${g.world.seed}`,
     ];
-    if (g.target) { const b = BLOCKS[g.world.getBlock(...g.target.pos)]; L.push(`目标方块: minecraft:${b ? b.key : '?'} (${g.target.pos.join(', ')})`); }
+    if (g.target) {
+      const [tx, ty, tz] = g.target.pos;
+      const tid = g.world.getBlock(tx, ty, tz), tm = g.world.getMeta(tx, ty, tz), b = BLOCKS[tid];
+      let rsInfo = '';
+      if (tid === 119) rsInfo = ` [信号强度: ${tm & 15}]`;
+      else if (tid === 127 || tid === 156) rsInfo = ` [延迟: ${((tm >> 2) & 3) + 1}刻, 充能: ${tid === 156 ? '是' : '否'}]`;
+      else if (tid === 122 || tid === 123 || tid === 159) rsInfo = ` [激活: ${(tm & 8) ? '是' : '否'}]`;
+      else if (tid === 124 || tid === 169) rsInfo = ` [踩下: ${(tm & 1) ? '是' : '否'}]`;
+      else if (typeof Redstone !== 'undefined' && Redstone.isBlockPowered(g.world, tx, ty, tz)) rsInfo = ` [受红石充能]`;
+      L.push(`目标方块: minecraft:${b ? b.key : '?'} (${tx}, ${ty}, ${tz}) meta=${tm}${rsInfo}`);
+    }
     let yy = 2;
     for (const s of L) { if (s) { const w = Font.width(s); c.fillStyle = 'rgba(80,80,80,0.55)'; c.fillRect(1, yy - 1, w + 2, 10); Font.draw(c, s, 2, yy, '#E0E0E0', false); } yy += 10; }
   }
@@ -360,12 +412,28 @@ class UI {
   }
   drawOverlays() {
     const g = this.game, p = g.player, c = this.ctx, W = this.w, H = this.h;
-    // vignette
-    c.globalAlpha = 0.35; c.globalCompositeOperation = 'multiply';
-    c.imageSmoothingEnabled = true;
-    c.drawImage(this.img.vignette, 0, 0, W, H);
-    c.imageSmoothingEnabled = false;
-    c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1;
+    // vignette (convert inverted mask if needed and draw as dark corner alpha overlay)
+    if (!this._vigCanvas && this.img.vignette) {
+      const vImg = this.img.vignette, vw = vImg.width || 256, vh = vImg.height || 256;
+      const vc = document.createElement('canvas'); vc.width = vw; vc.height = vh;
+      const vx = vc.getContext('2d'); vx.drawImage(vImg, 0, 0);
+      const id = vx.getImageData(0, 0, vw, vh), d = id.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const lum = Math.max(d[i], d[i + 1], d[i + 2]);
+        const alpha = lum > 0 ? lum : d[i + 3];
+        d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = alpha;
+      }
+      vx.putImageData(id, 0, 0);
+      this._vigCanvas = vc;
+    }
+    if (this._vigCanvas) {
+      c.globalCompositeOperation = 'source-over';
+      c.globalAlpha = 0.38;
+      c.imageSmoothingEnabled = true;
+      c.drawImage(this._vigCanvas, 0, 0, W, H);
+      c.imageSmoothingEnabled = false;
+      c.globalAlpha = 1;
+    }
     if (g.headInWater) {
       c.globalAlpha = 0.25; c.imageSmoothingEnabled = true;
       const ox = (p.yaw * 64) % 64, oy = (p.pitch * 64) % 64;
@@ -454,14 +522,15 @@ class ContainerScreen {
     if (shift && button === 0) { this.quickMove(s); this.changed(); return; }
     const st = s.get();
     // start drag distribution
-    if (ui.cursor && (button === 0 || button === 2) && (!st || (st.id === ui.cursor.id))) {
+    const sameMeta = (a, b) => !ITEMS[a.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(a, b));
+    if (ui.cursor && (button === 0 || button === 2) && (!st || (st.id === ui.cursor.id && sameMeta(st, ui.cursor)))) {
       this.dragSlots = new Set([s]); this.dragButton = button; this.dragStart = s;
     }
     const now = performance.now();
     if (button === 0 && !ui.cursor && st == null && this.lastClick && now - this.lastClick.t < 300 && this.lastClick.id != null) {
       // double click: gather
       const id = this.lastClick.id; ui.cursor = this.lastClick.stack;
-      if (ui.cursor) for (const o of this.slots) { const os = o.get(); if (os && !o.output && os.id === id && ui.cursor.count < maxStack(id)) { const k = Math.min(os.count, maxStack(id) - ui.cursor.count); ui.cursor.count += k; os.count -= k; if (!os.count) o.set(null); } }
+      if (ui.cursor) for (const o of this.slots) { const os = o.get(); if (os && !o.output && os.id === id && sameMeta(os, ui.cursor) && ui.cursor.count < maxStack(id)) { const k = Math.min(os.count, maxStack(id) - ui.cursor.count); ui.cursor.count += k; os.count -= k; if (!os.count) o.set(null); } }
       this.lastClick = null; this.changed(); return;
     }
     if (this.dragSlots) return; // resolved on mouseUp
@@ -473,12 +542,12 @@ class ContainerScreen {
     if (button === 0) {
       if (!ui.cursor) { if (st) { ui.cursor = st; s.set(null); } }
       else if (!st) { if (this.canPlace(s, ui.cursor)) { const k = Math.min(ui.cursor.count, this.maxIn(s, ui.cursor)); s.set({ ...ui.cursor, count: k }); ui.cursor.count -= k; if (!ui.cursor.count) ui.cursor = null; } }
-      else if (st.id === ui.cursor.id && !ITEMS[st.id].durability) { const k = Math.min(ui.cursor.count, this.maxIn(s, st) - st.count); st.count += k; ui.cursor.count -= k; if (!ui.cursor.count) ui.cursor = null; }
+      else if (st.id === ui.cursor.id && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(st, ui.cursor))) { const k = Math.min(ui.cursor.count, this.maxIn(s, st) - st.count); st.count += k; ui.cursor.count -= k; if (!ui.cursor.count) ui.cursor = null; }
       else if (this.canPlace(s, ui.cursor)) { s.set(ui.cursor); ui.cursor = st; }
     } else if (button === 2) {
       if (!ui.cursor) { if (st) { const k = Math.ceil(st.count / 2); ui.cursor = { ...st, count: k }; st.count -= k; if (!st.count) s.set(null); } }
       else if (!st) { if (this.canPlace(s, ui.cursor)) { s.set({ ...ui.cursor, count: 1 }); ui.cursor.count--; if (!ui.cursor.count) ui.cursor = null; } }
-      else if (st.id === ui.cursor.id && st.count < this.maxIn(s, st)) { st.count++; ui.cursor.count--; if (!ui.cursor.count) ui.cursor = null; }
+      else if (st.id === ui.cursor.id && st.count < this.maxIn(s, st) && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(st, ui.cursor))) { st.count++; ui.cursor.count--; if (!ui.cursor.count) ui.cursor = null; }
       else if (this.canPlace(s, ui.cursor)) { s.set(ui.cursor); ui.cursor = st; }
     }
     this.changed();
@@ -486,7 +555,9 @@ class ContainerScreen {
   mouseMove(ui, mx, my) {
     if (this.dragSlots && ui.mouse.down && ui.cursor) {
       const s = this.slotAt(mx, my);
-      if (s && !s.output && (!s.get() || s.get().id === ui.cursor.id) && this.canPlace(s, ui.cursor) && this.dragSlots.size < ui.cursor.count + (this.dragButton === 2 ? 0 : 0)) this.dragSlots.add(s);
+      const st = s && s.get();
+      const canMerge = !st || (st.id === ui.cursor.id && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(st, ui.cursor)));
+      if (s && !s.output && canMerge && this.canPlace(s, ui.cursor) && this.dragSlots.size < ui.cursor.count) this.dragSlots.add(s);
     }
   }
   mouseUp(ui, mx, my, button) {
@@ -499,10 +570,11 @@ class ContainerScreen {
     for (const s of set) {
       if (!ui.cursor) break;
       const st = s.get();
+      if (st && (st.id !== ui.cursor.id || ITEMS[st.id].durability || (typeof Enchant !== 'undefined' && !Enchant.sameStackMeta(st, ui.cursor)))) continue;
       const room = this.maxIn(s, ui.cursor) - (st ? st.count : 0);
       const k = Math.min(per, room, ui.cursor.count);
       if (k <= 0) continue;
-      if (st) st.count += k; else s.set({ ...ui.cursor, count: k });
+      if (st) st.count += k; else s.set(typeof Enchant !== 'undefined' ? Enchant.cloneStack(ui.cursor, k) : { ...ui.cursor, count: k });
       ui.cursor.count -= k; if (!ui.cursor.count) ui.cursor = null;
     }
     this.changed();
@@ -518,23 +590,25 @@ class ContainerScreen {
       if (a) { a.set(st); s.set(null); return; }
     }
     targets = targets.filter(t => this.canPlace(t, st));
-    for (const t of targets) { const ts = t.get(); if (ts && ts.id === st.id && !ITEMS[st.id].durability) { const k = Math.min(st.count, this.maxIn(t, st) - ts.count); ts.count += k; st.count -= k; if (!st.count) { s.set(null); return; } } }
+    for (const t of targets) { const ts = t.get(); if (ts && ts.id === st.id && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(ts, st))) { const k = Math.min(st.count, this.maxIn(t, st) - ts.count); ts.count += k; st.count -= k; if (!st.count) { s.set(null); return; } } }
     for (const t of targets) { if (!t.get()) { const k = Math.min(st.count, this.maxIn(t, st)); t.set({ ...st, count: k }); st.count -= k; if (!st.count) { s.set(null); return; } } }
   }
   takeOutput(ui, s, shift) {
     const st = s.get(); if (!st) return;
+    const clone = (x) => typeof Enchant !== 'undefined' ? Enchant.cloneStack(x) : { ...x };
     if (shift) {
       let guard = 0;
       while (s.get() && guard++ < 64) {
         const out = s.get();
-        if (this.game.player.inv.add({ ...out }) > 0) break;
+        if (!this.game.player.inv.canFit(out)) break;
+        this.game.player.inv.add(clone(out));
         s.onTake(out);
         this.changed();
       }
       return;
     }
-    if (!ui.cursor) { ui.cursor = { ...st }; s.onTake(st); }
-    else if (ui.cursor.id === st.id && ui.cursor.count + st.count <= maxStack(st.id)) { ui.cursor.count += st.count; s.onTake(st); }
+    if (!ui.cursor) { ui.cursor = clone(st); s.onTake(st); }
+    else if (ui.cursor.id === st.id && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(ui.cursor, st)) && ui.cursor.count + st.count <= maxStack(st.id)) { ui.cursor.count += st.count; s.onTake(st); }
     this.changed();
   }
   key(ui, ev) {
@@ -775,6 +849,279 @@ class FurnaceScreen extends ContainerScreen {
     Font.draw(c, '物品栏', this.x + 8, this.y + 73, '#404040', false);
   }
   close() { this.game.markBlockEntity(this.be); }
+}
+
+
+class EnchantingScreen extends ContainerScreen {
+  constructor(game, pos) {
+    super(game, 'enchanting_table_gui', 176, 166, '附魔');
+    this.pos = pos;
+    this.itemSlot = null;
+    this.lapisSlot = null;
+    const bs = typeof Enchant !== 'undefined' ? Enchant.countBookshelves(game.world, pos[0], pos[1], pos[2]) : { count: 0 };
+    this.bookshelves = bs.count;
+    this.options = [null, null, null];
+    this.slots.push({
+      x: 15, y: 47, max: 1, group: 'container',
+      get: () => this.itemSlot,
+      set: (s) => { this.itemSlot = s; }
+    });
+    this.slots.push({
+      x: 35, y: 47, emptyIcon: 'slot_lapis', group: 'container',
+      accept: (st) => st.id === item('lapis_lazuli'),
+      get: () => this.lapisSlot,
+      set: (s) => { this.lapisSlot = s; }
+    });
+    this.addPlayerSlots(84, 142);
+  }
+  changed() {
+    if (typeof Enchant !== 'undefined' && this.itemSlot) {
+      this.options = Enchant.getTableOptions(this.game.player, this.itemSlot, this.bookshelves);
+    } else {
+      this.options = [null, null, null];
+    }
+  }
+  quickMove(s) {
+    const st = s.get(); if (!st) return;
+    if (s.group === 'main' || s.group === 'hotbar') {
+      if (st.id === item('lapis_lazuli')) {
+        const tgt = this.slots[1], ts = tgt.get();
+        if (!ts) { tgt.set(st); s.set(null); return; }
+        if (ts.id === st.id && ts.count < 64) {
+          const k = Math.min(st.count, 64 - ts.count);
+          ts.count += k; st.count -= k; if (!st.count) s.set(null);
+          return;
+        }
+      } else if (!this.slots[0].get() && typeof Enchant !== 'undefined' && Enchant.enchantability(st.id) > 0 && !Enchant.hasEnch(st)) {
+        this.slots[0].set({ ...st, count: 1 });
+        st.count -= 1; if (!st.count) s.set(null);
+        return;
+      }
+    }
+    super.quickMove(s);
+  }
+  canAfford(opt) {
+    if (!opt) return false;
+    const p = this.game.player;
+    if (p.creative) return true;
+    const lapis = this.lapisSlot ? this.lapisSlot.count : 0;
+    const lvl = this.game.xpLevel();
+    return lapis >= opt.lapisCost && lvl >= opt.reqLevel;
+  }
+  drawExtra(ui) {
+    const c = ui.ctx, p = this.game.player;
+    Font.draw(c, '物品栏', this.x + 8, this.y + 73, '#404040', false);
+    if (this.bookshelves > 0) {
+      Font.draw(c, `书架: ${this.bookshelves}/15`, this.x + 92, this.y + 5, '#5533AA', false);
+    }
+    // Draw book icon above the slots
+    const hasOpts = this.options.some(Boolean);
+    ui.drawItem({ id: item(hasOpts ? 'enchanted_book' : 'book'), count: 1 }, this.x + 25, this.y + 21);
+
+    let hovOpt = null;
+    for (let i = 0; i < 3; i++) {
+      const opt = this.options[i];
+      const bx = this.x + 60, by = this.y + 14 + i * 19;
+      const rect = { x: bx, y: by, w: 108, h: 19 };
+      if (!opt) {
+        ui.sprite('enchant_slot_dis', bx, by);
+        continue;
+      }
+      const afford = this.canAfford(opt);
+      const isHov = ui.hit(rect);
+      if (isHov) hovOpt = opt;
+      ui.sprite(!afford ? 'enchant_slot_dis' : (isHov ? 'enchant_slot_hl' : 'enchant_slot'), bx, by);
+      ui.sprite((afford ? 'enchant_lvl_' : 'enchant_lvl_') + (i + 1) + (afford ? '' : '_dis'), bx + 1, by + 1);
+      // Draw rune / galactic text
+      const words = opt.words.slice(0, 13);
+      Font.draw(c, words, bx + 20, by + 3, !afford ? '#685E4A' : (isHov ? '#FFFF80' : '#40362C'), false);
+      // Draw preview hint below
+      Font.draw(c, opt.preview, bx + 20, by + 10, !afford ? '#544C3D' : (isHov ? '#55FFFF' : '#7E644A'), false);
+      // Draw required level on right
+      const lvlStr = String(opt.reqLevel);
+      Font.draw(c, lvlStr, bx + 105 - Font.width(lvlStr), by + 9, afford ? '#80FF20' : '#407F10');
+    }
+    if (hovOpt && !ui.cursor) {
+      const lapis = this.lapisSlot ? this.lapisSlot.count : 0;
+      const lvl = this.game.xpLevel();
+      const lines = [{ text: hovOpt.preview, color: '#FFFF55' }];
+      if (!p.creative) {
+        lines.push({ text: `${hovOpt.lapisCost} 个青金石`, color: lapis >= hovOpt.lapisCost ? '#AAAAAA' : '#FF5555' });
+        lines.push({ text: `需要 ${hovOpt.reqLevel} 级经验（消耗 ${hovOpt.lapisCost} 级）`, color: lvl >= hovOpt.reqLevel ? '#AAAAAA' : '#FF5555' });
+      }
+      ui.tooltip(lines, ui.mouse.x, ui.mouse.y);
+    }
+  }
+  mouseDown(ui, mx, my, button, shift) {
+    if (button === 0) {
+      for (let i = 0; i < 3; i++) {
+        const opt = this.options[i];
+        const rect = { x: this.x + 60, y: this.y + 14 + i * 19, w: 108, h: 19 };
+        if (opt && ui.hit(rect, mx, my) && this.canAfford(opt)) {
+          this.applyEnchant(opt);
+          return;
+        }
+      }
+    }
+    super.mouseDown(ui, mx, my, button, shift);
+  }
+  applyEnchant(opt) {
+    const g = this.game, p = g.player;
+    if (!this.itemSlot) return;
+    if (!p.creative) {
+      this.lapisSlot.count -= opt.lapisCost;
+      if (this.lapisSlot.count <= 0) this.lapisSlot = null;
+      g.deductXpLevels(opt.lapisCost);
+    }
+    if (this.itemSlot.id === item('book')) {
+      this.itemSlot = { id: item('enchanted_book'), count: 1, dmg: 0, ench: { ...opt.ench } };
+    } else {
+      this.itemSlot = { ...this.itemSlot, ench: { ...opt.ench } };
+    }
+    p.enchantSeed = ((Math.random() * 0x7FFFFFFF) | 0) || 1;
+    Sound.levelup();
+    if (this.pos) {
+      const [tx, ty, tz] = this.pos;
+      for (let k = 0; k < 18; k++) {
+        g.particles.spawn('glint', tx + 0.5 + (Math.random() - 0.5) * 0.8, ty + 0.9 + Math.random() * 0.5, tz + 0.5 + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.08, 0.04, (Math.random() - 0.5) * 0.08);
+      }
+    }
+    g.grant('enchant');
+    this.changed();
+  }
+  close() {
+    if (this.itemSlot) { this.game.ui.returnStack(this.itemSlot); this.itemSlot = null; }
+    if (this.lapisSlot) { this.game.ui.returnStack(this.lapisSlot); this.lapisSlot = null; }
+  }
+}
+
+class AnvilScreen extends ContainerScreen {
+  constructor(game, pos) {
+    super(game, 'anvil_gui', 176, 166, '修复与命名');
+    this.pos = pos;
+    this.left = null;
+    this.right = null;
+    this.result = null;
+    this.calc = null;
+    this.customName = '';
+    this._lastLeftRef = null;
+    this.slots.push({
+      x: 27, y: 47, max: 1, group: 'container',
+      get: () => this.left,
+      set: (s) => { this.left = s; }
+    });
+    this.slots.push({
+      x: 76, y: 47, group: 'container',
+      get: () => this.right,
+      set: (s) => { this.right = s; }
+    });
+    this.slots.push({
+      x: 134, y: 47, output: true,
+      get: () => this.result,
+      set: () => { },
+      onTake: () => this.consumeAnvil()
+    });
+    this.addPlayerSlots(84, 142);
+  }
+  layout() {
+    super.layout();
+    this.syncInput();
+  }
+  syncInput() {
+    const u = this.game.ui;
+    if (this.x === undefined) return;
+    if (this.left) {
+      u.showInput(this.x + 62, this.y + 22, 103, 12, this.customName, () => { }, {
+        onInput: (v) => { this.customName = v; this.recalc(); },
+        onEsc: () => u.close(),
+        max: 30
+      });
+    } else {
+      u.hideInput();
+    }
+  }
+  changed() {
+    if (this.left !== this._lastLeftRef) {
+      this._lastLeftRef = this.left;
+      this.customName = this.left ? (this.left.name || ITEMS[this.left.id].cn) : '';
+      this.syncInput();
+    }
+    this.recalc();
+  }
+  recalc() {
+    if (typeof Enchant === 'undefined' || !this.left) {
+      this.calc = null;
+      this.result = null;
+      return;
+    }
+    const p = this.game.player;
+    this.calc = Enchant.computeAnvil(this.left, this.right, this.customName, p.creative);
+    if (this.calc && !this.calc.error && this.calc.out) {
+      const canPay = p.creative || this.game.xpLevel() >= this.calc.cost;
+      this.result = canPay ? this.calc.out : null;
+    } else {
+      this.result = null;
+    }
+  }
+  quickMove(s) {
+    const st = s.get(); if (!st) return;
+    if (s.group === 'main' || s.group === 'hotbar') {
+      if (!this.slots[0].get()) {
+        this.slots[0].set({ ...st, count: 1 });
+        st.count -= 1; if (!st.count) s.set(null);
+        return;
+      } else if (!this.slots[1].get()) {
+        this.slots[1].set(st); s.set(null);
+        return;
+      }
+    }
+    super.quickMove(s);
+  }
+  consumeAnvil() {
+    if (!this.calc || this.calc.error) return;
+    const g = this.game, p = g.player;
+    if (!p.creative) {
+      g.deductXpLevels(this.calc.cost);
+    }
+    this.left = null;
+    this._lastLeftRef = null;
+    if (this.right && this.calc.takeRight > 0) {
+      this.right.count -= this.calc.takeRight;
+      if (this.right.count <= 0) this.right = null;
+    }
+    this.customName = '';
+    this.syncInput();
+    Sound.block('place', 'metal', this.pos || p.pos);
+    Sound.tone(this.pos || p.pos, { freq: 880, dur: 0.14, vol: 0.3, type: 'triangle' });
+    this.recalc();
+  }
+  drawExtra(ui) {
+    const c = ui.ctx, p = this.game.player;
+    Font.draw(c, '物品栏', this.x + 8, this.y + 73, '#404040', false);
+    ui.sprite(this.left ? 'anvil_field' : 'anvil_field_dis', this.x + 59, this.y + 20);
+    if (this.calc && this.calc.error && (this.right || this.calc.tooExpensive)) {
+      ui.sprite('anvil_error', this.x + 99, this.y + 45);
+    }
+    if (this.calc && this.calc.cost > 0) {
+      const tooExp = this.calc.tooExpensive;
+      const canPay = p.creative || (!tooExp && this.game.xpLevel() >= this.calc.cost);
+      const txt = tooExp ? '过于昂贵！' : `花费经验: ${this.calc.cost}`;
+      const col = canPay ? '#80FF20' : '#FF6060';
+      const tx = this.x + 168 - Font.width(txt);
+      c.fillStyle = 'rgba(0,0,0,0.45)';
+      c.fillRect(tx - 2, this.y + 67, Font.width(txt) + 4, 11);
+      Font.draw(c, txt, tx, this.y + 69, col);
+    }
+  }
+  key(ui, ev) {
+    if (this.left && document.activeElement === ui.input) return true;
+    return super.key(ui, ev);
+  }
+  close() {
+    this.game.ui.hideInput();
+    if (this.left) { this.game.ui.returnStack(this.left); this.left = null; }
+    if (this.right) { this.game.ui.returnStack(this.right); this.right = null; }
+  }
 }
 
 class CreativeScreen extends ContainerScreen {

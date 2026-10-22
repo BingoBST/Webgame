@@ -121,7 +121,47 @@ mud_bricks moss_block hay_block_side hay_block_top spruce_door_top spruce_door_b
 destroy_stage_0 destroy_stage_1 destroy_stage_2 destroy_stage_3 destroy_stage_4 destroy_stage_5 destroy_stage_6 destroy_stage_7 destroy_stage_8 destroy_stage_9
 bone_block_side bone_block_top magma netherrack glass_pane_top note_block jukebox_side jukebox_top
 dark_oak_planks jungle_planks acacia_planks cherry_planks mangrove_planks
-red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down'''.split()
+red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down
+redstone_dust_dot redstone_dust_line0 redstone_dust_line1 redstone_torch redstone_torch_off redstone_lamp redstone_lamp_on lever repeater repeater_on target_side target_top chiseled_sandstone cut_sandstone smooth_sandstone orange_terracotta blue_terracotta cobweb rail dirt_path_top dirt_path_side spawner bell_side bell_top bell_bottom enchanting_table_top enchanting_table_side enchanting_table_bottom anvil anvil_base anvil_side anvil_top'''.split()
+
+TRANSLUCENT_BLOCKS = {'water_still', 'ice'} | {
+    n for n in BLOCK_TEX if 'stained_glass' in n or 'destroy_stage' in n
+}
+
+def sanitize_tile_alpha(im, name, is_block=True):
+    """
+    Normalizes resource-pack PBR/shader emissive alpha channels (e.g. alpha=26 on redstone_lamp_on,
+    alpha=51 on torch/sea_lantern/fire_0, alpha=128 on redstone_torch/repeater_on, alpha=153 on jack_o_lantern)
+    so WebGL alpha-testing (u_alphaTest = 0.35) never discards glowing pixels on solid or cutout blocks.
+    """
+    if is_block and name in TRANSLUCENT_BLOCKS:
+        if name == 'ice':
+            out = im.copy()
+            out.putdata([(min(255, r + 12), min(255, g + 8), min(255, b + 6), max(a, 210)) for r, g, b, a in out.getdata()])
+            return out
+        return im
+    out = im.copy()
+    px = list(out.getdata())
+    new_px = []
+    for r, g, b, a in px:
+        if a < 20:
+            new_px.append((0, 0, 0, 0))
+        elif is_block and name == 'redstone_lamp_on' and a < 255:
+            # Boost shader-darkened emissive pixels on lit redstone lamp to warm glowing amber-gold
+            nr = min(255, int(r * 1.45 + 35))
+            ng = min(255, int(g * 1.65 + 45))
+            nb = min(255, int(b * 1.35 + 20))
+            new_px.append((nr, ng, nb, 255))
+        elif is_block and name in ('redstone_torch', 'repeater_on') and a < 255:
+            # Boost shader-darkened emissive redstone torch/repeater tips
+            nr = min(255, int(r * 1.65 + 40))
+            ng = min(255, int(g * 1.45 + 15))
+            nb = min(255, int(b * 1.35 + 10))
+            new_px.append((nr, ng, nb, 255))
+        else:
+            new_px.append((r, g, b, 255))
+    out.putdata(new_px)
+    return out
 
 ITEM_TEX = '''stick coal charcoal raw_iron iron_ingot raw_gold gold_ingot diamond flint apple bread wheat wheat_seeds
 porkchop cooked_porkchop beef cooked_beef mutton cooked_mutton chicken cooked_chicken rotten_flesh bone bone_meal
@@ -134,14 +174,14 @@ wooden_sword stone_sword iron_sword golden_sword diamond_sword
 wooden_hoe stone_hoe iron_hoe golden_hoe diamond_hoe
 oak_door spruce_door sugar paper book sugar_cane clay_ball brick egg melon_slice cookie golden_apple snowball
 iron_helmet iron_chestplate iron_leggings iron_boots diamond_helmet diamond_chestplate diamond_leggings diamond_boots
-leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone pumpkin_pie
+leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone repeater pumpkin_pie
 cooked_cod cod baked_potato potato carrot golden_carrot mushroom_stew bowl
-pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg'''.split()
+pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg bell enchanted_book'''.split()
 
 PARTICLES = ['generic_%d' % i for i in range(8)] + ['big_smoke_%d' % i for i in range(12)] + \
     ['explosion_%d' % i for i in range(16)] + ['flame', 'lava', 'splash_0', 'splash_1', 'splash_2', 'splash_3',
     'critical_hit', 'heart', 'angry', 'bubble', 'note', 'damage', 'glint', 'effect_0', 'effect_1', 'effect_2',
-    'leaf_0', 'leaf_1', 'leaf_2']
+    'leaf_0', 'leaf_1', 'leaf_2', 'enchanted_hit']
 
 tiles = []
 index = {}
@@ -150,12 +190,12 @@ anims = {}
 stat_pack = 0
 stat_fallback = 0
 
-def add_tile_frames(name, frames):
+def add_tile_frames(name, frames, is_block=True):
     index[name] = len(tiles)
     if len(frames) > 1:
         anims[name] = len(frames)
     for f in frames:
-        tiles.append(to16(f))
+        tiles.append(sanitize_tile_alpha(to16(f), name, is_block=is_block))
 
 # 1. Blocks
 print("Processing blocks...")
@@ -171,14 +211,14 @@ for n in BLOCK_TEX:
             if order:
                 order = [f['index'] if isinstance(f, dict) else f for f in order]
                 frames = [frames[i] for i in order]
-            add_tile_frames(n, frames)
+            add_tile_frames(n, frames, is_block=True)
         else:
-            add_tile_frames(n, [im])
+            add_tile_frames(n, [im], is_block=True)
         stat_pack += 1
     else:
         # Fallback
         frames = get_orig_tile_frames(n)
-        add_tile_frames(n, frames)
+        add_tile_frames(n, frames, is_block=True)
         stat_fallback += 1
 
 # 2. Items
@@ -187,11 +227,11 @@ for n in ITEM_TEX:
     key = 'i_' + n
     im = load_img('item/' + n)
     if im:
-        add_tile_frames(key, [im])
+        add_tile_frames(key, [im], is_block=False)
         stat_pack += 1
     else:
         frames = get_orig_tile_frames(key)
-        add_tile_frames(key, frames)
+        add_tile_frames(key, frames, is_block=False)
         stat_fallback += 1
 
 # 3. Particles
@@ -200,11 +240,11 @@ for n in PARTICLES:
     key = 'p_' + n
     im = load_img('particle/' + n)
     if im:
-        add_tile_frames(key, [im])
+        add_tile_frames(key, [im], is_block=False)
         stat_pack += 1
     else:
         frames = get_orig_tile_frames(key)
-        add_tile_frames(key, frames)
+        add_tile_frames(key, frames, is_block=False)
         stat_fallback += 1
 
 # 4. Composed Tiles
@@ -223,24 +263,32 @@ if chest:
         return t
     top = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
     top.paste(chest.crop((28, 0, 42, 14)), (1, 1))
-    add_tile_frames('chest_top', [top])
-    add_tile_frames('chest_front', [chest_tile(42, True)])
-    add_tile_frames('chest_side', [chest_tile(0, False)])
+    add_tile_frames('chest_top', [top], is_block=True)
+    add_tile_frames('chest_front', [chest_tile(42, True)], is_block=True)
+    add_tile_frames('chest_side', [chest_tile(0, False)], is_block=True)
     stat_pack += 3
 else:
     for cn in ['chest_top', 'chest_front', 'chest_side']:
-        add_tile_frames(cn, get_orig_tile_frames(cn))
+        add_tile_frames(cn, get_orig_tile_frames(cn), is_block=True)
         stat_fallback += 1
+
+# Composite dirt_path_side over dirt so there are no transparent pixels
+if 'dirt_path_side' in index and 'dirt' in index:
+    dps_idx = index['dirt_path_side']
+    dirt_idx = index['dirt']
+    comp_dps = tiles[dirt_idx].copy()
+    comp_dps.paste(tiles[dps_idx], (0, 0), tiles[dps_idx])
+    tiles[dps_idx] = comp_dps
 
 gs = load_img('block/grass_block_side')
 if gs:
-    add_tile_frames('grass_side_base', [gs])
+    add_tile_frames('grass_side_base', [gs], is_block=True)
     stat_pack += 1
 else:
-    add_tile_frames('grass_side_base', get_orig_tile_frames('grass_side_base'))
+    add_tile_frames('grass_side_base', get_orig_tile_frames('grass_side_base'), is_block=True)
     stat_fallback += 1
 
-add_tile_frames('white', [Image.new('RGBA', (16, 16), (255, 255, 255, 255))])
+add_tile_frames('white', [Image.new('RGBA', (16, 16), (255, 255, 255, 255))], is_block=True)
 
 # 5. Build Strip
 print(f"Total tiles assembled: {len(tiles)}")
@@ -265,6 +313,23 @@ IMAGES = {
     'xp_bg': 'gui/sprites/hud/experience_bar_background', 'xp_fg': 'gui/sprites/hud/experience_bar_progress',
     'inventory': 'gui/container/inventory', 'crafting_table': 'gui/container/crafting_table',
     'furnace': 'gui/container/furnace', 'generic_54': 'gui/container/generic_54',
+    'enchanting_table_gui': 'gui/container/enchanting_table',
+    'enchant_slot': 'gui/sprites/container/enchanting_table/enchantment_slot',
+    'enchant_slot_dis': 'gui/sprites/container/enchanting_table/enchantment_slot_disabled',
+    'enchant_slot_hl': 'gui/sprites/container/enchanting_table/enchantment_slot_highlighted',
+    'enchant_lvl_1': 'gui/sprites/container/enchanting_table/level_1',
+    'enchant_lvl_2': 'gui/sprites/container/enchanting_table/level_2',
+    'enchant_lvl_3': 'gui/sprites/container/enchanting_table/level_3',
+    'enchant_lvl_1_dis': 'gui/sprites/container/enchanting_table/level_1_disabled',
+    'enchant_lvl_2_dis': 'gui/sprites/container/enchanting_table/level_2_disabled',
+    'enchant_lvl_3_dis': 'gui/sprites/container/enchanting_table/level_3_disabled',
+    'slot_lapis': 'item/empty_slot_lapis_lazuli',
+    'anvil_gui': 'gui/container/anvil',
+    'anvil_error': 'gui/sprites/container/anvil/error',
+    'anvil_field': 'gui/sprites/container/anvil/text_field',
+    'anvil_field_dis': 'gui/sprites/container/anvil/text_field_disabled',
+    'enchant_book': 'entity/enchanting_table_book',
+
     'tab_items': 'gui/container/creative_inventory/tab_items', 'tab_item_search': 'gui/container/creative_inventory/tab_item_search',
     'tab_inventory': 'gui/container/creative_inventory/tab_inventory',
     'scroller': 'gui/sprites/container/creative_inventory/scroller', 'scroller_disabled': 'gui/sprites/container/creative_inventory/scroller_disabled',
@@ -290,6 +355,27 @@ IMAGES = {
 for i in range(1, 8):
     IMAGES['tab_top_selected_%d' % i] = 'gui/sprites/container/creative_inventory/tab_top_selected_%d' % i
     IMAGES['tab_top_unselected_%d' % i] = 'gui/sprites/container/creative_inventory/tab_top_unselected_%d' % i
+
+def sanitize_image(im, key, path):
+    if key == 'vignette':
+        # Convert Minecraft's inverted white-corner mask (intended for GL_ZERO, GL_ONE_MINUS_SRC_COLOR)
+        # into a true black-corner alpha vignette for Canvas2D overlay rendering.
+        out = im.copy()
+        out.putdata([(0, 0, 0, max(r, g, b)) for r, g, b, a in out.getdata()])
+        return out
+    if key == 'enchant_book':
+        out = im.copy()
+        # Fill transparent back-faces of page blocks (x=1..5 and x=19..23, y=11..18) with page texture (x=13..17, y=11..18)
+        page_patch = out.crop((13, 11, 18, 19))
+        out.paste(page_patch, (1, 11))
+        out.paste(page_patch, (19, 11))
+        out.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in out.getdata()])
+        return out
+    if path.startswith('entity/') and key != 'spider_eyes':
+        out = im.copy()
+        out.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in out.getdata()])
+        return out
+    return im
 
 # Check moon phases
 moon_phases_img = None
@@ -318,14 +404,25 @@ for i, ph in enumerate(['full_moon', 'waning_gibbous', 'third_quarter', 'waning_
         images[key] = orig_images[key]
         img_stat_fallback += 1
 
+# Villager composite texture (base + plains outfit)
+v_base = load_img('entity/villager/villager')
+v_plains = load_img('entity/villager/type/plains')
+if v_base:
+    if v_plains and v_plains.size == v_base.size:
+        v_base = Image.alpha_composite(v_base, v_plains)
+    images['villager'] = uri(sanitize_image(v_base, 'villager', 'entity/villager/villager'))
+    img_stat_pack += 1
+
 # Other images
 for k, p in IMAGES.items():
     im = load_img(p)
     if im:
-        images[k] = uri(im)
+        images[k] = uri(sanitize_image(im, k, p))
         img_stat_pack += 1
     elif k in orig_images:
-        images[k] = orig_images[k]
+        b64 = orig_images[k].split(',', 1)[1]
+        im_orig = Image.open(io.BytesIO(base64.b64decode(b64))).convert('RGBA')
+        images[k] = uri(sanitize_image(im_orig, k, p))
         img_stat_fallback += 1
     else:
         print(f"Warning: image {k} ({p}) missing in both pack and fallback!")

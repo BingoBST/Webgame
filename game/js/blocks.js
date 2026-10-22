@@ -14,7 +14,7 @@ const ITEM_KEY = {};       // key -> id
 const BID = {};            // block key -> id
 
 // Shape constants
-const SH_CUBE = 0, SH_CROSS = 1, SH_LIQUID = 2, SH_BOXES = 3, SH_TORCH = 4, SH_NONE = 5, SH_CROP = 6, SH_CACTUS = 7, SH_MODEL = 8;
+const SH_CUBE = 0, SH_CROSS = 1, SH_LIQUID = 2, SH_BOXES = 3, SH_TORCH = 4, SH_NONE = 5, SH_CROP = 6, SH_CACTUS = 7, SH_MODEL = 8, SH_WIRE = 9;
 
 function defBlock(id, key, cn, o = {}) {
   const shape = o.shape ?? SH_CUBE;
@@ -48,6 +48,7 @@ function defBlock(id, key, cn, o = {}) {
     tex: [0, 0, 0, 0, 0, 0], overlay: [0, 0, 0, 0, 0, 0],
     particle: 0,
     slab: !!o.slab, stairs: !!o.stairs, door: !!o.door, trapdoor: !!o.trapdoor, ladder: !!o.ladder,
+    redstone: !!o.redstone, button: !!o.button, plate: !!o.plate, lever: !!o.lever, repeater: !!o.repeater, fence: !!o.fence, rail: !!o.rail, web: !!o.web,
   };
   b.opaque = o.opaque ?? (shape === SH_CUBE && b.render === 'opaque');
   b.opacity = o.opacity ?? (b.opaque ? 15 : 0);
@@ -104,6 +105,116 @@ function doorBoxes(meta) {
 function ladderBoxes(meta) {
   // meta = dir index of the wall it's attached to
   return [{ 0: [0, 0, 0, 2, 16, 16], 1: [14, 0, 0, 16, 16, 16], 4: [0, 0, 0, 16, 16, 2], 5: [0, 0, 14, 16, 16, 16] }[meta] || [0, 0, 0, 16, 16, 2]];
+}
+function buttonBoxes(meta) {
+  // bits 0-2: support dir (0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z), bit 3: pressed
+  const att = meta & 7, d = (meta & 8) ? 1 : 2;
+  switch (att) {
+    case 0: return [[0, 6, 5, d, 10, 11]];
+    case 1: return [[16 - d, 6, 5, 16, 10, 11]];
+    case 3: return [[5, 16 - d, 6, 11, 16, 10]];
+    case 4: return [[5, 6, 0, 11, 10, d]];
+    case 5: return [[5, 6, 16 - d, 11, 10, 16]];
+    default: return [[5, 0, 6, 11, d, 10]]; // 2 = floor
+  }
+}
+function leverBoxes(meta) {
+  // bits 0-2: support dir (2 floor, 3 ceiling, 0 -x, 1 +x, 4 -z, 5 +z), bit 3: active (ON)
+  const att = meta & 7, on = !!(meta & 8);
+  switch (att) {
+    case 0: return [[0, 4, 5, 3, 12, 11], on ? [3, 4, 7, 10, 6, 9] : [3, 10, 7, 10, 12, 9]];
+    case 1: return [[13, 4, 5, 16, 12, 11], on ? [6, 4, 7, 13, 6, 9] : [6, 10, 7, 13, 12, 9]];
+    case 3: return [[5, 13, 4, 11, 16, 12], on ? [7, 6, 9, 9, 13, 11] : [7, 6, 5, 9, 13, 7]];
+    case 4: return [[5, 4, 0, 11, 12, 3], on ? [7, 4, 3, 9, 6, 10] : [7, 10, 3, 9, 12, 10]];
+    case 5: return [[5, 4, 13, 11, 12, 16], on ? [7, 4, 6, 9, 6, 13] : [7, 10, 6, 9, 12, 13]];
+    default: return [[5, 0, 4, 11, 3, 12], on ? [7, 3, 9, 9, 10, 11] : [7, 3, 5, 9, 10, 7]];
+  }
+}
+function repeaterModel(meta, lit) {
+  const rot = meta & 3;
+  const delay = (meta >> 2) & 3; // 0..3 -> torch z position 5, 7, 9, 11
+  const topTex = T(lit ? 'repeater_on' : 'repeater');
+  const sideTex = T('smooth_stone_slab_side');
+  const botTex = T('smooth_stone');
+  const torchTex = T(lit ? 'redstone_torch' : 'redstone_torch_off');
+  const zBack = 5 + delay * 2;
+  const torchEl = (z0) => ({
+    from: [7, 2, z0], to: [9, 7, z0 + 2],
+    faces: {
+      up: [7, 5, 9, 7, torchTex],
+      north: [7, 6, 9, 11, torchTex],
+      south: [7, 6, 9, 11, torchTex],
+      west: [7, 6, 9, 11, torchTex],
+      east: [7, 6, 9, 11, torchTex],
+    }
+  });
+  return {
+    rot,
+    els: [
+      {
+        from: [0, 0, 0], to: [16, 2, 16],
+        faces: {
+          down: [0, 0, 16, 16, botTex],
+          up: [0, 0, 16, 16, topTex],
+          north: [0, 14, 16, 16, sideTex],
+          south: [0, 14, 16, 16, sideTex],
+          west: [0, 14, 16, 16, sideTex],
+          east: [0, 14, 16, 16, sideTex],
+        }
+      },
+      torchEl(1),
+      torchEl(zBack),
+    ]
+  };
+}
+function fenceBoxes(meta) {
+  const out = [[6, 0, 6, 10, 16, 10]];
+  if (meta & 1) out.push([7, 6, 0, 9, 9, 6], [7, 12, 0, 9, 15, 6]);
+  if (meta & 2) out.push([7, 6, 10, 9, 9, 16], [7, 12, 10, 9, 15, 16]);
+  if (meta & 4) out.push([0, 6, 7, 6, 9, 9], [0, 12, 7, 6, 15, 9]);
+  if (meta & 8) out.push([10, 6, 7, 16, 9, 9], [10, 12, 7, 16, 15, 9]);
+  return out;
+}
+function railModel(meta) {
+  const t = T('rail');
+  return {
+    rot: (meta & 1) ? 1 : 0,
+    els: [{
+      from: [0, 0.5, 0], to: [16, 1.5, 16],
+      faces: { up: [0, 0, 16, 16, t], down: [0, 0, 16, 16, t] }
+    }]
+  };
+}
+function anvilModel(meta) {
+  const tTop = T('anvil_top'), tBody = T('anvil_base'), tSide = T('anvil_side');
+  return {
+    rot: (meta === 0 || meta === 1) ? 1 : 0,
+    els: [
+      { from: [2, 0, 2], to: [14, 3, 14], faces: { up: [2, 2, 14, 14, tBody], down: [2, 2, 14, 14, tBody], north: [2, 13, 14, 16, tSide], south: [2, 13, 14, 16, tSide], west: [2, 13, 14, 16, tSide], east: [2, 13, 14, 16, tSide] } },
+      { from: [3, 3, 3], to: [13, 5, 13], faces: { up: [3, 3, 13, 13, tBody], north: [3, 11, 13, 13, tSide], south: [3, 11, 13, 13, tSide], west: [3, 11, 13, 13, tSide], east: [3, 11, 13, 13, tSide] } },
+      { from: [5, 5, 4], to: [11, 10, 12], faces: { north: [5, 6, 11, 11, tSide], south: [5, 6, 11, 11, tSide], west: [4, 6, 12, 11, tSide], east: [4, 6, 12, 11, tSide] } },
+      { from: [4, 10, 1], to: [12, 12, 15], faces: { down: [4, 1, 12, 15, tBody], north: [4, 4, 12, 6, tSide], south: [4, 4, 12, 6, tSide], west: [1, 4, 15, 6, tSide], east: [1, 4, 15, 6, tSide] } },
+      { from: [3, 11, 0], to: [13, 16, 16], faces: { up: [3, 0, 13, 16, tTop], down: [3, 0, 13, 16, tBody], north: [3, 0, 13, 5, tSide], south: [3, 0, 13, 5, tSide], west: [0, 0, 16, 5, tSide], east: [0, 0, 16, 5, tSide] } },
+    ]
+  };
+}
+function bellModel(meta) {
+  const tSide = T('bell_side'), tTop = T('bell_top'), tBot = T('bell_bottom');
+  const tWood = T('dark_oak_planks'), tStone = T('stone_bricks');
+  return {
+    rot: meta & 3,
+    els: [
+      // Left & right stone support posts
+      { from: [0, 0, 6], to: [2, 16, 10], faces: { up: [0, 0, 2, 4, tStone], down: [0, 0, 2, 4, tStone], north: [0, 0, 2, 16, tStone], south: [0, 0, 2, 16, tStone], west: [6, 0, 10, 16, tStone], east: [6, 0, 10, 16, tStone] } },
+      { from: [14, 0, 6], to: [16, 16, 10], faces: { up: [0, 0, 2, 4, tStone], down: [0, 0, 2, 4, tStone], north: [0, 0, 2, 16, tStone], south: [0, 0, 2, 16, tStone], west: [6, 0, 10, 16, tStone], east: [6, 0, 10, 16, tStone] } },
+      // Top wooden crossbar
+      { from: [2, 13, 6], to: [14, 15, 10], faces: { up: [2, 6, 14, 10, tWood], down: [2, 6, 14, 10, tWood], north: [2, 1, 14, 3, tWood], south: [2, 1, 14, 3, tWood], west: [6, 1, 10, 3, tWood], east: [6, 1, 10, 3, tWood] } },
+      // Bell upper body (6x7x6) mapped to opaque (1..7, 0..7) of bell_side and (1..7, 1..7) of bell_top/bottom
+      { from: [5, 6, 5], to: [11, 13, 11], faces: { up: [1, 1, 7, 7, tTop], down: [1, 1, 7, 7, tBot], north: [1, 0, 7, 7, tSide], south: [1, 0, 7, 7, tSide], west: [1, 0, 7, 7, tSide], east: [1, 0, 7, 7, tSide] } },
+      // Bell flared lower rim (8x2x8) mapped to opaque (0..8, 7..9) of bell_side and (0..8, 0..8) of bell_top/bottom
+      { from: [4, 4, 4], to: [12, 6, 12], faces: { up: [0, 0, 8, 8, tTop], down: [0, 0, 8, 8, tBot], north: [0, 7, 8, 9, tSide], south: [0, 7, 8, 9, tSide], west: [0, 7, 8, 9, tSide], east: [0, 7, 8, 9, tSide] } },
+    ]
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +334,7 @@ defBlock(106, 'acacia_planks', '金合欢木板', { tex: 'acacia_planks', hardne
 defBlock(107, 'cherry_planks', '樱花木板', { tex: 'cherry_planks', hardness: 2, tool: 'axe', sound: 'wood', fuel: 300 });
 defBlock(108, 'lapis_block', '青金石块', { tex: 'lapis_block', hardness: 3, tool: 'pickaxe', level: 1, needsTool: true });
 defBlock(109, 'emerald_block', '绿宝石块', { tex: 'emerald_block', hardness: 5, tool: 'pickaxe', level: 2, needsTool: true, sound: 'metal' });
-defBlock(110, 'redstone_block', '红石块', { tex: 'redstone_block', hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'metal' });
+defBlock(110, 'redstone_block', '红石块', { tex: 'redstone_block', hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'metal', redstone: true });
 defBlock(111, 'note_block', '音符盒', { tex: 'note_block', hardness: 0.8, tool: 'axe', sound: 'wood', onUse: 'note', fuel: 300 });
 defBlock(112, 'oak_trapdoor', '橡木活板门', { shape: SH_BOXES, boxes: (m) => (m & 4) ? [[0, 0, 13, 16, 16, 16]] : (m & 8 ? [[0, 13, 0, 16, 16, 16]] : [[0, 0, 0, 16, 3, 16]]), tex: 'oak_trapdoor', render: 'cutout', hardness: 3, tool: 'axe', sound: 'wood', trapdoor: true, fuel: 300 });
 defBlock(113, 'stone_brick_slab', '石砖台阶', { shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: 'stone_bricks', render: 'opaque', hardness: 1.5, tool: 'pickaxe', needsTool: true, slab: true, drops: slabDrop('stone_brick_slab') });
@@ -247,12 +358,47 @@ defBlock(118, 'red_bed', '红色的床', { shape: SH_MODEL, model: (m) => ({ els
   tex: 'red_bed_foot_up', render: 'opaque', hardness: 0.2, sound: 'wool', bed: true, stack: 1, particle: 'red_bed_head_up', drops: (m) => (m & 4) ? [] : [['red_bed', 1]] });
 defBlock(116, 'birch_slab', '白桦木台阶', { shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: 'birch_planks', render: 'opaque', hardness: 2, tool: 'axe', sound: 'wood', slab: true, fuel: 150, drops: slabDrop('birch_slab') });
 
+// ---- Redstone Core Suite Blocks -------------------------------------------
+defBlock(119, 'redstone_wire', '红石线', { shape: SH_WIRE, boxes: () => [[0, 0, 0, 16, 2, 16]], tex: 'redstone_dust_dot', render: 'cutout', solid: false, opaque: false, hardness: 0, sound: 'stone', needsSupport: true, noItem: true, redstone: true, drops: drop('redstone') });
+defBlock(120, 'redstone_torch', '红石火把', { shape: SH_TORCH, tex: 'redstone_torch', solid: false, light: 7, hardness: 0, sound: 'wood', needsSupport: true, flatIcon: 'redstone_torch', redstone: true });
+defBlock(121, 'redstone_torch_off', '红石火把', { shape: SH_TORCH, tex: 'redstone_torch_off', solid: false, light: 0, hardness: 0, sound: 'wood', needsSupport: true, noItem: true, redstone: true, drops: drop('redstone_torch') });
+defBlock(122, 'lever', '拉杆', { shape: SH_BOXES, boxes: leverBoxes, tex: 'cobblestone', render: 'opaque', solid: false, opaque: false, hardness: 0.5, sound: 'wood', needsSupport: true, onUse: 'lever', flatIcon: 'lever', lever: true, redstone: true });
+defBlock(123, 'stone_button', '石头按钮', { shape: SH_BOXES, boxes: buttonBoxes, tex: 'stone', render: 'opaque', solid: false, opaque: false, hardness: 0.5, tool: 'pickaxe', sound: 'stone', needsSupport: true, onUse: 'button', button: true, redstone: true });
+defBlock(124, 'stone_pressure_plate', '石头压力板', { shape: SH_BOXES, boxes: (m) => [[1, 0, 1, 15, (m & 1) ? 0.5 : 1, 15]], tex: 'stone', render: 'opaque', solid: false, opaque: false, hardness: 0.5, tool: 'pickaxe', sound: 'stone', needsSupport: true, plate: true, redstone: true });
+defBlock(125, 'redstone_lamp', '红石灯', { tex: 'redstone_lamp', hardness: 0.3, sound: 'glass', redstone: true });
+defBlock(126, 'lit_redstone_lamp', '红石灯', { tex: 'redstone_lamp_on', light: 15, hardness: 0.3, sound: 'glass', noItem: true, redstone: true, drops: drop('redstone_lamp') });
+defBlock(127, 'repeater', '红石中继器', { shape: SH_MODEL, model: (m) => repeaterModel(m, false), boxes: () => [[0, 0, 0, 16, 2, 16]], tex: 'repeater', render: 'opaque', solid: true, opaque: false, hardness: 0, sound: 'wood', needsSupport: true, onUse: 'repeater', noItem: true, repeater: true, redstone: true, drops: drop('repeater') });
+defBlock(156, 'lit_repeater', '红石中继器', { shape: SH_MODEL, model: (m) => repeaterModel(m, true), boxes: () => [[0, 0, 0, 16, 2, 16]], tex: 'repeater_on', render: 'opaque', solid: true, opaque: false, light: 7, hardness: 0, sound: 'wood', needsSupport: true, onUse: 'repeater', noItem: true, repeater: true, redstone: true, drops: drop('repeater') });
+defBlock(157, 'target', '标靶', { tex: { top: 'target_top', side: 'target_side' }, hardness: 0.5, tool: 'hoe', sound: 'grass', redstone: true });
+defBlock(158, 'deepslate_redstone_ore', '深层红石矿石', { tex: 'deepslate_redstone_ore', hardness: 4.5, tool: 'pickaxe', level: 2, needsTool: true, drops: (m, r) => [['redstone', 4 + (r() * 2 | 0)]] });
+defBlock(159, 'oak_button', '橡木按钮', { shape: SH_BOXES, boxes: buttonBoxes, tex: 'oak_planks', render: 'opaque', solid: false, opaque: false, hardness: 0.5, tool: 'axe', sound: 'wood', needsSupport: true, onUse: 'button', button: true, redstone: true, fuel: 100 });
+defBlock(169, 'oak_pressure_plate', '橡木压力板', { shape: SH_BOXES, boxes: (m) => [[1, 0, 1, 15, (m & 1) ? 0.5 : 1, 15]], tex: 'oak_planks', render: 'opaque', solid: false, opaque: false, hardness: 0.5, tool: 'axe', sound: 'wood', needsSupport: true, plate: true, redstone: true, fuel: 300 });
+
 const WOOLS = [['white', '白色'], ['orange', '橙色'], ['magenta', '品红色'], ['light_blue', '淡蓝色'], ['yellow', '黄色'], ['lime', '黄绿色'], ['pink', '粉红色'], ['gray', '灰色'], ['light_gray', '淡灰色'], ['cyan', '青色'], ['purple', '紫色'], ['blue', '蓝色'], ['brown', '棕色'], ['green', '绿色'], ['red', '红色'], ['black', '黑色']];
 WOOLS.forEach(([c, cn], i) => defBlock(128 + i, c + '_wool', cn + '羊毛', { tex: c + '_wool', hardness: 0.8, sound: 'wool', tool: 'shears', fuel: 100 }));
 const SGLASS = [['white', '白色'], ['orange', '橙色'], ['light_blue', '淡蓝色'], ['yellow', '黄色'], ['lime', '黄绿色'], ['pink', '粉红色'], ['cyan', '青色'], ['purple', '紫色'], ['blue', '蓝色'], ['red', '红色'], ['black', '黑色'], ['green', '绿色']];
 SGLASS.forEach(([c, cn], i) => defBlock(144 + i, c + '_stained_glass', cn + '染色玻璃', { tex: c + '_stained_glass', render: 'translucent', opaque: false, hardness: 0.3, sound: 'glass', drops: nothing, cullSame: true }));
 const CONCRETE = [['white', '白色'], ['orange', '橙色'], ['yellow', '黄色'], ['lime', '黄绿色'], ['light_blue', '淡蓝色'], ['blue', '蓝色'], ['red', '红色'], ['black', '黑色'], ['gray', '灰色']];
 CONCRETE.forEach(([c, cn], i) => defBlock(160 + i, c + '_concrete', cn + '混凝土', { tex: c + '_concrete', hardness: 1.8, tool: 'pickaxe', needsTool: true }));
+
+// ---- Structure Blocks (Desert Pyramid, Mineshaft, Village) ----------------
+defBlock(170, 'chiseled_sandstone', '雕纹砂岩', { tex: { top: 'sandstone_top', bottom: 'sandstone_top', side: 'chiseled_sandstone' }, hardness: 0.8, tool: 'pickaxe', needsTool: true });
+defBlock(171, 'cut_sandstone', '切制砂岩', { tex: { top: 'sandstone_top', bottom: 'sandstone_top', side: 'cut_sandstone' }, hardness: 0.8, tool: 'pickaxe', needsTool: true });
+defBlock(172, 'smooth_sandstone', '平滑砂岩', { tex: 'smooth_sandstone', hardness: 2, tool: 'pickaxe', needsTool: true });
+defBlock(173, 'sandstone_slab', '砂岩台阶', { shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: { top: 'sandstone_top', bottom: 'sandstone_bottom', side: 'sandstone' }, render: 'opaque', hardness: 2, tool: 'pickaxe', needsTool: true, slab: true, drops: slabDrop('sandstone_slab') });
+defBlock(174, 'sandstone_stairs', '砂岩楼梯', { shape: SH_BOXES, boxes: stairBoxes, tex: { top: 'sandstone_top', bottom: 'sandstone_bottom', side: 'sandstone' }, render: 'opaque', hardness: 0.8, tool: 'pickaxe', needsTool: true, stairs: true });
+defBlock(175, 'orange_terracotta', '橙色陶瓦', { tex: 'orange_terracotta', hardness: 1.25, tool: 'pickaxe', needsTool: true });
+defBlock(176, 'blue_terracotta', '蓝色陶瓦', { tex: 'blue_terracotta', hardness: 1.25, tool: 'pickaxe', needsTool: true });
+defBlock(177, 'cobweb', '蜘蛛网', { shape: SH_CROSS, tex: 'cobweb', render: 'cutout', solid: false, opaque: false, hardness: 4, tool: 'sword', sound: 'stone', flatIcon: 'cobweb', web: true, drops: drop('string') });
+defBlock(178, 'rail', '铁轨', { shape: SH_MODEL, model: railModel, boxes: () => [[0, 0, 0, 16, 2, 16]], tex: 'rail', render: 'cutout', solid: false, opaque: false, hardness: 0.7, tool: 'pickaxe', sound: 'metal', needsSupport: true, flatIcon: 'rail', rail: true });
+defBlock(179, 'oak_fence', '橡木栅栏', { shape: SH_BOXES, boxes: fenceBoxes, tex: 'oak_planks', render: 'opaque', opaque: false, hardness: 2, tool: 'axe', sound: 'wood', fence: true, fuel: 300 });
+defBlock(180, 'spruce_fence', '云杉木栅栏', { shape: SH_BOXES, boxes: fenceBoxes, tex: 'spruce_planks', render: 'opaque', opaque: false, hardness: 2, tool: 'axe', sound: 'wood', fence: true, fuel: 300 });
+defBlock(181, 'dirt_path', '土径', { shape: SH_BOXES, boxes: () => [[0, 0, 0, 16, 15, 16]], tex: { top: 'dirt_path_top', bottom: 'dirt', side: 'dirt_path_side' }, render: 'opaque', hardness: 0.65, tool: 'shovel', sound: 'gravel', drops: drop('dirt') });
+defBlock(182, 'spawner', '刷怪笼', { tex: 'spawner', render: 'cutout', opaque: false, opacity: 1, hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'metal', drops: nothing });
+defBlock(183, 'bell', '钟', { shape: SH_MODEL, model: bellModel, boxes: () => [[0, 0, 4, 16, 16, 12]], tex: { top: 'bell_top', bottom: 'bell_bottom', side: 'bell_side' }, render: 'opaque', opaque: false, facing: true, hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'metal', onUse: 'bell' });
+defBlock(184, 'spruce_slab', '云杉木台阶', { shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: 'spruce_planks', render: 'opaque', hardness: 2, tool: 'axe', sound: 'wood', slab: true, fuel: 150, drops: slabDrop('spruce_slab') });
+defBlock(185, 'enchanting_table', '附魔台', { shape: SH_BOXES, boxes: () => [[0, 0, 0, 16, 12, 16]], tex: { top: 'enchanting_table_top', bottom: 'enchanting_table_bottom', side: 'enchanting_table_side' }, render: 'opaque', opaque: false, light: 7, hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'stone', onUse: 'enchanting' });
+defBlock(186, 'anvil', '铁砧', { shape: SH_MODEL, model: anvilModel, boxes: (m) => (m === 0 || m === 1) ? [[0, 0, 2, 16, 16, 14]] : [[2, 0, 0, 14, 16, 16]], tex: { top: 'anvil_top', bottom: 'anvil_base', side: 'anvil_side' }, render: 'opaque', opaque: false, facing: true, hardness: 5, tool: 'pickaxe', level: 1, needsTool: true, sound: 'metal', gravity: true, onUse: 'anvil' });
 
 // ---------------------------------------------------------------------------
 // Items
@@ -278,7 +424,8 @@ defItem('gold_ingot', '金锭');
 defItem('diamond', '钻石');
 defItem('emerald', '绿宝石');
 defItem('lapis_lazuli', '青金石');
-defItem('redstone', '红石粉');
+defItem('redstone', '红石粉', { places: 'redstone_wire' });
+defItem('repeater', '红石中继器', { places: 'repeater' });
 defItem('flint', '燧石');
 defItem('apple', '苹果', { food: [4, 2.4] });
 defItem('bread', '面包', { food: [5, 6] });
@@ -326,6 +473,7 @@ defItem('sugar_cane', '甘蔗', { places: 'sugar_cane' });
 defItem('sugar', '糖');
 defItem('paper', '纸');
 defItem('book', '书');
+defItem('enchanted_book', '附魔书', { stack: 1 });
 defItem('clay_ball', '黏土球');
 defItem('brick', '红砖');
 const ARMOR_PTS = { leather: [1, 3, 2, 1], iron: [2, 6, 5, 2], diamond: [3, 8, 6, 3] };
@@ -338,6 +486,7 @@ for (const mat of ['leather', 'iron', 'diamond']) {
 }
 
 for (const [m, cn] of [['pig', '猪'], ['cow', '牛'], ['sheep', '羊'], ['chicken', '鸡'], ['zombie', '僵尸'], ['skeleton', '骷髅'], ['creeper', '苦力怕'], ['spider', '蜘蛛']]) defItem(m + '_spawn_egg', cn + '刷怪蛋', { spawnEgg: m });
+defItem('villager_spawn_egg', '村民刷怪蛋', { spawnEgg: 'villager', texKey: 'pig_spawn_egg' });
 
 function item(key) { const id = ITEM_KEY[key]; if (id === undefined) throw new Error('no item ' + key); return id; }
 function itemDef(id) { return ITEMS[id]; }
@@ -402,6 +551,8 @@ shapeless('sugar', 1, ['sugar_cane']);
 shaped('paper', 3, ['###'], { '#': 'sugar_cane' });
 shapeless('book', 1, ['paper', 'paper', 'paper', 'leather']);
 shaped('bookshelf', 1, ['###', 'BBB', '###'], { '#': 'planks', B: 'book' });
+shaped('enchanting_table', 1, [' B ', 'D#D', '###'], { B: 'book', D: 'diamond', '#': 'obsidian' });
+shaped('anvil', 1, ['BBB', ' I ', 'III'], { B: 'iron_block', I: 'iron_ingot' });
 shaped('bricks', 1, ['##', '##'], { '#': 'brick' });
 shaped('clay', 1, ['##', '##'], { '#': 'clay_ball' });
 shaped('stone_bricks', 4, ['##', '##'], { '#': 'stone' });
@@ -434,6 +585,16 @@ shaped('glowstone', 1, ['RG', 'GR'], { R: 'redstone', G: 'glass' });
 shaped('sea_lantern', 1, ['LGL', 'GGG', 'LGL'], { L: 'lapis_lazuli', G: 'glass' });
 shaped('note_block', 1, ['###', '#R#', '###'], { '#': 'planks', R: 'redstone' });
 shaped('quartz_block', 1, ['##', '##'], { '#': 'diorite' });
+// Redstone recipes
+shaped('redstone_torch', 1, ['R', '#'], { R: 'redstone', '#': 'stick' });
+shaped('lever', 1, ['#', 'S'], { '#': 'stick', S: 'cobblestone' });
+shapeless('stone_button', 1, ['stone']);
+shapeless('oak_button', 1, ['planks']);
+shaped('stone_pressure_plate', 1, ['##'], { '#': 'stone' });
+shaped('oak_pressure_plate', 1, ['##'], { '#': 'planks' });
+shaped('redstone_lamp', 1, [' R ', 'RGR', ' R '], { R: 'redstone', G: 'glowstone' });
+shaped('repeater', 1, ['TRT', 'SSS'], { T: 'redstone_torch', R: 'redstone', S: 'stone' });
+shaped('target', 1, [' R ', 'RHR', ' R '], { R: 'redstone', H: 'hay_block' });
 
 // Match a crafting grid (array of stacks|null, width w) against recipes
 function matchRecipe(grid, w) {
@@ -480,6 +641,15 @@ smelt('oak_log', 'charcoal', 0.15); smelt('birch_log', 'charcoal', 0.15); smelt(
 smelt('porkchop', 'cooked_porkchop', 0.35); smelt('beef', 'cooked_beef', 0.35); smelt('mutton', 'cooked_mutton', 0.35); smelt('chicken', 'cooked_chicken', 0.35);
 smelt('stone_bricks', 'cracked_stone_bricks'); smelt('cactus', 'green_concrete' in ITEM_KEY ? 'green_concrete' : 'lime_concrete');
 smelt('carrot', 'baked_potato', 0.35);
+smelt('sandstone', 'smooth_sandstone', 0.1);
+shaped('cut_sandstone', 4, ['##', '##'], { '#': 'sandstone' });
+shaped('chiseled_sandstone', 1, ['#', '#'], { '#': 'sandstone_slab' });
+shaped('sandstone_slab', 6, ['###'], { '#': 'sandstone' });
+shaped('sandstone_stairs', 4, ['#  ', '## ', '###'], { '#': 'sandstone' });
+shaped('spruce_slab', 6, ['###'], { '#': 'spruce_planks' });
+shaped('oak_fence', 3, ['W#W', 'W#W'], { W: 'oak_planks', '#': 'stick' });
+shaped('spruce_fence', 3, ['W#W', 'W#W'], { W: 'spruce_planks', '#': 'stick' });
+shaped('rail', 16, ['I I', 'I#I', 'I I'], { I: 'iron_ingot', '#': 'stick' });
 
 function fuelValue(id) { const d = ITEMS[id]; return d ? (d.fuel || (BLOCKS[id] && BLOCKS[id].fuel) || 0) : 0; }
 
@@ -487,21 +657,22 @@ function fuelValue(id) { const d = ITEMS[id]; return d ? (d.fuel || (BLOCKS[id] 
 const CREATIVE_TABS = [
   { name: '建筑方块', icon: 'bricks', items: ['stone', 'cobblestone', 'mossy_cobblestone', 'smooth_stone', 'stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'andesite', 'polished_andesite', 'diorite', 'polished_diorite', 'granite', 'polished_granite', 'deepslate',
     'oak_planks', 'birch_planks', 'spruce_planks', 'dark_oak_planks', 'jungle_planks', 'acacia_planks', 'cherry_planks', 'oak_log', 'birch_log', 'spruce_log',
-    'bricks', 'mud_bricks', 'sandstone', 'terracotta', 'quartz_block', 'prismarine', 'sea_lantern', 'glowstone', 'obsidian', 'bone_block',
-    'smooth_stone_slab', 'oak_slab', 'birch_slab', 'cobblestone_slab', 'stone_brick_slab', 'oak_stairs', 'spruce_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs',
+    'bricks', 'mud_bricks', 'sandstone', 'chiseled_sandstone', 'cut_sandstone', 'smooth_sandstone', 'terracotta', 'orange_terracotta', 'blue_terracotta', 'quartz_block', 'prismarine', 'sea_lantern', 'glowstone', 'obsidian', 'bone_block',
+    'smooth_stone_slab', 'oak_slab', 'spruce_slab', 'birch_slab', 'cobblestone_slab', 'stone_brick_slab', 'sandstone_slab', 'oak_stairs', 'spruce_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs', 'sandstone_stairs', 'oak_fence', 'spruce_fence',
     'glass', ...SGLASS.map(s => s[0] + '_stained_glass'), ...WOOLS.map(w => w[0] + '_wool'), ...CONCRETE.map(c => c[0] + '_concrete'),
     'iron_block', 'gold_block', 'diamond_block', 'emerald_block', 'lapis_block', 'redstone_block', 'coal_block', 'hay_block'] },
-  { name: '自然方块', icon: 'grass_block', items: ['grass_block', 'dirt', 'farmland', 'sand', 'red_sand', 'gravel', 'clay', 'snow_block', 'snow', 'ice', 'packed_ice', 'moss_block', 'magma_block',
-    'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_gold_ore', 'deepslate_diamond_ore',
+  { name: '自然方块', icon: 'grass_block', items: ['grass_block', 'dirt', 'dirt_path', 'farmland', 'sand', 'red_sand', 'gravel', 'clay', 'snow_block', 'snow', 'ice', 'packed_ice', 'moss_block', 'magma_block',
+    'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_gold_ore', 'deepslate_diamond_ore', 'deepslate_redstone_ore',
     'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'short_grass', 'fern', 'dead_bush', ...FLOWERS.map(f => f[0]),
     'red_mushroom', 'brown_mushroom', 'cactus', 'sugar_cane', 'pumpkin', 'melon', 'bedrock'] },
-  { name: '功能方块', icon: 'crafting_table', items: ['crafting_table', 'furnace', 'chest', 'red_bed', 'torch', 'jack_o_lantern', 'bookshelf', 'ladder', 'oak_door', 'oak_trapdoor', 'tnt', 'note_block'] },
+  { name: '功能方块', icon: 'crafting_table', items: ['crafting_table', 'furnace', 'chest', 'red_bed', 'torch', 'jack_o_lantern', 'bookshelf', 'ladder', 'oak_door', 'oak_trapdoor', 'tnt', 'note_block',
+    'redstone', 'redstone_torch', 'redstone_block', 'repeater', 'lever', 'stone_button', 'oak_button', 'stone_pressure_plate', 'oak_pressure_plate', 'redstone_lamp', 'target', 'rail', 'enchanting_table', 'anvil', 'bell', 'cobweb', 'spawner'] },
   { name: '工具与战斗', icon: 'diamond_pickaxe', items: [] },
   { name: '食物与材料', icon: 'apple', items: [] },
-  { name: '刷怪蛋', icon: 'creeper_spawn_egg', items: ['pig_spawn_egg', 'cow_spawn_egg', 'sheep_spawn_egg', 'chicken_spawn_egg', 'zombie_spawn_egg', 'skeleton_spawn_egg', 'creeper_spawn_egg', 'spider_spawn_egg'] },
+  { name: '刷怪蛋', icon: 'creeper_spawn_egg', items: ['pig_spawn_egg', 'cow_spawn_egg', 'sheep_spawn_egg', 'chicken_spawn_egg', 'zombie_spawn_egg', 'skeleton_spawn_egg', 'creeper_spawn_egg', 'spider_spawn_egg', 'villager_spawn_egg'] },
 ];
 for (const m of ['wooden', 'stone', 'iron', 'golden', 'diamond']) for (const t of ['pickaxe', 'axe', 'shovel', 'hoe', 'sword']) CREATIVE_TABS[3].items.push(m + '_' + t);
 CREATIVE_TABS[3].items.push('bow', 'arrow', 'shears', 'flint_and_steel', 'bucket', 'water_bucket', 'lava_bucket');
 for (const m of ['leather', 'iron', 'diamond']) for (const p of ['helmet', 'chestplate', 'leggings', 'boots']) CREATIVE_TABS[3].items.push(m + '_' + p);
 CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'baked_potato', 'carrot',
-  'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book');
+  'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book', 'enchanted_book');

@@ -161,6 +161,7 @@ class World {
     for (let z = -1; z < 17; z++) for (let x = -1; x < 17; x++) cols[(z + 1) * 18 + x + 1] = this.column(x0 + x, z0 + z);
     let maxH = 0;
     for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      if (ch.structureMask && ch.structureMask[(z << 4) | x]) continue;
       const c = cols[(z + 1) * 18 + x + 1];
       maxH = Math.max(maxH, c.h);
       const bi = this.biomeOf(c);
@@ -241,7 +242,8 @@ class World {
       }
     }
     this.genOres(ch, rng);
-    if (rng() < 0.11) this.genDungeon(ch, cols, rng);
+    if (typeof Structures !== 'undefined') Structures.applyToChunk(this, ch);
+    if (rng() < 0.11 && !ch.hasSurfaceStructure) this.genDungeon(ch, cols, rng);
     this.decorate(ch, cols);
     ch.recount();
     return ch;
@@ -268,7 +270,7 @@ class World {
     vein(13, 76, 22, 5, 130, 12);
     vein(12, 77, 16, 1, 72, 9);
     vein(11, 78, 3, 1, 32, 8);
-    vein(80, 0, 6, 1, 16, 7);
+    vein(80, 158, 6, 1, 16, 7);
     vein(81, 0, 2, 1, 32, 6);
     vein(18, 79, 2, 1, 16, 6);
   }
@@ -378,9 +380,12 @@ class World {
     for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
       for (const tr of this.treesFor(ch.cx + dx, ch.cz + dz)) {
         if (tr.x < x0 - 3 || tr.x > x0 + 18 || tr.z < z0 - 3 || tr.z > z0 + 18) continue;
+        if (ch.hasSurfaceStructure) continue;
         // only grow if the trunk base is on ground in its own chunk (checked loosely via column height)
         if (dx === 0 && dz === 0) {
-          const g = B[((tr.y - 1) << 8) | ((tr.z - z0) << 4) | (tr.x - x0)];
+          const lx = tr.x - x0, lz = tr.z - z0;
+          if (ch.structureMask && ch.structureMask[(lz << 4) | lx]) continue;
+          const g = B[((tr.y - 1) << 8) | (lz << 4) | lx];
           if (g !== 2 && g !== 3) continue;
         }
         this.placeTree(set, tr);
@@ -629,10 +634,14 @@ class World {
     if (!this.ticks.size) return;
     const due = [];
     for (const [k, v] of this.ticks) if (v.t <= this.time) { due.push(v); this.ticks.delete(k); if (due.length > 400) break; }
-    for (const t of due) this.fluidTick(t.x, t.y, t.z);
+    for (const t of due) {
+      const id = this.getBlock(t.x, t.y, t.z);
+      if (IS_FLUID[id]) this.fluidTick(t.x, t.y, t.z);
+      else if (id && this.listener && this.listener.onScheduledTick) this.listener.onScheduledTick(t.x, t.y, t.z, id);
+    }
   }
 
-  canFlowInto(id) { return id === AIR || (REPLACEABLE[id] && !IS_FLUID[id]) || (BLOCKS[id] && BLOCKS[id].needsSupport && !BLOCKS[id].solid && id !== 21 ? true : id === 21); }
+  canFlowInto(id) { return id === AIR || (REPLACEABLE[id] && !IS_FLUID[id]) || (BLOCKS[id] && BLOCKS[id].needsSupport && (!BLOCKS[id].solid || BLOCKS[id].repeater)); }
 
   fluidTick(x, y, z) {
     if (!this.isLoaded(x, z)) return;
@@ -696,7 +705,7 @@ class World {
       for (let s = 1; s <= (water ? 4 : 2); s++) {
         const px = x + DIRS[d][0] * s, pz = z + DIRS[d][2] * s;
         const pid = this.getBlock(px, y, pz);
-        if (BLOCKS[pid].solid && pid !== id) break;
+        if (BLOCKS[pid].solid && !BLOCKS[pid].repeater && pid !== id) break;
         const under = this.getBlock(px, y - 1, pz);
         if (this.canFlowInto(under) || under === id) { dist[k] = s; break; }
       }

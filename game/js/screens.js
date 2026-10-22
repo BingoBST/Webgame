@@ -267,9 +267,10 @@ const HELP_PAGES = [
   { title: '基本操作', lines: ['W A S D|移动', '空格|跳跃 / 游泳上浮 / (创造) 双击切换飞行', '左 Shift|潜行（不会从边缘掉落）/ 飞行下降', '左 Ctrl 或 双击 W|疾跑', '鼠标移动|转动视角', '鼠标左键|挖掘方块 / 攻击生物（按住持续挖掘）', '鼠标右键|放置方块 / 使用物品 / 打开容器 / 吃东西 / 拉弓', '鼠标中键|选取方块', '滚轮 / 1-9|切换快捷栏', 'E|打开物品栏', 'Q|丢弃物品 (Ctrl+Q 丢弃一组)', 'F1 / F3 / F5|隐藏界面 / 调试信息 / 切换视角', 'T 或 /|打开聊天与命令', 'Esc|游戏菜单（暂停）'] },
   { title: '物品栏操作', lines: ['左键|拿起 / 放下整组物品', '右键|拿起一半 / 放下一个', 'Shift + 左键|快速移动物品', '按住左键拖动|在多个格子之间平均分配', '按住右键拖动|每个格子放一个', '双击|收集同类物品', '悬停 + 数字键|与快捷栏交换', '悬停 + Q|丢弃物品', '', '创造模式物品栏：点击顶部标签切换分类，', '滚轮滚动；最后一个标签可以搜索物品。', '把物品放到右下角的 X 格可以删除。'] },
   { title: '生存入门', lines: ['1. 徒手撸树获得原木，合成木板（在物品栏 2x2 合成格）', '2. 4 个木板合成工作台，右键打开 3x3 合成', '3. 木板竖放 2 个合成木棍，制作木镐', '4. 挖石头获得圆石，制作石镐、熔炉', '5. 煤炭 + 木棍合成火把，照亮洞穴防止怪物生成', '6. 用熔炉把粗铁冶炼成铁锭，制作铁镐与铁甲', '7. 铁镐可以挖掘钻石矿（在 Y<16 的深层）', '', '饥饿值不足时无法疾跑、不能回血，记得吃东西！', '夜晚会生成僵尸、骷髅、苦力怕和蜘蛛。', '摔落、溺水、岩浆、仙人掌都会造成伤害。', '按 Esc → 进度 查看你的成就目标。'] },
-  { title: '常用配方', lines: ['工作台|4 木板 (2x2)', '木棍|2 木板竖放', '镐|上排 3 材料 + 中间竖放 2 木棍', '斧 / 锹 / 剑 / 锄|同原版摆法', '熔炉|8 圆石围一圈', '箱子|8 木板围一圈', '火把|煤炭/木炭 在 木棍 上方', '面包|3 小麦横排', 'TNT|火药与沙子交错 (5 火药 + 4 沙子)', '床|3 羊毛 + 3 木板，夜晚右键睡觉跳过黑夜', '弓 / 箭|木棍+线 / 燧石+木棍+羽毛', '桶|3 铁锭 V 形；可装水和熔岩', '盔甲|皮革/铁/钻石，同原版摆法', '其他: 楼梯、台阶、门、梯子、书架、砖块…'] },
-  { title: '玩法机制', lines: ['• 平滑光照与环境光遮蔽，火把/荧石/熔岩发光', '• 真实的水与熔岩流动，水遇熔岩生成黑曜石/圆石', '• 沙子与沙砾会受重力下落', '• TNT 与苦力怕爆炸可以破坏地形并连锁引爆', '• 用锄头耕地、种小麦，骨粉催熟；树苗可以长成树', '• 用剪刀剪羊毛，用小麦/种子/胡萝卜引诱并繁殖动物', '• 熔炉冶炼矿石与烹饪食物，获得经验', '• 昼夜循环、月相、星空、云层、雨雪天气；床可跳过夜晚', '• 多种生物群系：平原、森林、桦木林、针叶林、', '  雪原、沙漠、山地、海洋、河流、沙滩', '• 世界自动保存，可在主菜单管理多个存档'] },
-  { title: '命令 (按 T 或 /)', lines: ['/gamemode creative|survival|切换游戏模式', '/time set day|night|noon|<数值>|设置时间', '/weather clear|rain|设置天气', '/give <物品英文名> [数量]|给予物品，如 /give diamond 64', '/tp <x> <y> <z>|传送', '/summon <生物>|生成 pig cow sheep chicken zombie ...', '/kill|自杀', '/spawnpoint|设置重生点为当前位置', '/seed|显示世界种子', '/clear|清空物品栏', '/xp <数量>|获得经验'] },
+  { title: '常用配方', lines: ['工作台|4 木板 (2x2)', '木棍|2 木板竖放', '镐|上排 3 材料 + 中间竖放 2 木棍', '斧 / 锹 / 剑 / 锄|同原版摆法', '熔炉|8 圆石围一圈', '箱子|8 木板围一圈', '火把|煤炭/木炭 在 木棍 上方', '面包|3 小麦横排', 'TNT|火药与沙子交错 (5 火药 + 4 沙子)', '床|3 羊毛 + 3 木板，夜晚右键睡觉跳过黑夜', '弓 / 箭|木棍+线 / 燧石+木棍+羽毛', '桶|3 铁锭 V 形；可装水和熔岩', '盔甲|皮革/铁/钻石，同原版摆法', '红石元件|红石火把(红石+木棍)、拉杆(木棍+圆石)、红石灯(4红石+荧石)、中继器(2红石火把+红石+3石头)、标靶(4红石+干草块)'] },
+  { title: '玩法机制', lines: ['• 平滑光照与环境光遮蔽，火把/荧石/熔岩发光', '• 真实的水与熔岩流动，水遇熔岩生成黑曜石/圆石', '• 沙子与沙砾会受重力下落', '• 完整红石核心套件：红石线(15格信号衰减与爬坡)、红石火把(非门反相)、中继器(4档延迟与信号放大)、拉杆/按钮/压力板/标靶，可驱动红石灯、TNT、门、活板门与音符盒',
+  '• TNT 与苦力怕爆炸可以破坏地形并连锁引爆', '• 用锄头耕地、种小麦，骨粉催熟；树苗可以长成树', '• 用剪刀剪羊毛，用小麦/种子/胡萝卜引诱并繁殖动物', '• 熔炉冶炼矿石与烹饪食物，获得经验', '• 昼夜循环、月相、星空、云层、雨雪天气；床可跳过夜晚', '• 多种生物群系：平原、森林、桦木林、针叶林、', '  雪原、沙漠、山地、海洋、河流、沙滩', '• 世界自动保存，可在主菜单管理多个存档'] },
+  { title: '命令 (按 T 或 /)', lines: ['/gamemode creative|survival|切换游戏模式', '/time set day|night|noon|<数值>|设置时间', '/weather clear|rain|设置天气', '/give <物品英文名> [数量]|给予物品，如 /give diamond 64', '/tp <x> <y> <z>|传送', '/summon <生物>|生成 pig cow sheep chicken zombie ...', '/kill|自杀', '/spawnpoint|设置重生点为当前位置', '/seed|显示世界种子', '/clear|清空物品栏', '/xp <数量>|获得经验', '/enchant <附魔名> [等级]|为手持物品或书附加附魔（如 sharpness 5）'] },
 ];
 
 class ChatScreen extends MenuScreen {
@@ -289,7 +290,9 @@ class ChatScreen extends MenuScreen {
     const v = el.value, parts = v.split(' ');
     if (parts[0] === '/give' && parts.length === 2) { const m = Object.keys(ITEM_KEY).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/give ' + m[0]; }
     else if (parts[0] === '/summon' && parts.length === 2) { const m = Object.keys(MOB_TYPES).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/summon ' + m[0]; }
-    else if (parts.length === 1) { const m = ['/gamemode', '/time', '/weather', '/give', '/tp', '/summon', '/kill', '/spawnpoint', '/seed', '/clear', '/xp', '/help'].filter(k => k.startsWith(v)); if (m.length) el.value = m[0] + ' '; }
+    else if (parts[0] === '/locate' && parts.length === 2) { const m = ['village', 'desert_pyramid', 'mineshaft'].filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/locate ' + m[0]; }
+    else if (parts[0] === '/enchant' && parts.length === 2 && typeof ENCHANTS !== 'undefined') { const m = Object.keys(ENCHANTS).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/enchant ' + m[0]; }
+    else if (parts.length === 1) { const m = ['/enchant', '/locate', '/gamemode', '/time', '/weather', '/give', '/tp', '/summon', '/kill', '/spawnpoint', '/seed', '/clear', '/xp', '/help'].filter(k => k.startsWith(v)); if (m.length) el.value = m[0] + ' '; }
   }
   draw(ui) { const c = ui.ctx; c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(2, ui.h - 14, ui.w - 4, 12); }
 }
@@ -301,7 +304,34 @@ function runCommand(g, text) {
   const err = (m) => ui.message(m, '#FF5555');
   try {
     switch (cmd) {
-      case 'help': ui.message('可用命令: /gamemode /time /weather /give /tp /summon /kill /spawnpoint /seed /clear /xp', '#FFFF55'); break;
+      case 'help': ui.message('可用命令: /enchant /locate /gamemode /time /weather /give /tp /summon /kill /spawnpoint /seed /clear /xp', '#FFFF55'); break;
+      case 'enchant': {
+        const ek = (a[0] || '').replace('minecraft:', '');
+        if (!ek || typeof ENCHANTS === 'undefined' || !ENCHANTS[ek]) {
+          return err('用法: /enchant <附魔名> [等级]（可用: ' + (typeof ENCHANTS !== 'undefined' ? Object.keys(ENCHANTS).join(' ') : '') + '）');
+        }
+        const held = p.inv.held;
+        if (!held) return err('请先手持要附魔的物品或书');
+        const def = ENCHANTS[ek];
+        const lvl = clamp(parseInt(a[1]) || 1, 1, def.max);
+        if (ITEMS[held.id].key === 'book') {
+          p.inv.slots[p.inv.sel] = { id: item('enchanted_book'), count: 1, dmg: 0, ench: { [ek]: lvl } };
+        } else {
+          if (!held.ench) held.ench = {};
+          held.ench[ek] = lvl;
+        }
+        ui.message(`已为手持物品附加 [${Enchant.formatEnch(ek, lvl)}]`, '#55FF55');
+        break;
+      }
+      case 'locate': {
+        const target = (a[0] === 'structure' ? a[1] : a[0] || '').replace('minecraft:', '');
+        if (!target) return err('用法: /locate village|desert_pyramid|mineshaft');
+        if (typeof Structures === 'undefined') return err('结构生成器未加载');
+        const res = Structures.locateNearest(g.world, target, Math.floor(p.pos[0]), Math.floor(p.pos[2]));
+        if (!res) return err('未找到结构: ' + target + '（可用: village / desert_pyramid / mineshaft）');
+        ui.message(`最近的 ${res.cn} 位于 [${res.x}, ${res.y}, ${res.z}]（距离 ${res.dist} 格，可输入 /tp ${res.x} ${res.y} ${res.z} 传送）`, '#55FF55');
+        break;
+      }
       case 'gamemode': case 'gm': {
         const m = { creative: 'creative', c: 'creative', 1: 'creative', survival: 'survival', s: 'survival', 0: 'survival' }[a[0]];
         if (!m) return err('用法: /gamemode creative|survival');

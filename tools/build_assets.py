@@ -117,7 +117,8 @@ mud_bricks moss_block hay_block_side hay_block_top spruce_door_top spruce_door_b
 destroy_stage_0 destroy_stage_1 destroy_stage_2 destroy_stage_3 destroy_stage_4 destroy_stage_5 destroy_stage_6 destroy_stage_7 destroy_stage_8 destroy_stage_9
 bone_block_side bone_block_top magma netherrack glass_pane_top note_block jukebox_side jukebox_top
 dark_oak_planks jungle_planks acacia_planks cherry_planks mangrove_planks
-red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down'''.split()
+red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down
+redstone_dust_dot redstone_dust_line0 redstone_dust_line1 redstone_torch redstone_torch_off redstone_lamp redstone_lamp_on lever repeater repeater_on target_side target_top'''.split()
 
 ITEM_TEX = '''stick coal charcoal raw_iron iron_ingot raw_gold gold_ingot diamond flint apple bread wheat wheat_seeds
 porkchop cooked_porkchop beef cooked_beef mutton cooked_mutton chicken cooked_chicken rotten_flesh bone bone_meal
@@ -130,7 +131,7 @@ wooden_sword stone_sword iron_sword golden_sword diamond_sword
 wooden_hoe stone_hoe iron_hoe golden_hoe diamond_hoe
 oak_door spruce_door sugar paper book sugar_cane clay_ball brick egg melon_slice cookie golden_apple snowball
 iron_helmet iron_chestplate iron_leggings iron_boots diamond_helmet diamond_chestplate diamond_leggings diamond_boots
-leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone pumpkin_pie
+leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone repeater pumpkin_pie
 cooked_cod cod baked_potato potato carrot golden_carrot mushroom_stew bowl
 pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg'''.split()
 

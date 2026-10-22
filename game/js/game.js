@@ -1,13 +1,14 @@
 'use strict';
+
 // ---------------------------------------------------------------------------
 // Game: state, main loop, chunk streaming, interaction, rendering glue
 // ---------------------------------------------------------------------------
 const ADVANCEMENTS = {
   wood: ['获得木头', 'oak_log'], crafting_table: ['这是？工作台！', 'crafting_table'], pickaxe: ['采矿时间到！', 'wooden_pickaxe'],
   stone_pickaxe: ['获得升级', 'stone_pickaxe'], furnace: ['热腾腾的', 'furnace'], iron: ['来硬的', 'iron_ingot'],
-  diamond: ['钻石！', 'diamond'], bread: ['烤面包', 'bread'], kill: ['怪物猎人', 'iron_sword'], armor: ['整装上阵', 'iron_chestplate'],
+  diamond: ['钻石！', 'diamond'], redstone: ['红石工程师', 'redstone'], bread: ['烤面包', 'bread'], kill: ['怪物猎人', 'iron_sword'], armor: ['整装上阵', 'iron_chestplate'],
   tnt: ['轰隆隆！', 'tnt'], deep: ['深入地底', 'deepslate'], night: ['活过第一夜', 'torch'], build: ['建筑师', 'bricks'], farm: ['开始耕作', 'wheat'],
-  cook: ['美味佳肴', 'cooked_beef'], bow: ['狙击手', 'bow'], sleep: ['甜蜜的梦', 'red_bed'],
+  cook: ['美味佳肴', 'cooked_beef'], bow: ['狙击手', 'bow'], sleep: ['甜蜜的梦', 'red_bed'], enchant: ['附魔师', 'enchanting_table'],
 };
 
 const TUTORIAL = [
@@ -65,7 +66,10 @@ class Game {
       try {
         this.frame(dt, now);
         let n = 0;
-        while (acc >= 50 && n < 5) { this.tick(); acc -= 50; n++; }
+        while (acc >= 50 && n < 5) {
+          acc -= 50; n++;
+          try { this.tick(); } catch (te) { console.error(te); this.showError(te); }
+        }
         if (n === 5) acc = 0;
         this.render(acc / 50, now);
       } catch (e) { console.error(e); this.showError(e); }
@@ -163,37 +167,52 @@ class Game {
       const d = meta.player;
       p.pos = [...d.pos]; p.prev = [...d.pos]; p.yaw = d.yaw; p.pitch = d.pitch;
       p.health = d.health; p.food = d.food; p.saturation = d.sat; p.xp = d.xp || 0; p.flying = !!d.flying;
+      p.enchantSeed = d.enchantSeed || 1337;
       p.inv.slots = d.inv.map(s => s ? { ...s } : null); while (p.inv.slots.length < 40) p.inv.slots.push(null);
       p.inv.sel = d.sel || 0;
       p.air = 300;
     } else {
       p.needsGround = true;
+      p.enchantSeed = ((Math.random() * 0x7FFFFFFF) | 0) || 1337;
       if (this.mode === 'creative') this.giveCreativeKit();
     }
     for (const [k, v] of Object.entries(meta.blockEntities || {})) this.blockEntities.set(k, v);
     this.pendingMobs = meta.mobs || [];
+    this.spawnedChunks = new Set(meta.spawnedChunks || []);
     this.state = 'loading';
     this.loadStart = performance.now();
   }
   giveCreativeKit() {
     const inv = this.player.inv;
-    ['grass_block', 'stone', 'oak_planks', 'glass', 'oak_log', 'bricks', 'torch', 'tnt', 'water_bucket'].forEach((k, i) => inv.slots[i] = makeStack(k, k === 'water_bucket' ? 1 : 64));
+    ['grass_block', 'stone', 'oak_planks', 'redstone', 'redstone_torch', 'repeater', 'lever', 'redstone_lamp', 'tnt'].forEach((k, i) => inv.slots[i] = makeStack(k, 64));
   }
   async saveWorld(quiet) {
     if (!this.worldMeta || this.state !== 'play') return;
-    const w = this.world, p = this.player, list = [];
-    for (const ch of w.chunks.values()) if (ch.modified) { const rec = encodeChunk(ch); w.savedChunks.set(ckey(ch.cx, ch.cz), rec); list.push([ch.cx, ch.cz, rec]); ch.modified = false; }
-    for (const k of this.dirtySaved) { const rec = w.savedChunks.get(k); if (rec) { const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768; list.push([cx, cz, rec]); } }
-    this.dirtySaved.clear();
+    const w = this.world, p = this.player, list = [], modChunks = [];
+    for (const ch of w.chunks.values()) if (ch.modified) {
+      const rec = encodeChunk(ch);
+      w.savedChunks.set(ckey(ch.cx, ch.cz), rec);
+      list.push([ch.cx, ch.cz, rec]);
+      modChunks.push(ch);
+    }
+    const dirtyKeys = [...this.dirtySaved];
+    for (const k of dirtyKeys) {
+      const rec = w.savedChunks.get(k);
+      if (rec) { const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768; list.push([cx, cz, rec]); }
+    }
     const m = this.worldMeta;
     m.lastPlayed = Date.now(); m.time = this.worldTime; m.mode = this.mode; m.weather = this.weather; m.rainTarget = this.rainTarget;
     m.spawn = p.spawn; m.adv = this.adv; m.stats = this.stats; m.tutorial = this.tutorial;
-    m.player = { pos: [...p.pos], yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, inv: p.inv.slots, sel: p.inv.sel, flying: p.flying };
+    m.player = { pos: [...p.pos], yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, enchantSeed: p.enchantSeed || 1337, inv: p.inv.slots, sel: p.inv.sel, flying: p.flying };
     m.blockEntities = Object.fromEntries(this.blockEntities);
-    m.mobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead).map(e => ({ type: e.type, pos: [...e.pos], yaw: e.yaw, health: e.health, sheared: e.sheared, wool: e.woolColor, baby: e.baby ? e.growT : 0 }));
+    const activeMobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead).map(e => ({ type: e.type, pos: [...e.pos], yaw: e.yaw, health: e.health, sheared: e.sheared, wool: e.woolColor, baby: e.baby ? e.growT : 0 }));
+    m.mobs = [...(this.pendingMobs || []), ...activeMobs];
+    m.spawnedChunks = [...(this.spawnedChunks || [])];
     try {
       await DB.putChunks(m.id, list);
       await DB.putWorld(m);
+      for (const ch of modChunks) ch.modified = false;
+      for (const k of dirtyKeys) this.dirtySaved.delete(k);
       if (!quiet) this.ui.message('世界已保存', '#AAAAAA');
     } catch (e) { this.ui.message('保存失败: ' + e.message, '#FF5555'); }
   }
@@ -307,10 +326,24 @@ class Game {
           return true;
         });
       }
-      if (!saved && !(this.worldMeta && this.worldMeta.noAnimals)) this.spawnAnimals(ch);
+      const ck = ckey(cx, cz);
+      if (!saved && !(this.worldMeta && this.worldMeta.noAnimals) && (!this.spawnedChunks || !this.spawnedChunks.has(ck))) {
+        if (this.spawnedChunks) this.spawnedChunks.add(ck);
+        this.spawnAnimals(ch);
+      }
     }
   }
   spawnAnimals(ch) {
+    if (ch.village && !ch.villageSpawned) {
+      ch.villageSpawned = true;
+      const [vx, vy, vz] = ch.village.pos;
+      const offsets = [[-2, -2], [2, -2], [-2, 2], [2, 2]];
+      for (const [ox, oz] of offsets) {
+        const m = new Mob(this, 'villager', vx + ox + 0.5, vy, vz + oz + 0.5);
+        m.persistent = true;
+        this.entities.push(m);
+      }
+    }
     const r = RNG(hashStr('animals' + this.world.seed + ch.cx + ':' + ch.cz));
     if (r() > 0.1) return;
     const types = ['pig', 'cow', 'sheep', 'sheep', 'chicken'];
@@ -392,8 +425,10 @@ class Game {
     this.entities = this.entities.filter(e => !e.dead);
     this.particles.tick();
     this.world.tickScheduled();
+    Redstone.tickPressurePlates(this);
     this.world.randomTick(Math.floor(p.pos[0]), Math.floor(p.pos[2]), this.rng || (this.rng = RNG(12345)));
     this.tickFurnaces();
+    this.tickSpawners();
     if (this.tickCount % 20 === 0) this.spawnMobs();
     if (this.tutorial >= 0) {
       this.tutStat.moved += Math.hypot(p.pos[0] - p.prev[0], p.pos[2] - p.prev[2]);
@@ -410,7 +445,7 @@ class Game {
     const eb = this.world.getBlock(Math.floor(p.pos[0]), Math.floor(eyeY), Math.floor(p.pos[2]));
     this.headInWater = eb === WATER; this.headInLava = eb === LAVA;
     if (this.headInWater && Math.random() < 0.1) this.particles.spawn('bubble', p.pos[0] + (Math.random() - 0.5), eyeY - 0.5, p.pos[2] + (Math.random() - 0.5), 0, 0.05, 0);
-    // torch / lava ambient particles near player
+    // torch / lava / redstone ambient particles near player
     this.ambientParticles();
     Sound.listener = { x: p.pos[0], y: p.pos[1] + 1.6, z: p.pos[2], yaw: p.yaw };
   }
@@ -429,12 +464,101 @@ class Game {
       if (id === 21) {
         const m = w.getMeta(x, y, z);
         let fx = x + 0.5, fy = y + 0.7, fz = z + 0.5;
-        if (m) { fx += DIRS[m][0] * 0.27 * -1 + DIRS[m][0] * 0.38 * 0; fx = x + 0.5 + DIRS[m][0] * 0.38 - DIRS[m][0] * 0.32 * 0.6 * 1; fz = z + 0.5 + DIRS[m][2] * 0.38 - DIRS[m][2] * 0.32 * 0.6; fy = y + 0.92; }
+        if (m) { const sd = m === 6 ? 0 : (m & 7); fx = x + 0.5 + DIRS[sd][0] * 0.38 - DIRS[sd][0] * 0.32 * 0.6; fz = z + 0.5 + DIRS[sd][2] * 0.38 - DIRS[sd][2] * 0.32 * 0.6; fy = y + 0.92; }
         this.particles.spawn('flame', fx, fy, fz, 0, 0.002, 0).life = 12;
         this.particles.spawn('smoke', fx, fy + 0.05, fz, 0, 0.01, 0).size = 0.06;
+      } else if (id === 120) {
+        const m = w.getMeta(x, y, z);
+        let fx = x + 0.5, fy = y + 0.72, fz = z + 0.5;
+        if (m) { const sd = m === 6 ? 0 : (m & 7); fx = x + 0.5 + DIRS[sd][0] * 0.19; fz = z + 0.5 + DIRS[sd][2] * 0.19; fy = y + 0.9; }
+        this.particles.spawn('reddust', fx + (Math.random() - 0.5) * 0.1, fy, fz + (Math.random() - 0.5) * 0.1, 0, 0.004, 0, { col: [255, 25, 25] });
+      } else if (id === 119) {
+        const pw = w.getMeta(x, y, z) & 15;
+        if (pw > 0) {
+          const f = pw / 15;
+          this.particles.spawn('reddust', x + 0.2 + Math.random() * 0.6, y + 0.08, z + 0.2 + Math.random() * 0.6, 0, 0.005, 0, { col: [Math.round(110 + f * 145), Math.round(f * 30), 0] });
+        }
+      } else if (id === 122 && (w.getMeta(x, y, z) & 8)) {
+        this.particles.spawn('reddust', x + 0.5 + (Math.random() - 0.5) * 0.2, y + 0.5, z + 0.5 + (Math.random() - 0.5) * 0.2, 0, 0.004, 0, { col: [240, 20, 20] });
+      } else if (id === 156) {
+        this.particles.spawn('reddust', x + 0.5 + (Math.random() - 0.5) * 0.3, y + 0.35, z + 0.5 + (Math.random() - 0.5) * 0.3, 0, 0.004, 0, { col: [255, 30, 20] });
+      } else if (id === 182) {
+        this.particles.spawn('flame', x + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, z + 0.2 + Math.random() * 0.6, 0, 0.005, 0).life = 14;
+        this.particles.spawn('smoke', x + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, z + 0.2 + Math.random() * 0.6, 0, 0.01, 0).size = 0.07;
       } else if (id === LAVA && w.getBlock(x, y + 1, z) === 0 && Math.random() < 0.05) {
         this.particles.spawn('lava', x + Math.random(), y + 1, z + Math.random(), (Math.random() - 0.5) * 0.1, 0.25, (Math.random() - 0.5) * 0.1);
         if (Math.random() < 0.3) Sound.noise([x, y, z], { type: 'bandpass', freq: 400, q: 2, dur: 0.1, vol: 0.3 });
+      }
+    }
+    // Continuous flame & smoke particles for nearby monster spawners (ID 182) & enchanting tables (ID 185)
+    this.nearbySpawners = [];
+    this.nearbyEnchantTables = [];
+    const px = Math.floor(p.pos[0]), py = Math.floor(p.pos[1]), pz = Math.floor(p.pos[2]);
+    for (let dy = -6; dy <= 6; dy++) {
+      const y = py + dy;
+      if (y < 1 || y >= HEIGHT) continue;
+      for (let dz = -14; dz <= 14; dz++) {
+        for (let dx = -14; dx <= 14; dx++) {
+          const bid = w.getBlock(px + dx, y, pz + dz);
+          if (bid === 185) {
+            const tx = px + dx, tz = pz + dz;
+            this.nearbyEnchantTables.push([tx, y, tz]);
+            if (typeof Enchant !== 'undefined' && Math.random() < 0.45) {
+              const bs = Enchant.countBookshelves(w, tx, y, tz);
+              if (bs.positions.length) {
+                const [bx, by, bz] = bs.positions[(Math.random() * bs.positions.length) | 0];
+                const sx = bx + 0.5 + (Math.random() - 0.5) * 0.4, sy = by + 0.5 + Math.random() * 0.4, sz = bz + 0.5 + (Math.random() - 0.5) * 0.4;
+                this.particles.spawn('glint', sx, sy, sz, (tx + 0.5 - sx) * 0.05, (y + 0.9 - sy) * 0.05, (tz + 0.5 - sz) * 0.05);
+              }
+            }
+          }
+          if (bid === 182) {
+            const sx = px + dx, sz = pz + dz;
+            this.nearbySpawners.push([sx, y, sz]);
+            if (Math.random() < 0.65) {
+              this.particles.spawn('flame', sx + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, sz + 0.2 + Math.random() * 0.6, 0, 0.006, 0).life = 14;
+            }
+            if (Math.random() < 0.45) {
+              this.particles.spawn('smoke', sx + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, sz + 0.2 + Math.random() * 0.6, 0, 0.012, 0).size = 0.07;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  tickSpawners() {
+    if (this.tickCount % 80 !== 0) return; // check every 4 seconds
+    const list = this.nearbySpawners;
+    if (!list || !list.length) return;
+    const w = this.world;
+    for (const [sx, sy, sz] of list) {
+      if (w.getBlock(sx, sy, sz) !== 182) continue;
+      // Count existing spiders within 8 blocks of this spawner
+      let nearby = 0;
+      for (const e of this.entities) {
+        if (!e.dead && e instanceof Mob && e.type === 'spider' && Math.hypot(e.pos[0] - (sx + 0.5), e.pos[1] - sy, e.pos[2] - (sz + 0.5)) < 9) nearby++;
+      }
+      if (nearby >= 4) continue;
+      const toSpawn = 1 + (Math.random() < 0.4 ? 1 : 0);
+      let spawned = 0;
+      for (let attempt = 0; attempt < 12 && spawned < toSpawn; attempt++) {
+        const mx = sx + Math.floor((Math.random() - 0.5) * 7);
+        const my = sy + Math.floor(Math.random() * 3) - 1;
+        const mz = sz + Math.floor((Math.random() - 0.5) * 7);
+        if (my < 1 || my >= HEIGHT - 2) continue;
+        // Spider needs 2x1x2 air/cobweb space and solid ground within 2 blocks below
+        const b0 = w.getBlock(mx, my, mz), bAbove = w.getBlock(mx, my + 1, mz);
+        if ((b0 !== 0 && b0 !== 177) || (bAbove !== 0 && bAbove !== 177)) continue;
+        if (!BLOCKS[w.getBlock(mx, my - 1, mz)].solid && !BLOCKS[w.getBlock(mx, my - 2, mz)].solid) continue;
+        const mob = new Mob(this, 'spider', mx + 0.5, my, mz + 0.5);
+        if (mob.collides(mob.box())) continue;
+        this.entities.push(mob);
+        spawned++;
+        for (let k = 0; k < 12; k++) {
+          this.particles.spawn('flame', sx + 0.5 + (Math.random() - 0.5) * 0.6, sy + 0.5 + (Math.random() - 0.5) * 0.6, sz + 0.5 + (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.04, 0.02, (Math.random() - 0.5) * 0.04);
+          this.particles.spawn('poof', mx + 0.5 + (Math.random() - 0.5) * 0.8, my + 0.4 + Math.random() * 0.5, mz + 0.5 + (Math.random() - 0.5) * 0.8, 0, 0.02, 0);
+        }
       }
     }
   }
@@ -478,6 +602,14 @@ class Game {
   xpNeeded(l) { return l >= 30 ? 112 + (l - 30) * 9 : l >= 15 ? 37 + (l - 15) * 5 : 7 + l * 2; }
   xpTotalFor(l) { let t = 0; for (let i = 0; i < l; i++) t += this.xpNeeded(i); return t; }
   xpLevel() { let l = 0, t = 0, x = this.player.xp; while (t + this.xpNeeded(l) <= x) { t += this.xpNeeded(l); l++; } return l; }
+  deductXpLevels(n) {
+    if (n <= 0) return;
+    const curLvl = this.xpLevel();
+    const curNeed = this.xpNeeded(curLvl);
+    const frac = clamp((this.player.xp - this.xpTotalFor(curLvl)) / curNeed, 0, 0.999);
+    const newLvl = Math.max(0, curLvl - n);
+    this.player.xp = this.xpTotalFor(newLvl) + Math.floor(frac * this.xpNeeded(newLvl));
+  }
   addXp(n) {
     if (this.mode === 'creative' || n <= 0) return;
     const before = this.xpLevel();
@@ -497,15 +629,17 @@ class Game {
 
   // ---- hooks from world/entities ------------------------------------------------------------
   onBlockChanged(x, y, z, old, id, oldMeta) {
-    if (old === id) return;
-    const k = `${x},${y},${z}`;
-    const be = this.blockEntities.get(k);
-    if (be && id !== 52 && id !== 20 && id !== 117) {
-      const drops = be.type === 'chest' ? be.slots : [be.input, be.fuel, be.output];
-      for (const s of drops) if (s) this.dropItem(x + 0.5, y + 0.5, z + 0.5, { ...s });
-      this.blockEntities.delete(k);
-      if (this.ui.screen && this.ui.screen.be === be) this.ui.close();
+    if (old !== id) {
+      const k = `${x},${y},${z}`;
+      const be = this.blockEntities.get(k);
+      if (be && id !== 52 && id !== 20 && id !== 117) {
+        const drops = be.type === 'chest' ? be.slots : [be.input, be.fuel, be.output];
+        for (const s of drops) if (s) this.dropItem(x + 0.5, y + 0.5, z + 0.5, { ...s });
+        this.blockEntities.delete(k);
+        if (this.ui.screen && this.ui.screen.be === be) this.ui.close();
+      }
     }
+    Redstone.propagateFromSource(this, x, y, z);
   }
   onNeighborUpdate(x, y, z, id) {
     const w = this.world, b = BLOCKS[id];
@@ -519,15 +653,31 @@ class Game {
       return;
     }
     if (b.needsSupport || b.door) {
-      if (!this.supported(x, y, z, id, w.getMeta(x, y, z))) this.breakBlock(x, y, z, true);
+      if (!this.supported(x, y, z, id, w.getMeta(x, y, z))) { this.breakBlock(x, y, z, true); return; }
     }
+    Redstone.notifyRedstoneAt(this, x, y, z);
+  }
+  onScheduledTick(x, y, z, id) {
+    Redstone.onScheduledTick(this, x, y, z, id);
+    this.flushMesh();
   }
   supported(x, y, z, id, meta) {
     const w = this.world, below = w.getBlock(x, y - 1, z);
     const solidBelow = SOLIDCUBE[below] || (BLOCKS[below].slab && (w.getMeta(x, y - 1, z) & 3) !== 0) || BLOCKS[below].stairs && (w.getMeta(x, y - 1, z) & 4) === 0 || below === 63;
     const b = BLOCKS[id];
     switch (b.key) {
-      case 'torch': if (!meta) return solidBelow; return !!SOLIDCUBE[w.getBlock(x + DIRS[meta][0], y, z + DIRS[meta][2])];
+      case 'torch': case 'redstone_torch': case 'redstone_torch_off': {
+        if (!meta) return solidBelow;
+        const sd = meta === 6 ? 0 : (meta & 7);
+        return !!SOLIDCUBE[w.getBlock(x + DIRS[sd][0], y, z + DIRS[sd][2])];
+      }
+      case 'lever': case 'stone_button': case 'oak_button': {
+        const sd = meta & 7;
+        if (sd === 2) return solidBelow;
+        return !!SOLIDCUBE[w.getBlock(x + DIRS[sd][0], y + DIRS[sd][1], z + DIRS[sd][2])];
+      }
+      case 'redstone_wire': case 'stone_pressure_plate': case 'oak_pressure_plate': case 'repeater': case 'lit_repeater':
+        return solidBelow;
       case 'ladder': return !!SOLIDCUBE[w.getBlock(x + DIRS[meta][0], y, z + DIRS[meta][2])];
       case 'wheat': return below === 63;
       case 'sugar_cane': return below === 38 || below === 2 || below === 3 || below === 9 || below === 97;
@@ -730,16 +880,41 @@ class Game {
     }
     return true;
   }
-  fillLoot(be, x, y, z) {
-    const r = RNG(hashStr('loot' + this.world.seed + ':' + x + ':' + y + ':' + z));
-    const table = [['bread', 1, 3, 0.5], ['wheat', 1, 4, 0.5], ['iron_ingot', 1, 4, 0.55], ['gold_ingot', 1, 3, 0.35], ['coal', 3, 8, 0.5], ['string', 1, 4, 0.4],
-      ['bone', 2, 6, 0.5], ['rotten_flesh', 2, 5, 0.5], ['gunpowder', 1, 4, 0.4], ['diamond', 1, 2, 0.2], ['golden_apple', 1, 1, 0.12], ['bucket', 1, 1, 0.15],
-      ['iron_pickaxe', 1, 1, 0.08], ['apple', 1, 3, 0.3], ['redstone', 2, 6, 0.25], ['emerald', 1, 2, 0.12], ['wheat_seeds', 2, 5, 0.3], ['iron_chestplate', 1, 1, 0.06], ['bow', 1, 1, 0.1], ['arrow', 4, 12, 0.25]];
+  fillLoot(be, x, y, z, lootType = 0) {
+    const r = RNG(hashStr('loot' + this.world.seed + ':' + x + ':' + y + ':' + z + ':' + lootType));
+    const tables = [
+      // 0: Dungeon
+      [['bread', 1, 3, 0.5], ['wheat', 1, 4, 0.5], ['iron_ingot', 1, 4, 0.55], ['gold_ingot', 1, 3, 0.35], ['coal', 3, 8, 0.5], ['string', 1, 4, 0.4],
+       ['bone', 2, 6, 0.5], ['rotten_flesh', 2, 5, 0.5], ['gunpowder', 1, 4, 0.4], ['diamond', 1, 2, 0.2], ['golden_apple', 1, 1, 0.12], ['bucket', 1, 1, 0.15],
+       ['iron_pickaxe', 1, 1, 0.08], ['apple', 1, 3, 0.3], ['redstone', 2, 6, 0.25], ['emerald', 1, 2, 0.12], ['wheat_seeds', 2, 5, 0.3], ['iron_chestplate', 1, 1, 0.06], ['bow', 1, 1, 0.1], ['arrow', 4, 12, 0.25]],
+      // 1: Desert Pyramid (Minecraft Wiki desert_pyramid table)
+      [['bone', 4, 6, 0.7], ['rotten_flesh', 3, 7, 0.7], ['gunpowder', 2, 6, 0.6], ['sand', 2, 8, 0.55], ['string', 2, 6, 0.55],
+       ['gold_ingot', 2, 7, 0.45], ['iron_ingot', 1, 5, 0.4], ['emerald', 1, 3, 0.35], ['diamond', 1, 3, 0.25], ['golden_apple', 1, 1, 0.25],
+       ['leather', 1, 5, 0.3], ['tnt', 1, 2, 0.2], ['book', 1, 2, 0.25]],
+      // 2: Mineshaft (Minecraft Wiki mineshaft table)
+      [['rail', 4, 8, 0.78], ['torch', 4, 16, 0.66], ['coal', 3, 8, 0.5], ['iron_ingot', 1, 5, 0.45], ['gold_ingot', 1, 3, 0.28],
+       ['redstone', 4, 9, 0.35], ['lapis_lazuli', 4, 9, 0.35], ['bread', 1, 3, 0.45], ['golden_apple', 1, 1, 0.28],
+       ['iron_pickaxe', 1, 1, 0.22], ['diamond', 1, 2, 0.18], ['wheat_seeds', 2, 4, 0.35]],
+      // 3: Village Blacksmith / House (Minecraft Wiki village_weaponsmith & house tables)
+      [['bread', 1, 4, 0.65], ['apple', 1, 5, 0.55], ['iron_ingot', 1, 5, 0.6], ['gold_ingot', 1, 3, 0.3],
+       ['iron_pickaxe', 1, 1, 0.35], ['iron_sword', 1, 1, 0.35], ['iron_helmet', 1, 1, 0.25], ['iron_chestplate', 1, 1, 0.25],
+       ['iron_leggings', 1, 1, 0.25], ['iron_boots', 1, 1, 0.25], ['obsidian', 3, 7, 0.25], ['oak_sapling', 3, 7, 0.3],
+       ['emerald', 1, 4, 0.35], ['diamond', 1, 3, 0.22], ['baked_potato', 1, 4, 0.35], ['carrot', 1, 4, 0.35]],
+    ];
+    const table = tables[lootType] || tables[0];
     for (const [k, mn, mx, ch] of table) {
       if (r() > ch) continue;
       let slot = r.int(27); let guard = 0;
       while (be.slots[slot] && guard++ < 30) slot = r.int(27);
       be.slots[slot] = makeStack(k, mn + r.int(mx - mn + 1));
+    }
+    if (typeof Enchant !== 'undefined' && (lootType === 0 || lootType === 1 || lootType === 2)) {
+      const bookChance = lootType === 1 ? 0.65 : 0.45;
+      if (r() < bookChance) {
+        let slot = r.int(27); let guard = 0;
+        while (be.slots[slot] && guard++ < 30) slot = r.int(27);
+        be.slots[slot] = Enchant.randomLootBook(r);
+      }
     }
   }
   onSmeltTake(st, be) {
@@ -757,11 +932,13 @@ class Game {
     if (k === 'furnace') this.grant('furnace');
     if (k === 'bread') this.grant('bread');
     if (k === 'bow') this.grant('bow');
+    if (['redstone_torch', 'repeater', 'redstone_lamp', 'lever', 'target'].includes(k)) this.grant('redstone');
   }
   onPickup(id, n) {
     const k = ITEMS[id].key;
     if (k.endsWith('_log')) this.grant('wood');
     if (k === 'diamond') this.grant('diamond');
+    if (k === 'redstone') this.grant('redstone');
     if (k === 'wheat') this.grant('farm');
   }
   onMobKilled(m, src) {
@@ -796,7 +973,8 @@ class Game {
   // ---- items & drops ---------------------------------------------------------------------
   dropItem(x, y, z, stack, vel) {
     if (!stack || stack.count <= 0) return;
-    const e = new ItemEntity(this, x, y, z, { id: stack.id, count: stack.count, dmg: stack.dmg || 0 }, vel);
+    const cloned = typeof Enchant !== 'undefined' ? Enchant.cloneStack(stack) : { id: stack.id, count: stack.count, dmg: stack.dmg || 0 };
+    const e = new ItemEntity(this, x, y, z, cloned, vel);
     this.entities.push(e);
     return e;
   }
@@ -809,11 +987,41 @@ class Game {
   addEntity(e) { this.entities.push(e); }
   dropBlockLoot(x, y, z, id, meta, tool) {
     const b = BLOCKS[id];
+    const silk = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'silk_touch') : 0;
+    const fortune = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'fortune') : 0;
+    const SILK_SET = new Set(['stone', 'grass_block', 'coal_ore', 'deepslate_coal_ore', 'diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'emerald_ore', 'iron_ore', 'deepslate_iron_ore', 'gold_ore', 'deepslate_gold_ore', 'glass', 'ice', 'packed_ice', 'bookshelf', 'glowstone', 'sea_lantern', 'melon', 'clay', 'snow_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cobweb']);
     let drops;
-    if (tool && ITEMS[tool.id].key === 'shears' && (b.key.endsWith('leaves') || id === 39 || id === 40 || id === 45)) drops = [[id, 1]];
-    else if (b.drops) drops = b.drops(meta, Math.random, tool);
-    else if (!b.noItem) drops = [[id, 1]];
-    else drops = [];
+    if (tool && ITEMS[tool.id].key === 'shears' && (b.key.endsWith('leaves') || id === 39 || id === 40 || id === 45)) {
+      drops = [[id, 1]];
+    } else if (silk > 0 && (SILK_SET.has(b.key) || b.key.endsWith('_stained_glass')) && !b.noItem) {
+      drops = [[id, 1]];
+    } else if (id === 10 && fortune > 0) {
+      // Gravel with Fortune: 14% / 25% / 100% flint chance
+      const ch = fortune === 1 ? 0.14 : fortune === 2 ? 0.25 : 1.0;
+      drops = [[Math.random() < ch ? 'flint' : 'gravel', 1]];
+    } else if (b.drops) {
+      drops = b.drops(meta, Math.random, tool);
+      if (fortune > 0) {
+        const FORTUNE_MULT = new Set(['coal', 'diamond', 'emerald', 'lapis_lazuli', 'raw_iron', 'raw_gold']);
+        drops = drops.map(([k, n]) => {
+          if (FORTUNE_MULT.has(k)) {
+            const mult = 1 + Math.max(0, Math.floor(Math.random() * (fortune + 2)) - 1);
+            return [k, n * mult];
+          }
+          if (k === 'redstone' || k === 'wheat_seeds') {
+            return [k, n + Math.floor(Math.random() * (fortune + 1))];
+          }
+          if (k === 'melon_slice') {
+            return [k, Math.min(9, n + Math.floor(Math.random() * (fortune + 1)))];
+          }
+          return [k, n];
+        });
+      }
+    } else if (!b.noItem) {
+      drops = [[id, 1]];
+    } else {
+      drops = [];
+    }
     for (const [k, n] of drops) if (n > 0) this.dropItem(x + 0.5 + (Math.random() - 0.5) * 0.3, y + 0.3, z + 0.5 + (Math.random() - 0.5) * 0.3, makeStack(k, n));
   }
 
@@ -873,11 +1081,11 @@ class Game {
   lookDir() { const p = this.player, cp = Math.cos(p.pitch); return [-Math.sin(p.yaw) * cp, Math.sin(p.pitch), -Math.cos(p.yaw) * cp]; }
   selBoxes(x, y, z, id) {
     const b = BLOCKS[id], m = this.world.getMeta(x, y, z);
-    if (b.shape === SH_BOXES || b.shape === SH_MODEL) return b.boxes(m).map(a => a.map(v => v / 16));
+    if (b.shape === SH_BOXES || b.shape === SH_MODEL || b.shape === SH_WIRE) return b.boxes(m).map(a => a.map(v => v / 16));
     if (b.shape === SH_CROSS || b.shape === SH_CROP) return [[0.15, 0, 0.15, 0.85, b.key === 'wheat' ? 0.25 + (m & 7) / 10 : 0.8, 0.85]];
     if (b.shape === SH_TORCH) {
       if (!m) return [[0.4, 0, 0.4, 0.6, 0.6, 0.6]];
-      const D = DIRS[m]; const cx = 0.5 + D[0] * 0.35, cz = 0.5 + D[2] * 0.35;
+      const D = DIRS[m === 6 ? 0 : (m & 7)]; const cx = 0.5 + D[0] * 0.35, cz = 0.5 + D[2] * 0.35;
       return [[cx - 0.15, 0.2, cz - 0.15, cx + 0.15, 0.8, cz + 0.15]];
     }
     if (b.shape === SH_CACTUS) return [[1 / 16, 0, 1 / 16, 15 / 16, 1, 15 / 16]];
@@ -988,12 +1196,17 @@ class Game {
     if (def && def.tool) {
       const t = def.tool;
       if (t.type === b.tool) { speed = t.speed; if (t.level >= b.level) canHarvest = true; }
-      if (t.type === 'sword' && (b.key.endsWith('leaves') || b.key === 'cactus' || b.key === 'pumpkin' || b.key === 'melon')) speed = 1.5;
+      if (t.type === 'sword' && (b.key.endsWith('leaves') || b.key === 'cactus' || b.key === 'pumpkin' || b.key === 'melon' || b.key === 'cobweb')) speed = b.key === 'cobweb' ? 15 : 1.5;
     }
-    if (def && def.key === 'shears' && (b.key.endsWith('leaves') || b.key.endsWith('wool'))) { speed = b.key.endsWith('wool') ? 5 : 15; canHarvest = true; }
+    if (def && def.key === 'shears' && (b.key.endsWith('leaves') || b.key.endsWith('wool') || b.key === 'cobweb')) { speed = b.key.endsWith('wool') ? 5 : 15; canHarvest = true; }
     if (b.tool === 'shears') canHarvest = true;
+    if (speed > 1 && held && typeof Enchant !== 'undefined') {
+      const eff = Enchant.level(held, 'efficiency');
+      if (eff > 0) speed += eff * eff + 1;
+    }
     let s = speed / b.hardness / (canHarvest ? 30 : 100);
-    if (p.eyeInWater) s /= 5;
+    const aqua = typeof Enchant !== 'undefined' ? Enchant.maxArmorEnch(p.inv, 'aqua_affinity') : 0;
+    if (p.eyeInWater && aqua <= 0) s /= 5;
     if (!p.onGround && !p.flying) s /= 5;
     return s;
   }
@@ -1009,6 +1222,7 @@ class Game {
     if (!id || IS_FLUID[id]) return;
     const b = BLOCKS[id];
     const p = this.player, held = natural ? null : p.inv.held;
+    const silk = held && typeof Enchant !== 'undefined' ? Enchant.level(held, 'silk_touch') : 0;
     if (!silent) { Sound.block('break', b.sound, [x + 0.5, y + 0.5, z + 0.5]); this.particles.blockBreak(x, y, z, id, meta); }
     else this.particles.blockBreak(x, y, z, id, meta);
     if (this.mode !== 'creative' || natural) {
@@ -1016,8 +1230,8 @@ class Game {
       if (!natural) {
         p.exhaust(0.005);
         if (held && ITEMS[held.id].durability && b.hardness > 0) this.damageHeld(1);
-        const xp = { coal_ore: [0, 2], deepslate_coal_ore: [0, 2], diamond_ore: [3, 7], deepslate_diamond_ore: [3, 7], redstone_ore: [1, 5], lapis_ore: [2, 5], emerald_ore: [3, 7] }[b.key];
-        if (xp && this.canHarvest(id, held)) this.addXp(xp[0] + Math.floor(Math.random() * (xp[1] - xp[0] + 1)));
+        const xp = { coal_ore: [0, 2], deepslate_coal_ore: [0, 2], diamond_ore: [3, 7], deepslate_diamond_ore: [3, 7], redstone_ore: [1, 5], deepslate_redstone_ore: [1, 5], lapis_ore: [2, 5], emerald_ore: [3, 7] }[b.key];
+        if (xp && silk <= 0 && this.canHarvest(id, held)) this.addXp(xp[0] + Math.floor(Math.random() * (xp[1] - xp[0] + 1)));
         this.stats.mined++;
       }
     }
@@ -1028,16 +1242,17 @@ class Game {
       const ox = x + D2[0], oz = z + D2[2];
       if (w.getBlock(ox, y, oz) === id) { if ((meta & 4) && this.mode !== 'creative' && !natural) this.dropBlockLoot(ox, y, oz, id, 0, null); w.setBlock(ox, y, oz, 0, 0, 1); }
     }
-    // water fills in when breaking next to water? (handled by fluid ticks via notify)
     w.setBlock(x, y, z, 0, 0);
-    if (id === 35 && w.getBlock(x, y - 1, z) !== 0 && this.mode !== 'creative' && !natural) w.setBlock(x, y, z, WATER, 0);
+    if (id === 35 && w.getBlock(x, y - 1, z) !== 0 && this.mode !== 'creative' && !natural && silk <= 0) w.setBlock(x, y, z, WATER, 0);
     if (!natural) this.flushMesh();
   }
   damageHeld(n) {
     const p = this.player, h = p.inv.held;
     if (!h || this.mode === 'creative') return;
-    h.dmg = (h.dmg || 0) + n;
-    if (h.dmg >= ITEMS[h.id].durability) { p.inv.slots[p.inv.sel] = null; Sound.block('break', 'wood', p.pos); this.ui.actionBar = { text: ITEMS[h.id].cn + ' 损坏了', t: performance.now(), color: '#FF5555' }; }
+    const loss = typeof Enchant !== 'undefined' ? Enchant.rollDurabilityLoss(h, n, false) : n;
+    if (loss <= 0) return;
+    h.dmg = (h.dmg || 0) + loss;
+    if (h.dmg >= ITEMS[h.id].durability) { p.inv.slots[p.inv.sel] = null; Sound.block('break', 'wood', p.pos); this.ui.actionBar = { text: (h.name || ITEMS[h.id].cn) + ' 损坏了', t: performance.now(), color: '#FF5555' }; }
   }
   flushMesh() {
     // remesh dirty sections near the player immediately for responsive edits
@@ -1055,8 +1270,17 @@ class Game {
     let dmg = def && def.attack ? def.attack : 1;
     const crit = p.vel[1] < -0.05 && !p.onGround && !p.inWater;
     if (crit) { dmg *= 1.5; for (let i = 0; i < 12; i++) this.particles.spawn('crit', e.pos[0] + (Math.random() - 0.5) * e.w, e.pos[1] + Math.random() * e.h, e.pos[2] + (Math.random() - 0.5) * e.w, (Math.random() - 0.5) * 0.3, Math.random() * 0.3, (Math.random() - 0.5) * 0.3); }
-    const knock = p.sprinting ? 0.8 : 0.4;
-    if (e.hurt(dmg, { type: 'player', attacker: p, knockFrom: p.pos, knock, player: true })) {
+    const enchBonus = typeof Enchant !== 'undefined' ? Enchant.meleeBonus(held, e) : 0;
+    dmg += enchBonus;
+    if (enchBonus > 0) {
+      for (let i = 0; i < 10; i++) this.particles.spawn('enchant_hit', e.pos[0] + (Math.random() - 0.5) * e.w, e.pos[1] + Math.random() * e.h, e.pos[2] + (Math.random() - 0.5) * e.w, (Math.random() - 0.5) * 0.25, Math.random() * 0.25, (Math.random() - 0.5) * 0.25);
+    }
+    const kbLvl = typeof Enchant !== 'undefined' ? Enchant.level(held, 'knockback') : 0;
+    const knock = (p.sprinting ? 0.8 : 0.4) + kbLvl * 0.35;
+    const fireLvl = typeof Enchant !== 'undefined' ? Enchant.level(held, 'fire_aspect') : 0;
+    const looting = typeof Enchant !== 'undefined' ? Enchant.level(held, 'looting') : 0;
+    if (e.hurt(dmg, { type: 'player', attacker: p, knockFrom: p.pos, knock, player: true, looting })) {
+      if (fireLvl > 0) e.fire = Math.max(e.fire || 0, fireLvl * 80);
       if (def && def.durability) this.damageHeld(def.tool && def.tool.type === 'sword' ? 1 : 2);
       p.exhaust(0.1);
       if (p.sprinting) p.sprinting = false;
@@ -1082,14 +1306,21 @@ class Game {
     this.useCd = 4;
   }
   releaseBow() {
-    const p = this.player, t = p.useT;
+    const p = this.player, t = p.useT, held = p.inv.held;
     let f = t / 20; f = (f * f + f * 2) / 3; if (f > 1) f = 1;
     if (f < 0.1) return;
     const has = this.mode === 'creative' || p.inv.count(item('arrow')) > 0;
     if (!has) return;
-    if (this.mode !== 'creative') p.inv.remove(item('arrow'), 1);
+    const infLvl = typeof Enchant !== 'undefined' ? Enchant.level(held, 'infinity') : 0;
+    if (this.mode !== 'creative' && infLvl <= 0) p.inv.remove(item('arrow'), 1);
     const d = this.lookDir(), sp = f * 3;
     const a = new Arrow(this, p.pos[0] + d[0] * 0.3, p.pos[1] + p.eye() - 0.1, p.pos[2] + d[2] * 0.3, [d[0] * sp, d[1] * sp, d[2] * sp], p);
+    if (typeof Enchant !== 'undefined' && held) {
+      a.powerLvl = Enchant.level(held, 'power');
+      a.punchLvl = Enchant.level(held, 'punch');
+      if (Enchant.level(held, 'flame') > 0) a.flame = true;
+      if (infLvl > 0) a.noPickup = true;
+    }
     this.entities.push(a);
     Sound.bow(p.pos);
     this.damageHeld(1);
@@ -1128,17 +1359,57 @@ class Game {
       const b = BLOCKS[t.id];
       const [x, y, z] = t.pos;
       if (b.onUse === 'crafting') { this.ui.open(new CraftingScreen(this, 3)); return; }
+      if (b.onUse === 'enchanting') { this.ui.open(new EnchantingScreen(this, [x, y, z])); return; }
+      if (b.onUse === 'anvil') { this.ui.open(new AnvilScreen(this, [x, y, z])); return; }
       if (b.onUse === 'furnace') { this.ui.open(new FurnaceScreen(this, this.getBlockEntity(x, y, z, 'furnace'))); return; }
       if (b.onUse === 'chest') {
         const be = this.getBlockEntity(x, y, z, 'chest');
-        if (w.getMeta(x, y, z) & 8) { this.fillLoot(be, x, y, z); w.setMeta(x, y, z, w.getMeta(x, y, z) & 7); }
+        const cm = w.getMeta(x, y, z);
+        if (cm & 8) { this.fillLoot(be, x, y, z, (cm >> 4) & 3); w.setMeta(x, y, z, cm & 7); }
         this.ui.open(new ChestScreen(this, be)); Sound.door([x, y, z], true); return;
       }
-      if (b.onUse === 'note') { const m = (w.getMeta(x, y, z) + 1) % 25; w.setMeta(x, y, z, m); Sound.note([x, y, z], m); this.particles.spawn('note', x + 0.5, y + 1.2, z + 0.5, 0, 0.02, 0, { col: [255, Math.round(m * 10), Math.round(255 - m * 10)] }); p.swingT = 6; return; }
+      if (b.onUse === 'bell') {
+        Sound.note([x, y, z], 20); Sound.note([x, y, z], 8);
+        this.particles.spawn('note', x + 0.5, y + 1.2, z + 0.5, 0, 0.02, 0, { col: [255, 215, 40] });
+        p.swingT = 6; return;
+      }
+      if (b.onUse === 'note') {
+        const cur = w.getMeta(x, y, z), pitch = ((cur & 31) + 1) % 25;
+        w.setMeta(x, y, z, pitch | (cur & 32));
+        Sound.note([x, y, z], pitch);
+        this.particles.spawn('note', x + 0.5, y + 1.2, z + 0.5, 0, 0.02, 0, { col: [255, Math.round(pitch * 10), Math.round(255 - pitch * 10)] });
+        p.swingT = 6; return;
+      }
+      if (b.onUse === 'lever') {
+        const nm = w.getMeta(x, y, z) ^ 8;
+        w.setMeta(x, y, z, nm);
+        Sound.click();
+        Redstone.propagateFromSource(this, x, y, z);
+        p.swingT = 6; this.flushMesh(); return;
+      }
+      if (b.onUse === 'button') {
+        const cur = w.getMeta(x, y, z);
+        if (!(cur & 8)) {
+          w.setMeta(x, y, z, cur | 8);
+          Sound.click();
+          w.schedule(x, y, z, b.key === 'oak_button' ? 30 : 20);
+          Redstone.propagateFromSource(this, x, y, z);
+          this.flushMesh();
+        }
+        p.swingT = 6; return;
+      }
+      if (b.onUse === 'repeater') {
+        const cur = w.getMeta(x, y, z);
+        const delay = (((cur >> 2) & 3) + 1) & 3;
+        w.setMeta(x, y, z, (cur & 3) | (delay << 2));
+        Sound.click();
+        p.swingT = 6; this.flushMesh(); return;
+      }
       if (b.door) {
         const m = w.getMeta(x, y, z), base = (m & 8) ? y - 1 : y;
         const bm = w.getMeta(x, base, z) ^ 4;
-        w.setMeta(x, base, z, bm); w.setMeta(x, base + 1, z, bm | 8);
+        const tm = (bm | 8) | (w.getMeta(x, base + 1, z) & 16);
+        w.setMeta(x, base, z, bm); w.setMeta(x, base + 1, z, tm);
         Sound.door([x, y, z], !!(bm & 4)); p.swingT = 6; this.flushMesh(); return;
       }
       if (b.bed) { this.trySleep(x, y, z); p.swingT = 6; return; }
@@ -1178,8 +1449,11 @@ class Game {
     if (!t) return;
     const [x, y, z] = t.pos, D = DIRS[t.face];
     // tools acting on blocks
-    if (def.tool && def.tool.type === 'hoe' && (t.id === 2 || t.id === 3) && w.getBlock(x, y + 1, z) === 0) {
+    if (def.tool && def.tool.type === 'hoe' && (t.id === 2 || t.id === 3 || t.id === 181) && w.getBlock(x, y + 1, z) === 0) {
       w.setBlock(x, y, z, 63, 0); Sound.block('step', 'gravel', [x, y, z]); this.damageHeld(1); p.swingT = 6; this.flushMesh(); return;
+    }
+    if (def.tool && def.tool.type === 'shovel' && (t.id === 2 || t.id === 3) && w.getBlock(x, y + 1, z) === 0) {
+      w.setBlock(x, y, z, 181, 0); Sound.block('step', 'gravel', [x, y, z]); this.damageHeld(1); p.swingT = 6; this.flushMesh(); return;
     }
     if (def.key === 'bone_meal') {
       let ok = false;
@@ -1243,8 +1517,10 @@ class Game {
       if (t.face === 2 || (t.face !== 3 && fy > 0.5)) meta |= 4;
     }
     if (pb.trapdoor) { const fy = t.point[1] - Math.floor(t.point[1]); if (t.face === 2 || (t.face !== 3 && fy > 0.5)) meta |= 8; }
-    if (placeId === 21) { if (t.face === 2) return; meta = t.face === 3 ? 0 : OPP[t.face]; }
-    if (pb.ladder) { if (t.face < 2 && false) return; if (t.face === 2 || t.face === 3) return; meta = OPP[t.face]; }
+    if (placeId === 21 || placeId === 120) { if (t.face === 2) return; meta = t.face === 3 ? 0 : (OPP[t.face] === 0 ? 6 : OPP[t.face]); }
+    if (pb.lever || pb.button) { meta = OPP[t.face]; }
+    if (pb.repeater) { meta = { 4: 0, 1: 1, 5: 2, 0: 3 }[hdir]; }
+    if (pb.ladder) { if (t.face === 2 || t.face === 3) return; meta = OPP[t.face]; }
     if (pb.key.endsWith('leaves')) meta = 4;
     if (pb.bed) {
       const rot = { 4: 0, 1: 1, 5: 2, 0: 3 }[hdir];
@@ -1263,7 +1539,7 @@ class Game {
     if (pb.needsSupport || pb.door) { if (!this.supportedForPlace(px, py, pz, placeId, meta)) return; }
     // collision with entities
     if (pb.solid) {
-      const boxes = pb.shape === SH_BOXES ? pb.boxes(meta) : [[0, 0, 0, 16, 16, 16]];
+      const boxes = (pb.shape === SH_BOXES || pb.shape === SH_MODEL) ? pb.boxes(meta) : [[0, 0, 0, 16, 16, 16]];
       for (const e of [p, ...this.entities]) {
         if (!(e instanceof Living) || e.deathTime > 0) continue;
         const eb = e.box();
@@ -1283,7 +1559,7 @@ class Game {
     this.placeAt(px, py, pz, placeId, meta, held, false);
   }
   supportedForPlace(x, y, z, id, meta) {
-    const w = this.world, old = w.getBlock(x, y, z);
+    const w = this.world;
     if (BLOCKS[id].door) return !!SOLIDCUBE[w.getBlock(x, y - 1, z)];
     return this.supported(x, y, z, id, meta);
   }
@@ -1295,14 +1571,16 @@ class Game {
     p.swingT = 6;
     this.stats.placed++;
     if (this.stats.placed >= 100) this.grant('build');
+    if (BLOCKS[id].redstone) this.grant('redstone');
     if (BLOCKS[id].gravity) this.onNeighborUpdate(x, y, z, id);
+    Redstone.notifyRedstoneAt(this, x, y, z);
+    Redstone.propagateFromSource(this, x, y, z);
     this.flushMesh();
   }
   pickBlock() {
     const t = this.target; if (!t) return;
     let id = t.id;
-    const b = BLOCKS[id];
-    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 69: 'oak_door', 38: 'sugar_cane', 63: 3 };
+    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 69: 'oak_door', 38: 'sugar_cane', 63: 3, 119: 'redstone', 121: 120, 126: 125, 127: 'repeater', 156: 'repeater', 158: 80 };
     if (map[id] !== undefined) id = typeof map[id] === 'string' ? item(map[id]) : map[id];
     if (!ITEMS[id]) return;
     const inv = this.player.inv;
@@ -1392,7 +1670,6 @@ class Game {
     if (this.state === 'play' && this.perspective > 0) {
       const d = this.perspective === 1 ? 4 : -4;
       const look = [-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)];
-      const back = [-look[0] * d, -look[1] * d, -look[2] * d];
       let dist = Math.abs(d);
       const hit = this.raycast(eye, [Math.sign(d) * -look[0], Math.sign(d) * -look[1], Math.sign(d) * -look[2]], dist, false);
       if (hit) dist = Math.max(0.5, hit.t - 0.3);
@@ -1478,7 +1755,7 @@ class Game {
       const l = e.lightAt();
       if (e instanceof Mob || e === this.player) this.drawMob(e, ip, a, env, l);
       else if (e instanceof ItemEntity) {
-        const st = e.stack, def = ITEMS[st.id];
+        const st = e.stack;
         const t = (e.age + a) / 20;
         const bob = Math.sin(t * 2 + e.bobOff) * 0.1 + 0.1;
         const n = st.count > 16 ? 3 : st.count > 1 ? 2 : 1;
@@ -1505,6 +1782,46 @@ class Game {
         M4.scale(m, 0.7, 0.7, 0.7); M4.translate(m, -0.5, -0.5, 0);
         const lay = e.snowball ? ITEMS[e.snowball].tex : T('i_arrow');
         r.drawMesh(this.spriteMesh(lay), m, env, l);
+      }
+    }
+    // Render floating 3D open book above nearby Enchanting Tables (ID 185)
+    if (this.nearbyEnchantTables && this.nearbyEnchantTables.length && r.models.enchant_book) {
+      const t = this.tickCount + a;
+      for (const [tx, ty, tz] of this.nearbyEnchantTables) {
+        if (this.world.getBlock(tx, ty, tz) !== 185) continue;
+        const m = M4.create();
+        const bob = Math.sin(t * 0.1 + tx * 0.7 + tz * 1.3) * 0.05;
+        const dx = this.player.pos[0] - (tx + 0.5), dz = this.player.pos[2] - (tz + 0.5);
+        const dist = Math.hypot(dx, dz);
+        // Model front is -Z: atan2(-dx, -dz) rotates -Z to face directly toward the player (dx, dz)
+        const faceYaw = dist < 6.5 ? Math.atan2(-dx, -dz) : t * 0.04;
+        // foldAngle: 0 = 180 deg flat open; 0.24 rad (~14 deg) = ~152 deg wide open facing player; 1.15 rad = folded when far
+        const foldAngle = dist < 6.5 ? 0.24 : 1.15;
+        M4.translate(m, tx + 0.5, ty + 1.0 + bob, tz + 0.5);
+        M4.rotY(m, faceYaw);
+        M4.rotX(m, 0.65);
+        M4.scale(m, 0.8, 0.8, 0.8);
+        const l = this.world.getLight(tx, ty + 1, tz);
+        const flutter = Math.sin(t * 0.16) * 0.03;
+        const poses = {
+          cover_l: { ry: -foldAngle - flutter },
+          cover_r: { ry: foldAngle + flutter },
+          page_l: { ry: -foldAngle - 0.26 - Math.sin(t * 0.22) * 0.12 },
+          page_r: { ry: foldAngle + 0.26 + Math.cos(t * 0.22) * 0.12 },
+        };
+        r.drawModel('enchant_book', 'enchant_book', m, poses, [(l >> 4) / 15, Math.max(0.5, (l & 15) / 15)], env, {});
+      }
+    }
+    // Render spinning miniature spider inside nearby Monster Spawners (ID 182)
+    if (this.nearbySpawners && this.nearbySpawners.length) {
+      const spin = (this.tickCount + a) * 0.14;
+      for (const [sx, sy, sz] of this.nearbySpawners) {
+        if (this.world.getBlock(sx, sy, sz) !== 182) continue;
+        const m = M4.create();
+        M4.translate(m, sx + 0.5, sy + 0.25 + Math.sin(spin * 0.8) * 0.05, sz + 0.5);
+        M4.rotY(m, spin);
+        M4.scale(m, 0.36, 0.36, 0.36);
+        r.drawModel('spider', 'spider', m, {}, [1, 1], env, {});
       }
     }
   }
@@ -1561,7 +1878,7 @@ class Game {
     const swing = lerp(p.limbSwing - p.limbAmt, p.limbSwing, a) * 0.6662, amt = p.limbAmt;
     const l = Math.cos(swing) * 1.4 * amt, r = -l;
     const sw = p.swingT > 0 ? Math.sin((6 - p.swingT + a) / 6 * Math.PI) : 0;
-    return { head: { rx: p.pitch }, rarm: { rx: r * 0.7 - sw * 1.2 }, larm: { rx: l * 0.7 }, rleg: { rx: l }, lleg: { rx: r } };
+    return { head: { rx: p.pitch }, rarm: { rx: r * 0.7 + sw * 1.2 }, larm: { rx: l * 0.7 }, rleg: { rx: l }, lleg: { rx: r } };
   }
   blockMesh(id, meta) {
     if (!this._bm) this._bm = new Map();
@@ -1679,7 +1996,6 @@ class Game {
     const mb = r.miscBuf; mb.reset();
     const px = Math.floor(p.pos[0]), pz = Math.floor(p.pos[2]), py = p.pos[1];
     const t = (this.worldTime + a);
-    const layerRain = T('white');
     const v = [];
     for (let dx = -10; dx <= 10; dx++) for (let dz = -10; dz <= 10; dz++) {
       if (dx * dx + dz * dz > 100) continue;
@@ -1699,7 +2015,6 @@ class Game {
     gl.uniformMatrix4fv(T2.u.u_model, false, r.identity);
     const data = [];
     for (const [x, z, y0, y1, cold] of v) {
-      if (cold !== this._weatherCold) { }
       const cx = x + 0.5, cz = z + 0.5;
       const ddx = cx - p.pos[0], ddz = cz - p.pos[2], d = Math.hypot(ddx, ddz) || 1;
       const nx = -ddz / d * 0.5, nz = ddx / d * 0.5;

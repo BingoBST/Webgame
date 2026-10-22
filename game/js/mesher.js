@@ -51,6 +51,8 @@ const Mesher = {
   tints: new Uint8Array(18 * 18 * 6), // grass rgb + foliage rgb per padded column
   opaqueBuf: new MeshBuffer(65536),
   transBuf: new MeshBuffer(16384),
+  transBotBuf: new MeshBuffer(8192),
+  transTopBuf: new MeshBuffer(8192),
   P(x, y, z) { return ((y + 1) * 18 + (z + 1)) * 18 + (x + 1); },
 
   // Fill padded arrays for section (cx, sy, cz)
@@ -93,8 +95,8 @@ const Mesher = {
 
   build(world, cx, sy, cz) {
     this.gather(world, cx, sy, cz);
-    const ob = this.opaqueBuf, tb = this.transBuf;
-    ob.reset(); tb.reset();
+    const ob = this.opaqueBuf, tb = this.transBuf, tbb = this.transBotBuf, ttb = this.transTopBuf;
+    ob.reset(); tb.reset(); tbb.reset(); ttb.reset();
     const ids = this.ids;
     const ox = cx * 16, oy = sy * 16, oz = cz * 16;
     for (let y = 0; y < 16; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
@@ -102,7 +104,16 @@ const Mesher = {
       if (!id) continue;
       this.block(id, x, y, z, ox, oy, oz);
     }
-    return { opaque: ob.n ? ob.slice() : null, trans: tb.n ? tb.slice() : null, nOpaque: ob.n, nTrans: tb.n };
+    const nTrans = tb.n + tbb.n + ttb.n;
+    let trans = null;
+    if (nTrans) {
+      trans = new Uint8Array(nTrans * VSTRIDE);
+      let off = 0;
+      if (tb.n) { trans.set(tb.u8.subarray(0, tb.n * VSTRIDE), off); off += tb.n * VSTRIDE; }
+      if (tbb.n) { trans.set(tbb.u8.subarray(0, tbb.n * VSTRIDE), off); off += tbb.n * VSTRIDE; }
+      if (ttb.n) { trans.set(ttb.u8.subarray(0, ttb.n * VSTRIDE), off); }
+    }
+    return { opaque: ob.n ? ob.slice() : null, trans, nOpaque: ob.n, nTrans };
   },
 
   // Mesh a single block at local (0,0,0) with full light (icons, dropped items, held blocks)
@@ -134,6 +145,7 @@ const Mesher = {
       case SH_TORCH: this.torch(b, meta, x, y, z, ox, oy, oz); break;
       case SH_CACTUS: this.cactus(b, meta, x, y, z, ox, oy, oz); break;
       case SH_MODEL: this.modelShape(b, meta, x, y, z, ox, oy, oz, single); break;
+      case SH_WIRE: this.wire(b, meta, x, y, z, ox, oy, oz); break;
     }
   },
 
@@ -141,15 +153,16 @@ const Mesher = {
 
   cube(b, id, meta, x, y, z, ox, oy, oz, single) {
     const ids = this.ids, lights = this.lights;
-    const buf = b.render === 'translucent' ? this.transBuf : this.opaqueBuf;
+    const isTrans = b.render === 'translucent';
     let tint = b.tint ? this.tintOf(b, x, z) : null;
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], n = F.n;
       const nid = ids[this.P(x + n[0], y + n[1], z + n[2])];
       if (SOLIDCUBE[nid]) continue;
       if (b.cullSame && nid === id) continue;
-      if (b.render === 'translucent' && IS_FLUID[nid]) continue; // avoids order-dependent blending against water
-      if (b.render === 'translucent' && BLOCKS[nid].render === 'translucent' && SOLIDCUBE[nid] === 0 && nid !== 0 && BLOCKS[nid].shape === SH_CUBE && id !== 35) continue;
+      if (isTrans && IS_FLUID[nid] && id !== 35) continue;
+      if (isTrans && BLOCKS[nid].render === 'translucent' && SOLIDCUBE[nid] === 0 && nid !== 0 && BLOCKS[nid].shape === SH_CUBE && id !== 35) continue;
+      const buf = !isTrans ? this.opaqueBuf : (single ? this.transBuf : (f === 3 ? this.transTopBuf : (f === 2 ? this.transBotBuf : this.transBuf)));
       let layer = this.texOf(b, f, meta);
       let overlay = b.overlay[f];
       let r = 255, g = 255, bl = 255;
@@ -171,7 +184,7 @@ const Mesher = {
   },
 
   // Quad with smooth lighting + ambient occlusion
-  quadAO(buf, F, x, y, z, ox, oy, oz, layer, overlay, r, g, bl, f, rot, single) {
+  quadAO(buf, F, x, y, z, ox, oy, oz, layer, overlay, r, g, bl, f, rot, single, yMin = 0) {
     const ids = this.ids, lights = this.lights, n = F.n;
     const fx = x + n[0], fy = y + n[1], fz = z + n[2];
     const ao = [0, 0, 0, 0], sk = [0, 0, 0, 0], bk = [0, 0, 0, 0];
@@ -199,9 +212,10 @@ const Mesher = {
     const order = (ao[0] + ao[2] + (sk[0] + sk[2]) * 0.01 < ao[1] + ao[3] + (sk[1] + sk[3]) * 0.01) ? [1, 2, 3, 0] : [0, 1, 2, 3];
     for (const k of order) {
       const c = F.c[k];
-      let uv = F.uv(c[0], c[1], c[2]);
+      const cy = (yMin && c[1] === 0) ? yMin : c[1];
+      let uv = F.uv(c[0], cy, c[2]);
       if (rot) uv = [1 - uv[1], uv[0]];
-      buf.v(ox + x + c[0], oy + y + c[1], oz + z + c[2], uv[0], uv[1], layer, overlay, r, g, bl,
+      buf.v(ox + x + c[0], oy + y + cy, oz + z + c[2], uv[0], uv[1], layer, overlay, r, g, bl,
         Math.round(shade * AO_CURVE[ao[k]] * 255), Math.round(sk[k] * 17), Math.round(bk[k] * 17), anim);
     }
   },
@@ -247,8 +261,13 @@ const Mesher = {
   fluidHeight(id, x, y, z) {
     // height of fluid column at padded cell; -1 if not fluid
     const p = this.P(x, y, z);
-    if (this.ids[p] !== id) return SOLIDCUBE[this.ids[p]] ? -2 : -1;
-    if (this.ids[this.P(x, y + 1, z)] === id) return 1;
+    const cid = this.ids[p];
+    if (cid !== id) {
+      if (id === 7 && cid === 35) return 0.889;
+      return SOLIDCUBE[cid] ? -2 : -1;
+    }
+    const up = this.ids[this.P(x, y + 1, z)];
+    if (up === id || (id === 7 && up === 35)) return 1;
     const m = this.metas[p];
     if (m & 8) return 0.9;
     return m === 0 ? 0.889 : (8 - m) / 9;
@@ -266,12 +285,16 @@ const Mesher = {
   },
 
   liquid(b, id, meta, x, y, z, ox, oy, oz, single) {
-    const buf = b.render === 'translucent' ? this.transBuf : this.opaqueBuf;
+    const isTrans = b.render === 'translucent';
+    const sideBuf = !isTrans ? this.opaqueBuf : this.transBuf;
+    const botBuf = !isTrans ? this.opaqueBuf : (single ? this.transBuf : this.transBotBuf);
+    const topBuf = !isTrans ? this.opaqueBuf : (single ? this.transBuf : this.transTopBuf);
     const ids = this.ids, layer = b.tex[0], anim = ANIM_FRAMES[layer];
     const t = b.tint ? this.tintOf(b, x, z) : [255, 255, 255];
     const above = ids[this.P(x, y + 1, z)];
+    const covered = above === id || (id === 7 && above === 35);
     let h00, h10, h01, h11;
-    if (above === id || single) h00 = h10 = h01 = h11 = single ? 0.889 : 1;
+    if (covered || single) h00 = h10 = h01 = h11 = single ? 0.889 : 1;
     else {
       h00 = this.cornerHeight(id, x, y, z, 0, 0); h10 = this.cornerHeight(id, x, y, z, 1, 0);
       h01 = this.cornerHeight(id, x, y, z, 0, 1); h11 = this.cornerHeight(id, x, y, z, 1, 1);
@@ -281,17 +304,17 @@ const Mesher = {
     const own = this.lights[this.P(x, y, z)];
     const lmax = (a, c) => (Math.max(a >> 4, c >> 4) << 4) | Math.max(a & 15, c & 15);
     // top
-    if (above !== id) {
+    if (!covered) {
       const l = lmax(L(0, 1, 0), own);
       const e = 0.001;
-      this.quadFlat(buf, [[X, Y + h00 - e, Z, 0, 0], [X, Y + h01 - e, Z + 1, 0, 1], [X + 1, Y + h11 - e, Z + 1, 1, 1], [X + 1, Y + h10 - e, Z, 1, 0]], layer, 0, t[0], t[1], t[2], 1, l, anim);
-      if (b.render === 'translucent') // underside visible from below the surface
-        this.quadFlat(buf, [[X + 1, Y + h10 - e, Z, 1, 0], [X + 1, Y + h11 - e, Z + 1, 1, 1], [X, Y + h01 - e, Z + 1, 0, 1], [X, Y + h00 - e, Z, 0, 0]], layer, 0, t[0], t[1], t[2], 0.8, l, anim);
+      this.quadFlat(topBuf, [[X, Y + h00 - e, Z, 0, 0], [X, Y + h01 - e, Z + 1, 0, 1], [X + 1, Y + h11 - e, Z + 1, 1, 1], [X + 1, Y + h10 - e, Z, 1, 0]], layer, 0, t[0], t[1], t[2], 1, l, anim);
+      if (isTrans) // underside visible from below the surface
+        this.quadFlat(botBuf, [[X + 1, Y + h10 - e, Z, 1, 0], [X + 1, Y + h11 - e, Z + 1, 1, 1], [X, Y + h01 - e, Z + 1, 0, 1], [X, Y + h00 - e, Z, 0, 0]], layer, 0, t[0], t[1], t[2], 0.8, l, anim);
     }
     // bottom
     const below = ids[this.P(x, y - 1, z)];
     if (below !== id && !SOLIDCUBE[below]) {
-      this.quadFlat(buf, [[X, Y, Z, 0, 0], [X + 1, Y, Z, 1, 0], [X + 1, Y, Z + 1, 1, 1], [X, Y, Z + 1, 0, 1]], layer, 0, t[0], t[1], t[2], 0.5, lmax(L(0, -1, 0), own), anim);
+      this.quadFlat(botBuf, [[X, Y, Z, 0, 0], [X + 1, Y, Z, 1, 0], [X + 1, Y, Z + 1, 1, 1], [X, Y, Z + 1, 0, 1]], layer, 0, t[0], t[1], t[2], 0.5, lmax(L(0, -1, 0), own), anim);
     }
     // sides
     // [face, dx, dz, BL(x,z), BR(x,z), height at BR, height at BL]
@@ -303,9 +326,9 @@ const Mesher = {
     ];
     for (const [f, dx, dz, ax, az, bx, bz, hb, ha] of sides) {
       const nid = ids[this.P(x + dx, y, z + dz)];
-      if (nid === id || SOLIDCUBE[nid]) continue;
+      if (nid === id || SOLIDCUBE[nid] || (id === 7 && nid === 35)) continue;
       const q = [[ax, Y, az, 0, 1], [bx, Y, bz, 1, 1], [bx, Y + hb, bz, 1, 1 - hb], [ax, Y + ha, az, 0, 1 - ha]];
-      this.quadFlat(buf, q, layer, 0, t[0], t[1], t[2], FACE_SHADE[f], lmax(L(dx, 0, dz), own), anim);
+      this.quadFlat(sideBuf, q, layer, 0, t[0], t[1], t[2], FACE_SHADE[f], lmax(L(dx, 0, dz), own), anim);
     }
   },
 
@@ -314,8 +337,17 @@ const Mesher = {
     const ids = this.ids, lights = this.lights;
     const own = lights[this.P(x, y, z)];
     const tint = b.tint ? this.tintOf(b, x, z) : [255, 255, 255];
-    const list = b.boxes(meta);
-    for (const bx of list) {
+    let effMeta = meta;
+    if (b.fence) {
+      if (single) effMeta = 12;
+      else {
+        const conn = (nx, nz) => { const nid = ids[this.P(nx, y, nz)]; return SOLIDCUBE[nid] || (BLOCKS[nid] && BLOCKS[nid].fence); };
+        effMeta = (conn(x, z - 1) ? 1 : 0) | (conn(x, z + 1) ? 2 : 0) | (conn(x - 1, z) ? 4 : 0) | (conn(x + 1, z) ? 8 : 0);
+      }
+    }
+    const list = b.boxes(effMeta);
+    for (let bi = 0; bi < list.length; bi++) {
+      const bx = list[bi];
       const x0 = bx[0] / 16, y0 = bx[1] / 16, z0 = bx[2] / 16, x1 = bx[3] / 16, y1 = bx[4] / 16, z1 = bx[5] / 16;
       for (let f = 0; f < 6; f++) {
         const n = FACES[f].n;
@@ -330,7 +362,7 @@ const Mesher = {
         }
         if (b.slab && (meta & 3) === 2 && !onEdge) continue;
         if (single) light = 0xF0;
-        const layer = this.texOf(b, f, meta);
+        const layer = (b.lever && bi === 1) ? T((meta & 8) ? 'redstone_block' : 'oak_planks') : this.texOf(b, f, meta);
         const pts = FACES[f].c.map(c => {
           const px = c[0] ? x1 : x0, py = c[1] ? y1 : y0, pz = c[2] ? z1 : z0;
           const uv = FACES[f].uv(px, py, pz);
@@ -405,12 +437,15 @@ const Mesher = {
   },
 
   torch(b, meta, x, y, z, ox, oy, oz) {
-    const buf = this.opaqueBuf, light = 0xF0 | 14 | (this.lights[this.P(x, y, z)] & 0xF0);
+    const own = this.lights[this.P(x, y, z)];
+    const blkL = b.light > 0 ? Math.max(b.light, own & 15) : (own & 15);
+    const light = (own & 0xF0) | blkL;
+    const buf = this.opaqueBuf;
     const layer = b.tex[0];
     const X = ox + x + 0.5, Z = oz + z + 0.5;
     let bx = 0, bz = 0, by = 0, lean = 0, lx = 0, lz = 0;
     if (meta) {
-      const D = DIRS[meta];
+      const D = DIRS[meta === 6 ? 0 : (meta & 7)];
       bx = D[0] * 0.38; bz = D[2] * 0.38; by = 0.2; lean = 0.32; lx = -D[0]; lz = -D[2];
     }
     const Y = oy + y + by;
@@ -431,6 +466,95 @@ const Mesher = {
     this.quadFlat(buf, top, layer, 0, 255, 255, 255, 1, light);
     const bot = [[...P(-w, 0, -w), u0, 1], [...P(w, 0, -w), u1, 1], [...P(w, 0, w), u1, 14 / 16], [...P(-w, 0, w), u0, 14 / 16]];
     this.quadFlat(buf, bot, layer, 0, 255, 255, 255, 0.5, light);
+  },
+
+  wireConnects(id, meta, dir) {
+    if (!id) return false;
+    if (id === 119 || id === 110 || id === 120 || id === 121 || id === 122 || id === 123 || id === 159 || id === 124 || id === 169 || id === 157) return true;
+    if (id === 127 || id === 156) {
+      const outDir = [4, 1, 5, 0][meta & 3];
+      return dir === outDir || dir === OPP[outDir];
+    }
+    return false;
+  },
+
+  wire(b, meta, x, y, z, ox, oy, oz) {
+    const buf = this.opaqueBuf, ids = this.ids, metas = this.metas;
+    const own = this.lights[this.P(x, y, z)];
+    const p = meta & 15, f = p / 15;
+    const blkL = Math.max(own & 15, p > 0 ? Math.min(15, 5 + (p >> 1)) : 0);
+    const light = (own & 0xF0) | blkL;
+    // Tint for resource pack dust textures & solid core wire strip
+    const tr = Math.round(95 + f * 160), tg = p > 0 ? Math.round(f * f * 36) : 0, tb = 0;
+    const cr = Math.round(72 + f * 165), cg = p > 0 ? Math.round(f * f * 24) : 0, cb = 0;
+    const tDot = T('redstone_dust_dot'), tLine0 = T('redstone_dust_line0'), tLine1 = T('redstone_dust_line1'), tWhite = T('white');
+
+    const aboveSelf = ids[this.P(x, y + 1, z)];
+    const canClimb = !SOLIDCUBE[aboveSelf];
+    const checkDir = (dir) => {
+      const D = DIRS[dir], nx = x + D[0], nz = z + D[2];
+      const nid = ids[this.P(nx, y, nz)], nm = metas[this.P(nx, y, nz)];
+      if (this.wireConnects(nid, nm, dir)) return { conn: true, up: false };
+      if (canClimb && SOLIDCUBE[nid] && ids[this.P(nx, y + 1, nz)] === 119) return { conn: true, up: true };
+      if (!SOLIDCUBE[nid] && ids[this.P(nx, y - 1, nz)] === 119) return { conn: true, up: false };
+      return { conn: false, up: false };
+    };
+
+    const cW = checkDir(0), cE = checkDir(1), cN = checkDir(4), cS = checkDir(5);
+    let w = cW.conn, e = cE.conn, n = cN.conn, s = cS.conn;
+    if (n && !s && !w && !e) s = true;
+    else if (s && !n && !w && !e) n = true;
+    else if (w && !e && !n && !s) e = true;
+    else if (e && !w && !n && !s) w = true;
+
+    const X = ox + x, Y = oy + y + 0.015, Y2 = oy + y + 0.018, Z = oz + z;
+    const upQuad = (x0, z0, x1, z1, yH, u0, v0, u1, v1, lay, r, g, bl) => {
+      this.quadFlat(buf, [[X + x0, yH, Z + z0, u0, v0], [X + x0, yH, Z + z1, u0, v1], [X + x1, yH, Z + z1, u1, v1], [X + x1, yH, Z + z0, u1, v0]], lay, 0, r, g, bl, 1.0, light);
+    };
+    const c0 = 7 / 16, c1 = 9 / 16;
+    // Center hub + dot texture
+    upQuad(6.5 / 16, 6.5 / 16, 9.5 / 16, 9.5 / 16, Y, 0, 0, 1, 1, tWhite, cr, cg, cb);
+    if (!(n && s && !w && !e) && !(w && e && !n && !s)) {
+      upQuad(0, 0, 1, 1, Y2, 0, 0, 1, 1, tDot, tr, tg, tb);
+    }
+    if (n) {
+      upQuad(c0, 0, c1, 0.5, Y, 0, 0, 1, 1, tWhite, cr, cg, cb);
+      upQuad(0, 0, 1, 0.5, Y2, 0, 0, 1, 0.5, tLine0, tr, tg, tb);
+    }
+    if (s) {
+      upQuad(c0, 0.5, c1, 1, Y, 0, 0, 1, 1, tWhite, cr, cg, cb);
+      upQuad(0, 0.5, 1, 1, Y2, 0, 0.5, 1, 1, tLine0, tr, tg, tb);
+    }
+    if (w) {
+      upQuad(0, c0, 0.5, c1, Y, 0, 0, 1, 1, tWhite, cr, cg, cb);
+      this.quadFlat(buf, [[X, Y2, Z, 0, 0], [X, Y2, Z + 1, 1, 0], [X + 0.5, Y2, Z + 1, 1, 0.5], [X + 0.5, Y2, Z, 0, 0.5]], tLine1, 0, tr, tg, tb, 1.0, light);
+    }
+    if (e) {
+      upQuad(0.5, c0, 1, c1, Y, 0, 0, 1, 1, tWhite, cr, cg, cb);
+      this.quadFlat(buf, [[X + 0.5, Y2, Z, 0, 0.5], [X + 0.5, Y2, Z + 1, 1, 0.5], [X + 1, Y2, Z + 1, 1, 1], [X + 1, Y2, Z, 0, 1]], tLine1, 0, tr, tg, tb, 1.0, light);
+    }
+    // Vertical climbing segments on side walls
+    const Y0 = oy + y + 0.015, Y1 = oy + y + 1.015;
+    if (cW.up) {
+      const wx = X + 0.015, wx2 = X + 0.018;
+      this.quadFlat(buf, [[wx, Y0, Z + c1, 0, 1], [wx, Y0, Z + c0, 1, 1], [wx, Y1, Z + c0, 1, 0], [wx, Y1, Z + c1, 0, 0]], tWhite, 0, cr, cg, cb, 0.85, light);
+      this.quadFlat(buf, [[wx2, Y0, Z + 1, 0, 1], [wx2, Y0, Z, 1, 1], [wx2, Y1, Z, 1, 0], [wx2, Y1, Z + 1, 0, 0]], tLine0, 0, tr, tg, tb, 0.85, light);
+    }
+    if (cE.up) {
+      const ex = X + 0.985, ex2 = X + 0.982;
+      this.quadFlat(buf, [[ex, Y0, Z + c0, 0, 1], [ex, Y0, Z + c1, 1, 1], [ex, Y1, Z + c1, 1, 0], [ex, Y1, Z + c0, 0, 0]], tWhite, 0, cr, cg, cb, 0.85, light);
+      this.quadFlat(buf, [[ex2, Y0, Z, 0, 1], [ex2, Y0, Z + 1, 1, 1], [ex2, Y1, Z + 1, 1, 0], [ex2, Y1, Z, 0, 0]], tLine0, 0, tr, tg, tb, 0.85, light);
+    }
+    if (cN.up) {
+      const nz = Z + 0.015, nz2 = Z + 0.018;
+      this.quadFlat(buf, [[X + c0, Y0, nz, 0, 1], [X + c1, Y0, nz, 1, 1], [X + c1, Y1, nz, 1, 0], [X + c0, Y1, nz, 0, 0]], tWhite, 0, cr, cg, cb, 0.85, light);
+      this.quadFlat(buf, [[X, Y0, nz2, 0, 1], [X + 1, Y0, nz2, 1, 1], [X + 1, Y1, nz2, 1, 0], [X, Y1, nz2, 0, 0]], tLine0, 0, tr, tg, tb, 0.85, light);
+    }
+    if (cS.up) {
+      const sz = Z + 0.985, sz2 = Z + 0.982;
+      this.quadFlat(buf, [[X + c1, Y0, sz, 0, 1], [X + c0, Y0, sz, 1, 1], [X + c0, Y1, sz, 1, 0], [X + c1, Y1, sz, 0, 0]], tWhite, 0, cr, cg, cb, 0.85, light);
+      this.quadFlat(buf, [[X + 1, Y0, sz2, 0, 1], [X, Y0, sz2, 1, 1], [X, Y1, sz2, 1, 0], [X + 1, Y1, sz2, 0, 0]], tLine0, 0, tr, tg, tb, 0.85, light);
+    }
   },
 };
 

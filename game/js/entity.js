@@ -165,13 +165,16 @@ class Living extends Entity {
     this.updateFluids();
     if (this.inLava) { this.hurt(4, { type: 'lava' }); this.fire = 300; }
     if (this.fire > 0) {
-      this.fire--;
+      const fp = (this.inv && typeof Enchant !== 'undefined') ? Enchant.maxArmorEnch(this.inv, 'fire_protection') : 0;
+      this.fire -= (fp > 0 && Math.random() < fp * 0.15) ? 2 : 1;
+      if (this.fire < 0) this.fire = 0;
       if (this.inWater) this.fire = 0;
-      else if (this.fire % 20 === 0) this.hurt(1, { type: 'fire' });
+      else if (this.fire > 0 && this.fire % 20 === 0) this.hurt(1, { type: 'fire' });
       if (Math.random() < 0.3) this.game.particles.spawn('flame', this.pos[0] + (Math.random() - 0.5) * this.w, this.pos[1] + Math.random() * this.h, this.pos[2] + (Math.random() - 0.5) * this.w, 0, 0.02, 0);
     }
     if (this.eyeInWater && !this.waterBreather) {
-      this.air--;
+      const resp = (this.inv && typeof Enchant !== 'undefined') ? Enchant.maxArmorEnch(this.inv, 'respiration') : 0;
+      if (resp <= 0 || Math.random() < 1 / (resp + 1)) this.air--;
       if (this.air <= -20) { this.air = 0; this.hurt(2, { type: 'drown' }); }
     } else this.air = Math.min(300, this.air + 4);
     // contact damage (cactus, magma)
@@ -202,7 +205,10 @@ class Living extends Entity {
       const drag = this.inWater ? 0.8 : 0.5;
       this.accel(fwd, strafe, 0.02 * (this.waterSpeed || 1));
       if (jump) v[1] += 0.04;
-      this.move(v[0], v[1], v[2]);
+      const inWeb = this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + 0.1), Math.floor(this.pos[2])) === 177 ||
+                  this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + this.h * 0.6), Math.floor(this.pos[2])) === 177;
+    if (inWeb) { v[0] *= 0.25; v[1] = Math.max(-0.05, v[1] * 0.15); v[2] *= 0.25; this.fallDist = 0; }
+    this.move(v[0], v[1], v[2]);
       v[0] *= drag; v[1] *= drag; v[2] *= drag;
       v[1] -= 0.02;
       if (this.collidedH && jump) {
@@ -255,6 +261,20 @@ class Living extends Entity {
 class Inventory {
   constructor() { this.slots = new Array(40).fill(null); this.sel = 0; }
   get held() { return this.slots[this.sel]; }
+  canFit(stack) {
+    if (!stack) return true;
+    let n = stack.count;
+    const ms = maxStack(stack.id);
+    for (let i = 0; i < 36; i++) {
+      const s = this.slots[i];
+      if (!s) { n -= ms; if (n <= 0) return true; }
+      else if (s.id === stack.id && s.count < ms && !ITEMS[s.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(s, stack))) {
+        n -= (ms - s.count);
+        if (n <= 0) return true;
+      }
+    }
+    return n <= 0;
+  }
   add(stack) {
     if (!stack) return 0;
     let n = stack.count;
@@ -263,10 +283,10 @@ class Inventory {
     for (let i = 0; i < 36; i++) order.push(i);
     for (const i of order) {
       const s = this.slots[i];
-      if (s && s.id === stack.id && s.count < ms && !ITEMS[s.id].durability) { const k = Math.min(n, ms - s.count); s.count += k; n -= k; if (!n) return 0; }
+      if (s && s.id === stack.id && s.count < ms && !ITEMS[s.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(s, stack))) { const k = Math.min(n, ms - s.count); s.count += k; n -= k; if (!n) return 0; }
     }
     for (const i of order) {
-      if (!this.slots[i]) { const k = Math.min(n, ms); this.slots[i] = { id: stack.id, count: k, dmg: stack.dmg || 0 }; n -= k; if (!n) return 0; }
+      if (!this.slots[i]) { const k = Math.min(n, ms); this.slots[i] = typeof Enchant !== 'undefined' ? Enchant.cloneStack(stack, k) : { id: stack.id, count: k, dmg: stack.dmg || 0 }; n -= k; if (!n) return 0; }
     }
     return n;
   }
@@ -305,12 +325,34 @@ class Player extends Living {
   eye() { return this.sneaking && !this.flying ? 1.27 : 1.62; }
   reduceDamage(a, src) {
     if (this.creative && src && src.type !== 'void') return 0;
-    if (src && ['fall', 'drown', 'starve', 'void', 'fire'].includes(src.type)) return a;
-    const armor = this.inv.armorPoints();
-    if (armor) {
-      for (let i = 36; i < 40; i++) { const s = this.inv.slots[i]; if (s) { s.dmg = (s.dmg || 0) + 1; if (s.dmg >= ITEMS[s.id].durability) { this.inv.slots[i] = null; Sound.block('break', 'metal', this.pos); } } }
+    const type = src && src.type;
+    if (type === 'drown' || type === 'starve' || type === 'void') return a;
+    let dmg = a;
+    if (type !== 'fall' && type !== 'fire') {
+      const armor = this.inv.armorPoints();
+      if (armor) {
+        for (let i = 36; i < 40; i++) {
+          const s = this.inv.slots[i];
+          if (!s) continue;
+          const loss = typeof Enchant !== 'undefined' ? Enchant.rollDurabilityLoss(s, 1, true) : 1;
+          s.dmg = (s.dmg || 0) + loss;
+          // Thorns reflection
+          if (typeof Enchant !== 'undefined' && s.ench && s.ench.thorns && src && src.attacker && src.attacker instanceof Living && src.attacker !== this) {
+            if (Math.random() < 0.15 * s.ench.thorns) {
+              src.attacker.hurt(1 + Math.floor(Math.random() * 4), { type: 'thorns', attacker: this });
+              s.dmg += 2;
+            }
+          }
+          if (s.dmg >= ITEMS[s.id].durability) { this.inv.slots[i] = null; Sound.block('break', 'metal', this.pos); }
+        }
+      }
+      dmg *= (1 - Math.min(20, armor) / 25);
     }
-    return a * (1 - Math.min(20, armor) / 25);
+    if (typeof Enchant !== 'undefined') {
+      const epf = Enchant.armorEPF(this.inv, src);
+      if (epf > 0) dmg *= (1 - epf * 0.04);
+    }
+    return dmg;
   }
   hurt(a, src) {
     if (this.creative && (!src || src.type !== 'void')) return false;
@@ -343,6 +385,7 @@ class Player extends Living {
     if (this.sneaking) { fwd *= 0.3; str *= 0.3; }
     if (this.useT > 0 && this.usingItem) { fwd *= 0.2; str *= 0.2; }
     this.airSpeed = this.sprinting ? 0.026 : 0.02;
+    this.waterSpeed = 1 + (typeof Enchant !== 'undefined' ? Enchant.maxArmorEnch(this.inv, 'depth_strider') * 0.65 : 0);
     this.slowFall = false;
     if (this.flying) {
       const v = this.vel;
@@ -411,6 +454,7 @@ const MOB_TYPES = {
   skeleton: { cn: '骷髅', hp: 20, w: 0.6, h: 1.99, speed: 0.25, model: 'skeleton', hostile: true, burns: true, ranged: true, drops: [['bone', 0, 2], ['arrow', 0, 2]], scale: 0.9375 },
   creeper: { cn: '苦力怕', hp: 20, w: 0.6, h: 1.7, speed: 0.25, model: 'creeper', hostile: true, drops: [['gunpowder', 0, 2]], scale: 1 },
   spider: { cn: '蜘蛛', hp: 16, w: 1.4, h: 0.9, speed: 0.3, model: 'spider', hostile: true, attack: 2, climbs: true, drops: [['string', 0, 2]], scale: 1 },
+  villager: { cn: '村民', hp: 20, w: 0.6, h: 1.95, speed: 0.22, model: 'villager', passive: true, drops: [], scale: 0.9375 },
 };
 
 class Mob extends Living {
@@ -442,8 +486,10 @@ class Mob extends Living {
     super.die(src);
     if (src && (src.attacker === this.game.player || src.player)) this.game.stats.kills++;
     const r = Math.random;
+    const looting = (src && src.looting) || 0;
     if (!this.baby) for (const [k, mn, mx, cooked] of this.T.drops) {
-      const n = mn + Math.floor(r() * (mx - mn + 1));
+      const bonus = looting > 0 ? Math.floor(r() * (looting + 1)) : 0;
+      const n = mn + Math.floor(r() * (mx - mn + 1)) + bonus;
       if (n > 0) this.game.dropItem(this.pos[0], this.pos[1] + 0.5, this.pos[2], makeStack(this.fire > 0 && cooked ? cooked : k, n));
     }
     if (this.type === 'sheep' && !this.sheared) this.game.dropItem(this.pos[0], this.pos[1] + 0.5, this.pos[2], makeStack(128 + this.woolColor, 1));
@@ -618,12 +664,14 @@ class Mob extends Living {
     const P = { head: { ry: this.headYaw, rx: this.pitch } };
     switch (this.T.model) {
       case 'zombie': case 'skeleton': {
-        const raise = this.type === 'zombie' ? -Math.PI / 2 : (this.target ? -Math.PI / 2 : 0);
-        P.rarm = { rx: raise + (this.type === 'zombie' ? 0 : r * 0.5) - (this.swingT > 0 ? Math.sin(this.swingT / 6 * Math.PI) * 0.6 : 0) };
-        P.larm = { rx: raise + (this.type === 'zombie' ? 0 : l * 0.5) };
+        const raise = this.type === 'zombie' ? Math.PI / 2 : (this.target ? Math.PI / 2 : 0);
+        const atk = this.swingT > 0 ? Math.sin(this.swingT / 6 * Math.PI) * 0.6 : 0;
+        P.rarm = { rx: raise + (this.type === 'zombie' ? 0 : r * 0.5) + atk };
+        P.larm = { rx: raise + (this.type === 'zombie' ? 0 : l * 0.5) + (this.type === 'zombie' ? atk : 0) };
         P.rleg = { rx: l }; P.lleg = { rx: r };
         break;
       }
+      case 'villager': P.rleg = { rx: l }; P.lleg = { rx: r }; break;
       case 'creeper': P.leg0 = { rx: l }; P.leg1 = { rx: r }; P.leg2 = { rx: r }; P.leg3 = { rx: l }; break;
       case 'chicken': {
         P.leg0 = { rx: l }; P.leg1 = { rx: r };
@@ -675,7 +723,7 @@ class ItemEntity extends Entity {
     // merge
     if (this.age % 20 === 0) {
       for (const e of this.game.entities) {
-        if (e === this || !(e instanceof ItemEntity) || e.dead || e.stack.id !== this.stack.id || ITEMS[e.stack.id].durability) continue;
+        if (e === this || !(e instanceof ItemEntity) || e.dead || e.stack.id !== this.stack.id || ITEMS[e.stack.id].durability || (typeof Enchant !== 'undefined' && !Enchant.sameStackMeta(e.stack, this.stack))) continue;
         if (this.distTo(e) < 1.2 && this.stack.count + e.stack.count <= maxStack(this.stack.id)) { this.stack.count += e.stack.count; e.dead = true; }
       }
     }
@@ -749,7 +797,7 @@ class Arrow extends Entity {
     if (this.stuck) {
       if (++this.life > 1200) this.dead = true;
       if (this.world.getBlock(...this.stuckAt) === 0) { this.stuck = false; }
-      if (this.fromPlayer && this.age > 10) {
+      if (this.fromPlayer && !this.noPickup && this.age > 10) {
         const p = this.game.player;
         if (this.distTo(p) < 1.5 && p.inv.add(makeStack('arrow', 1)) === 0) { this.dead = true; Sound.pop(this.pos); }
       }
@@ -764,25 +812,46 @@ class Arrow extends Entity {
         if (e === this.shooter || !(e instanceof Living) || e.deathTime > 0 || (this.age < 3 && e === this.shooter)) continue;
         const b = e.box();
         if (nx > b[0] - 0.15 && nx < b[3] + 0.15 && ny > b[1] && ny < b[4] && nz > b[2] - 0.15 && nz < b[5] + 0.15) {
-          const dmg = this.snowball ? 0 : Math.ceil(Math.hypot(v[0], v[1], v[2]) * 2);
+          let dmg = this.snowball ? 0 : Math.ceil(Math.hypot(v[0], v[1], v[2]) * 2);
+          if (!this.snowball && this.powerLvl > 0) dmg = Math.ceil(dmg * (1 + 0.25 * (this.powerLvl + 1)));
           if (this.snowball) { this.breakSnowball(); }
-          e.hurt(dmg, { type: 'arrow', attacker: this.shooter, knockFrom: [this.pos[0] - v[0], 0, this.pos[2] - v[2]], knock: 0.3, player: this.fromPlayer });
+          if (this.flame) e.fire = Math.max(e.fire || 0, 100);
+          const knock = 0.3 + (this.punchLvl || 0) * 0.35;
+          e.hurt(dmg, { type: 'arrow', attacker: this.shooter, knockFrom: [this.pos[0] - v[0], 0, this.pos[2] - v[2]], knock, player: this.fromPlayer });
           Sound.arrowHit(this.pos);
           this.dead = true; return;
         }
       }
       const bx = Math.floor(nx), by = Math.floor(ny), bz = Math.floor(nz);
       const id = this.world.getBlock(bx, by, bz);
-      if (id && BLOCKS[id].solid) {
+      if (id && (BLOCKS[id].solid || id === 159)) {
+        if (id === 157) {
+          this.world.setMeta(bx, by, bz, 15);
+          this.world.schedule(bx, by, bz, 10);
+          Redstone.propagateFromSource(this.game, bx, by, bz);
+          this.game.flushMesh();
+        } else if (id === 159) {
+          const m = this.world.getMeta(bx, by, bz);
+          if (!(m & 8)) {
+            this.world.setMeta(bx, by, bz, m | 8);
+            Sound.click();
+            this.world.schedule(bx, by, bz, 30);
+            Redstone.propagateFromSource(this.game, bx, by, bz);
+            this.game.flushMesh();
+          }
+        }
         if (this.snowball) { this.breakSnowball(); this.dead = true; return; }
         this.stuck = true; this.stuckAt = [bx, by, bz];
-        if (id === 26 && this.shooter && this.shooter.fire > 0) { }
         Sound.arrowHit(this.pos);
         return;
       }
       this.pos[0] = nx; this.pos[1] = ny; this.pos[2] = nz;
     }
+    if (this.flame && !this.inWater && Math.random() < 0.6) {
+      this.game.particles.spawn('flame', this.pos[0], this.pos[1], this.pos[2], 0, 0.01, 0);
+    }
     this.updateFluids();
+    if (this.inWater) this.flame = false;
     const drag = this.inWater ? 0.6 : 0.99;
     v[0] *= drag; v[1] = v[1] * drag - 0.05; v[2] *= drag;
     this.updateRot();
@@ -810,12 +879,14 @@ class Particles {
       }
       case 'smoke': p.frames = 12; p.base = T('p_big_smoke_0'); p.life = 20 + r() * 20; p.size = 0.15 + r() * 0.15; p.grav = -0.002; p.col = [80, 80, 80]; break;
       case 'poof': p.frames = 8; p.base = T('p_generic_0'); p.life = 16 + r() * 8; p.size = 0.15 + r() * 0.1; p.col = [230, 230, 230]; p.reverse = true; break;
+      case 'reddust': p.frames = 8; p.base = T('p_generic_0'); p.life = 10 + r() * 10; p.size = 0.05 + r() * 0.03; p.col = (extra && extra.col) || [235, 25, 25]; p.reverse = true; p.bright = true; break;
       case 'explosion': p.frames = 16; p.base = T('p_explosion_0'); p.life = 8 + r() * 8; p.size = 1 + r() * 0.8; p.bright = true; break;
       case 'flame': p.layer = T('p_flame'); p.life = 10 + r() * 10; p.size = 0.06 + r() * 0.04; p.bright = true; break;
       case 'lava': p.layer = T('p_lava'); p.life = 30; p.size = 0.08; p.grav = 0.04; p.bright = true; break;
       case 'splash': p.layer = T('p_splash_' + (r() * 4 | 0)); p.life = 10; p.size = 0.08; p.grav = 0.04; p.col = [80, 120, 230]; break;
       case 'bubble': p.layer = T('p_bubble'); p.life = 20 + r() * 20; p.size = 0.05; p.grav = -0.01; break;
       case 'crit': p.layer = T('p_critical_hit'); p.life = 12; p.size = 0.08; p.grav = 0.02; p.bright = true; break;
+      case 'enchant_hit': p.layer = T('p_enchanted_hit'); p.life = 14; p.size = 0.09; p.grav = 0.02; p.bright = true; p.col = [160, 220, 255]; break;
       case 'heart': p.layer = T('p_heart'); p.life = 20; p.size = 0.15; p.grav = -0.005; p.bright = true; break;
       case 'note': p.layer = T('p_note'); p.life = 20; p.size = 0.15; p.bright = true; p.col = extra.col; break;
       case 'damage': p.layer = T('p_damage'); p.life = 15; p.size = 0.1; p.grav = 0.02; break;
