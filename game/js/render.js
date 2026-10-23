@@ -17,7 +17,7 @@ void main(){
   gl_Position = u_vp * wp;
   v_uv = a_uv;
   uint layer = a_tex.x;
-  if (a_anim > 0u) layer += uint(floor(u_tick / 2.0)) % a_anim;
+  if (a_anim > 0u) layer += uint(floor(u_tick / (a_anim <= 4u ? 12.0 : 2.0))) % a_anim;
   v_layer = layer; v_overlay = a_tex.y;
   v_col = a_col;
   v_light = u_lightOv.z > 0.5 ? u_lightOv.xy : a_light;
@@ -222,8 +222,9 @@ class Renderer {
     // ---- 2D images
     this.images = {};
     for (const k in ASSETS.images) this.images[k] = await loadImage(ASSETS.images[k]);
-    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'villager', 'enchant_book', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
-      this.entityTex[k] = this.tex2D(this.images[k], k === 'rain' || k === 'snowfall');
+    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'armor_leather_1', 'armor_leather_2', 'armor_iron_1', 'armor_iron_2', 'armor_diamond_1', 'armor_diamond_2', 'villager', 'villager_farmer', 'villager_librarian', 'villager_smith', 'enchant_book', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
+      const img = this.images[k] || (k.startsWith('villager_') ? this.images.villager : null);
+      if (img) this.entityTex[k] = this.tex2D(img, k === 'rain' || k === 'snowfall');
     }
     // colormaps
     const cm = (img) => { const c = document.createElement('canvas'); c.width = 256; c.height = 256; const x = c.getContext('2d'); x.drawImage(img, 0, 0); return x.getImageData(0, 0, 256, 256).data; };
@@ -472,6 +473,23 @@ class Renderer {
     ];
     M.zombie = P(64, 64, humanoid(4, 40, 16, 0, 16, true, true), 'zombie');
     M.steve = P(64, 64, humanoid(4, 32, 48, 16, 48, false, true), 'steve');
+    M.armor_helmet = P(64, 32, [
+      { name: 'head', pivot: [0, 24, 0], boxes: [[0, 0, -4, 0, -4, 8, 8, 8, 0.75], [32, 0, -4, 0, -4, 8, 8, 8, 1.05]] },
+    ], 'armor_diamond_1');
+    M.armor_chestplate = P(64, 32, [
+      { name: 'body', pivot: [0, 12, 0], boxes: [[16, 16, -4, 0, -2, 8, 12, 4, 0.75]] },
+      { name: 'rarm', pivot: [6, 22, 0], boxes: [[40, 16, -2, -10, -2, 4, 12, 4, 0.75]] },
+      { name: 'larm', pivot: [-6, 22, 0], boxes: [[40, 16, -2, -10, -2, 4, 12, 4, 0.75, true]] },
+    ], 'armor_diamond_1');
+    M.armor_leggings = P(64, 32, [
+      { name: 'body', pivot: [0, 12, 0], boxes: [[16, 16, -4, 0, -2, 8, 12, 4, 0.42]] },
+      { name: 'rleg', pivot: [2, 12, 0], boxes: [[0, 16, -2, -12, -2, 4, 12, 4, 0.42]] },
+      { name: 'lleg', pivot: [-2, 12, 0], boxes: [[0, 16, -2, -12, -2, 4, 12, 4, 0.42, true]] },
+    ], 'armor_diamond_2');
+    M.armor_boots = P(64, 32, [
+      { name: 'rleg', pivot: [2, 12, 0], boxes: [[0, 16, -2, -12, -2, 4, 12, 4, 0.8]] },
+      { name: 'lleg', pivot: [-2, 12, 0], boxes: [[0, 16, -2, -12, -2, 4, 12, 4, 0.8, true]] },
+    ], 'armor_diamond_1');
     M.skeleton = P(64, 32, humanoid(2, 40, 16, 0, 16, true, false), 'skeleton');
     M.creeper = P(64, 32, [
       { name: 'head', pivot: [0, 18, 0], boxes: [[0, 0, -4, 0, -4, 8, 8, 8]] },
@@ -530,13 +548,13 @@ class Renderer {
       ...spiderLegs,
     ]);
     M.villager = P(64, 64, [
-      { name: 'head', pivot: [0, 24, 0], boxes: [[0, 0, -4, 0, -4, 8, 10, 8], [24, 0, -1, 0, -6, 2, 4, 2]] },
+      { name: 'head', pivot: [0, 24, 0], boxes: [[0, 0, -4, 0, -4, 8, 10, 8], [32, 0, -4, 0, -4, 8, 10, 8, 0.5], [24, 0, -1, 0, -6, 2, 4, 2]] },
       { name: 'body', pivot: [0, 12, 0], boxes: [[16, 20, -4, 0, -3, 8, 12, 6], [0, 38, -4, -6, -3, 8, 18, 6, 0.5]] },
       { name: 'arms', pivot: [0, 21, -1], boxes: [[44, 22, -8, -7, -2, 4, 8, 4], [44, 22, 4, -7, -2, 4, 8, 4, 0, true], [40, 38, -4, -7, -2, 8, 4, 4]], rotX: 0.75 },
       { name: 'rleg', pivot: [2, 12, 0], boxes: [[0, 22, -2, -12, -2, 4, 12, 4]] },
       { name: 'lleg', pivot: [-2, 12, 0], boxes: [[0, 22, -2, -12, -2, 4, 12, 4, 0, true]] },
     ], 'villager');
-        M.enchant_book = P(64, 32, [
+    M.enchant_book = P(64, 32, [
       { name: 'seam', pivot: [0, 0, 0], boxes: [[12, 0, -1, -5, 0, 2, 10, 0.8]] },
       { name: 'cover_l', pivot: [-0.2, 0, 0], boxes: [[0, 0, -6, -5, 0, 6, 10, 0.5], [12, 10, -5.2, -4, -0.9, 5, 8, 1]] },
       { name: 'cover_r', pivot: [0.2, 0, 0], boxes: [[16, 0, 0, -5, 0, 6, 10, 0.5], [0, 10, 0.2, -4, -0.9, 5, 8, 1]] },
@@ -715,7 +733,7 @@ class Renderer {
     gl.uniform3fv(E.u.u_fogColor, env.fogColor); gl.uniform2f(E.u.u_fog, env.fogNear, env.fogFar);
     gl.uniform1f(E.u.u_gamma, this.gamma); gl.uniform3fv(E.u.u_nightTint, env.nightTint);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.entityTex[texName]);
+    gl.bindTexture(gl.TEXTURE_2D, this.entityTex[texName] || this.entityTex.villager);
     gl.uniform1i(E.u.u_tex, 1);
     const attached = [];
     for (const part of mdl.parts) {
@@ -737,6 +755,22 @@ class Renderer {
     }
     for (const [fn, m] of attached) fn(m);
     gl.activeTexture(gl.TEXTURE0);
+  }
+
+  drawPlayerArmor(player, m, poses, lt, env, opts = {}) {
+    if (!player || !player.inv || !player.inv.slots) return;
+    const slotModels = ['armor_helmet', 'armor_chestplate', 'armor_leggings', 'armor_boots'];
+    for (let i = 0; i < 4; i++) {
+      const st = player.inv.slots[36 + i];
+      if (!st) continue;
+      const def = ITEMS[st.id];
+      if (!def || !def.armor) continue;
+      const mat = def.armor.mat || (def.key.startsWith('diamond_') ? 'diamond' : def.key.startsWith('iron_') ? 'iron' : 'leather');
+      const layerNum = i === 2 ? 2 : 1;
+      const texKey = `armor_${mat}_${layerNum}`;
+      if (!this.entityTex[texKey]) continue;
+      this.drawModel(slotModels[i], texKey, m, poses, lt, env, opts);
+    }
   }
 
   drawShadow(x, y, z, r, alpha) {
@@ -790,7 +824,13 @@ class Renderer {
   buildIcons() {
     const gl = this.gl, S = 64;
     const ids = ITEMS.map((it, i) => it ? i : -1).filter(i => i >= 0);
-    const cols = 32, rows = Math.ceil((Math.max(...ids) + 1) / cols);
+    let maxIconIdx = 0;
+    for (const id of ids) {
+      const it = ITEMS[id];
+      if (it.iconIdx === undefined) it.iconIdx = nextIconIdx++;
+      if (it.iconIdx > maxIconIdx) maxIconIdx = it.iconIdx;
+    }
+    const cols = 32, rows = Math.max(1, Math.ceil((maxIconIdx + 1) / cols));
     const atlas = document.createElement('canvas'); atlas.width = cols * S; atlas.height = rows * S;
     const actx = atlas.getContext('2d');
     actx.imageSmoothingEnabled = false;
@@ -811,7 +851,8 @@ class Renderer {
     this.vp = vp;
     for (const id of ids) {
       const it = ITEMS[id];
-      const cx = (id % cols) * S, cy = Math.floor(id / cols) * S;
+      const iconIdx = it.iconIdx ?? id;
+      const cx = (iconIdx % cols) * S, cy = Math.floor(iconIdx / cols) * S;
       const b = BLOCKS[id];
       let flat = !it.block || it.flat || (b && (b.shape === SH_CROSS || b.shape === SH_TORCH || b.ladder || b.door));
       if (flat) {
@@ -824,6 +865,9 @@ class Renderer {
       let meta = 0;
       if (b.facing) meta = 5;
       if (b.stairs) meta = 1;
+      if (b.hopper) meta = 2;
+      if (b.piston) meta = 3;
+      if (b.observer) meta = 5;
       const isBed = b.bed;
       const mb = isBed ? Mesher.multi([[id, 0, 0, 0, 0], [id, 4, 0, 0, -1]]) : Mesher.single(id, meta);
       const model = M4.create();

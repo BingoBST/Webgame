@@ -10,8 +10,11 @@ import zipfile
 from PIL import Image
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-HTG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
-PACK_ZIP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HTG_DIR, 'Pixel Perfection Legacy 13.21.2.zip')
+HTG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+DEFAULT_PACK = os.path.join(HTG_DIR, 'Pixel Perfection Legacy 13.21.2.zip')
+if not os.path.exists(DEFAULT_PACK):
+    DEFAULT_PACK = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'Pixel Perfection Legacy 13.21.2.zip'))
+PACK_ZIP = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PACK
 FALLBACK_JS = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.vanilla.js')
 OUT_JS = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.js')
 
@@ -26,7 +29,7 @@ if not os.path.exists(FALLBACK_JS):
 with open(FALLBACK_JS, 'r', encoding='utf-8') as f:
     orig_text = f.read()
 
-orig_assets = json.loads(orig_text.split('window.ASSETS = ', 1)[1].rstrip(';\n'))
+orig_assets = json.loads(orig_text.split('window.ASSETS = ', 1)[1].rstrip(';\r\n'))
 orig_strip_b64 = orig_assets['strip'].split(',', 1)[1]
 orig_strip = Image.open(io.BytesIO(base64.b64decode(orig_strip_b64))).convert('RGBA')
 orig_tiles = orig_assets['tiles']      # name -> index
@@ -122,16 +125,20 @@ destroy_stage_0 destroy_stage_1 destroy_stage_2 destroy_stage_3 destroy_stage_4 
 bone_block_side bone_block_top magma netherrack glass_pane_top note_block jukebox_side jukebox_top
 dark_oak_planks jungle_planks acacia_planks cherry_planks mangrove_planks
 red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down
-redstone_dust_dot redstone_dust_line0 redstone_dust_line1 redstone_torch redstone_torch_off redstone_lamp redstone_lamp_on lever repeater repeater_on target_side target_top chiseled_sandstone cut_sandstone smooth_sandstone orange_terracotta blue_terracotta cobweb rail dirt_path_top dirt_path_side spawner bell_side bell_top bell_bottom enchanting_table_top enchanting_table_side enchanting_table_bottom anvil anvil_base anvil_side anvil_top'''.split()
+redstone_dust_dot redstone_dust_line0 redstone_dust_line1 redstone_torch redstone_torch_off redstone_lamp redstone_lamp_on lever repeater repeater_on target_side target_top chiseled_sandstone cut_sandstone smooth_sandstone orange_terracotta blue_terracotta cobweb rail dirt_path_top dirt_path_side spawner bell_side bell_top bell_bottom enchanting_table_top enchanting_table_side enchanting_table_bottom anvil anvil_base anvil_side anvil_top hopper_top hopper_outside hopper_inside
+comparator comparator_on observer_front observer_back observer_back_on observer_side observer_top piston_bottom piston_inner piston_side piston_top piston_top_sticky brewing_stand brewing_stand_base
+cherry_log cherry_log_top cherry_leaves cherry_sapling pink_petals cherry_door_top cherry_door_bottom'''.split()
 
 TRANSLUCENT_BLOCKS = {'water_still', 'ice'} | {
     n for n in BLOCK_TEX if 'stained_glass' in n or 'destroy_stage' in n
 }
 
+STATIC_MULTI_FRAME_BLOCKS = {'prismarine', 'observer_front', 'piston_bottom'}
+
 def sanitize_tile_alpha(im, name, is_block=True):
     """
     Normalizes resource-pack PBR/shader emissive alpha channels (e.g. alpha=26 on redstone_lamp_on,
-    alpha=51 on torch/sea_lantern/fire_0, alpha=128 on redstone_torch/repeater_on, alpha=153 on jack_o_lantern)
+    alpha=51 on torch/sea_lantern/fire_0, alpha=128 on redstone_torch/repeater_on/observer_back_on, alpha=153 on jack_o_lantern)
     so WebGL alpha-testing (u_alphaTest = 0.35) never discards glowing pixels on solid or cutout blocks.
     """
     if is_block and name in TRANSLUCENT_BLOCKS:
@@ -152,8 +159,8 @@ def sanitize_tile_alpha(im, name, is_block=True):
             ng = min(255, int(g * 1.65 + 45))
             nb = min(255, int(b * 1.35 + 20))
             new_px.append((nr, ng, nb, 255))
-        elif is_block and name in ('redstone_torch', 'repeater_on') and a < 255:
-            # Boost shader-darkened emissive redstone torch/repeater tips
+        elif is_block and name in ('redstone_torch', 'repeater_on', 'comparator_on', 'observer_back_on') and a < 255:
+            # Boost shader-darkened emissive redstone torch/repeater/comparator/observer tips
             nr = min(255, int(r * 1.65 + 40))
             ng = min(255, int(g * 1.45 + 15))
             nb = min(255, int(b * 1.35 + 10))
@@ -176,7 +183,8 @@ oak_door spruce_door sugar paper book sugar_cane clay_ball brick egg melon_slice
 iron_helmet iron_chestplate iron_leggings iron_boots diamond_helmet diamond_chestplate diamond_leggings diamond_boots
 leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone repeater pumpkin_pie
 cooked_cod cod baked_potato potato carrot golden_carrot mushroom_stew bowl
-pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg bell enchanted_book'''.split()
+pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg bell enchanted_book hopper
+comparator brewing_stand cherry_door pink_petals glass_bottle blaze_rod blaze_powder nether_wart glistering_melon_slice magma_cream'''.split()
 
 PARTICLES = ['generic_%d' % i for i in range(8)] + ['big_smoke_%d' % i for i in range(12)] + \
     ['explosion_%d' % i for i in range(16)] + ['flame', 'lava', 'splash_0', 'splash_1', 'splash_2', 'splash_3',
@@ -204,7 +212,9 @@ for n in BLOCK_TEX:
     if im:
         w, h = im.size
         m = load_meta('block/' + n)
-        if h > w:
+        if h > w and n in STATIC_MULTI_FRAME_BLOCKS:
+            add_tile_frames(n, [im.crop((0, 0, w, w))], is_block=True)
+        elif h > w:
             frames = [im.crop((0, i * w, w, i * w + w)) for i in range(h // w)]
             m_anim = (m or {}).get('animation', {})
             order = m_anim.get('frames')
@@ -227,12 +237,49 @@ for n in ITEM_TEX:
     key = 'i_' + n
     im = load_img('item/' + n)
     if im:
+        w, h = im.size
+        if h > w:
+            im = im.crop((0, 0, w, w))
         add_tile_frames(key, [im], is_block=False)
         stat_pack += 1
     else:
         frames = get_orig_tile_frames(key)
         add_tile_frames(key, frames, is_block=False)
         stat_fallback += 1
+
+# Compose tinted potion sprites from item/potion + item/potion_overlay
+potion_bottle = load_img('item/potion')
+potion_overlay = load_img('item/potion_overlay')
+POTION_TINTS = [
+    ('water_bottle', (56, 93, 214)),
+    ('awkward_potion', (78, 68, 224)),
+    ('potion_healing', (248, 36, 35)),
+    ('potion_fire_resistance', (228, 154, 58)),
+    ('potion_swiftness', (124, 175, 198)),
+    ('potion_night_vision', (36, 52, 185)),
+]
+for p_key, (tr, tg, tb) in POTION_TINTS:
+    if potion_bottle and potion_overlay:
+        comp = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+        ov = potion_overlay.copy()
+        ov_px = []
+        for r, g, b, a in ov.getdata():
+            if a < 20:
+                ov_px.append((0, 0, 0, 0))
+            else:
+                ov_px.append((
+                    min(255, int(r * tr / 255 * 1.15)),
+                    min(255, int(g * tg / 255 * 1.15)),
+                    min(255, int(b * tb / 255 * 1.15)),
+                    255
+                ))
+        ov.putdata(ov_px)
+        comp = Image.alpha_composite(comp, ov)
+        comp = Image.alpha_composite(comp, potion_bottle)
+        add_tile_frames('i_' + p_key, [comp], is_block=False)
+        stat_pack += 1
+    else:
+        add_tile_frames('i_' + p_key, [Image.new('RGBA', (16, 16), (tr, tg, tb, 255))], is_block=False)
 
 # 3. Particles
 print("Processing particles...")
@@ -325,6 +372,16 @@ IMAGES = {
     'enchant_lvl_3_dis': 'gui/sprites/container/enchanting_table/level_3_disabled',
     'slot_lapis': 'item/empty_slot_lapis_lazuli',
     'anvil_gui': 'gui/container/anvil',
+    'hopper_gui': 'gui/container/hopper',
+    'brewing_stand_gui': 'gui/container/brewing_stand',
+    'brew_progress': 'gui/sprites/container/brewing_stand/brew_progress',
+    'brew_bubbles': 'gui/sprites/container/brewing_stand/bubbles',
+    'brew_fuel': 'gui/sprites/container/brewing_stand/fuel_length',
+    'effect_bg': 'gui/sprites/hud/effect_background',
+    'eff_instant_health': 'mob_effect/instant_health',
+    'eff_fire_resistance': 'mob_effect/fire_resistance',
+    'eff_speed': 'mob_effect/speed',
+    'eff_night_vision': 'mob_effect/night_vision',
     'anvil_error': 'gui/sprites/container/anvil/error',
     'anvil_field': 'gui/sprites/container/anvil/text_field',
     'anvil_field_dis': 'gui/sprites/container/anvil/text_field_disabled',
@@ -404,6 +461,44 @@ for i, ph in enumerate(['full_moon', 'waning_gibbous', 'third_quarter', 'waning_
         images[key] = orig_images[key]
         img_stat_fallback += 1
 
+# Player 3D Armor layer textures (leather, iron, diamond: layer_1 & layer_2)
+for mat in ['iron', 'diamond']:
+    for layer in [1, 2]:
+        key = f'armor_{mat}_{layer}'
+        im = load_img(f'models/armor/{mat}_layer_{layer}')
+        if im:
+            out = im.copy()
+            out.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in out.getdata()])
+            images[key] = uri(out)
+            img_stat_pack += 1
+
+for layer in [1, 2]:
+    key = f'armor_leather_{layer}'
+    base_im = load_img(f'models/armor/leather_layer_{layer}')
+    ov_im = load_img(f'models/armor/leather_layer_{layer}_overlay')
+    if base_im:
+        out = Image.new('RGBA', base_im.size, (0, 0, 0, 0))
+        tinted = base_im.copy()
+        t_px = []
+        for r, g, b, a in tinted.getdata():
+            if a < 20:
+                t_px.append((0, 0, 0, 0))
+            else:
+                t_px.append((
+                    min(255, int(r * 160 / 255 * 1.15)),
+                    min(255, int(g * 101 / 255 * 1.15)),
+                    min(255, int(b * 64 / 255 * 1.15)),
+                    255
+                ))
+        tinted.putdata(t_px)
+        out = Image.alpha_composite(out, tinted)
+        if ov_im:
+            ov_clean = ov_im.copy()
+            ov_clean.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in ov_clean.getdata()])
+            out = Image.alpha_composite(out, ov_clean)
+        images[key] = uri(out)
+        img_stat_pack += 1
+
 # Villager composite texture (base + plains outfit)
 v_base = load_img('entity/villager/villager')
 v_plains = load_img('entity/villager/type/plains')
@@ -412,6 +507,12 @@ if v_base:
         v_base = Image.alpha_composite(v_base, v_plains)
     images['villager'] = uri(sanitize_image(v_base, 'villager', 'entity/villager/villager'))
     img_stat_pack += 1
+    for prof_key, prof_tex in [('villager_farmer', 'farmer'), ('villager_librarian', 'librarian'), ('villager_smith', 'weaponsmith')]:
+        v_prof = load_img('entity/villager/profession/' + prof_tex)
+        if v_prof and v_prof.size == v_base.size:
+            comp = Image.alpha_composite(v_base, v_prof)
+            images[prof_key] = uri(sanitize_image(comp, prof_key, 'entity/villager/villager'))
+            img_stat_pack += 1
 
 # Other images
 for k, p in IMAGES.items():
@@ -432,7 +533,7 @@ print(f"Images: {img_stat_pack} from pack, {img_stat_fallback} fallback")
 
 # 7. Write to game/js/assets.js
 js = '// Generated from Pixel Perfection Legacy with fallback to original assets.\n'
-js += 'window.ASSETS = ' + json.dumps({
+js += 'const ASSETS = window.ASSETS = ' + json.dumps({
     'strip': uri(strip),
     'tiles': index,
     'anims': anims,

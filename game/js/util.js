@@ -183,7 +183,7 @@ function aabbInFrustum(planes, x0, y0, z0, x1, y1, z1) {
 const DIRS = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 const OPP = [1, 0, 3, 2, 5, 4];
 
-// Run-length encoding for Uint8Arrays (saves)
+// Run-length encoding for TypedArrays (Uint8Array / Uint16Array saves)
 function rleEncode(arr) {
   const out = [];
   let i = 0;
@@ -194,9 +194,26 @@ function rleEncode(arr) {
   }
   return out;
 }
-function rleDecode(rle, len) {
-  const arr = new Uint8Array(len);
-  let p = 0;
-  for (let i = 0; i < rle.length; i += 2) { arr.fill(rle[i], p, p + rle[i + 1]); p += rle[i + 1]; }
+function rleDecode(rle, lenOrOut, OutType = Uint8Array) {
+  let arr;
+  if (lenOrOut && typeof lenOrOut === 'object' && typeof lenOrOut.fill === 'function') {
+    arr = lenOrOut;
+  } else if (OutType && typeof OutType === 'object' && typeof OutType.fill === 'function') {
+    arr = OutType;
+  } else if (typeof lenOrOut === 'function') {
+    let len = 0;
+    if (rle) for (let i = 1; i < rle.length; i += 2) len += rle[i];
+    arr = new lenOrOut(len);
+  } else {
+    const Ctor = typeof OutType === 'function' ? OutType : Uint8Array;
+    arr = new Ctor(lenOrOut);
+  }
+  if (!rle) return arr;
+  let p = 0, maxLen = arr.length;
+  for (let i = 0; i < rle.length && p < maxLen; i += 2) {
+    const v = rle[i], n = Math.min(rle[i + 1], maxLen - p);
+    arr.fill(v, p, p + n);
+    p += n;
+  }
   return arr;
 }

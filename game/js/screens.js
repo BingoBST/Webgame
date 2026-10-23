@@ -21,14 +21,20 @@ class TitleScreen extends MenuScreen {
     gr.addColorStop(0, 'rgba(0,0,0,0.35)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.1)'); gr.addColorStop(1, 'rgba(0,0,0,0.45)');
     c.fillStyle = gr; c.fillRect(0, 0, ui.w, ui.h);
     const logoW = 256, logoH = 64;
-    const lx = Math.floor(w / 2 - logoW / 2), ly = 30;
-    c.imageSmoothingEnabled = true;
-    c.drawImage(ui.img.logo, 0, 0, 1024, 256, lx, ly, logoW, logoH);
-    c.drawImage(ui.img.edition, 0, 0, 512, 64, Math.floor(w / 2 - 64), ly + 50, 128, 16);
+    const lx = Math.floor(w / 2 - logoW / 2), ly = 26;
+    const logoImg = ui.img.logo, edImg = ui.img.edition;
     c.imageSmoothingEnabled = false;
-    // splash
+    if (logoImg) {
+      const sw = logoImg.width || 272, sh = logoImg.height || 68;
+      c.drawImage(logoImg, 0, 0, sw, sh, lx, ly, logoW, logoH);
+    }
+    if (edImg) {
+      const ew = edImg.width || 128, eh = edImg.height || 16;
+      c.drawImage(edImg, 0, 0, ew, eh, Math.floor(w / 2 - 64), ly + 46, 128, 16);
+    }
+    // splash anchored to bottom-right corner of the centered logo
     c.save();
-    c.translate(lx + logoW - 30, ly + 48);
+    c.translate(lx + logoW - 28, ly + 44);
     c.rotate(-20 * Math.PI / 180);
     const s = 1.8 - Math.abs(Math.sin(performance.now() / 1000 * Math.PI * 2 % (Math.PI * 2)) * 0.1);
     const sw = Font.width(this.splash);
@@ -57,21 +63,41 @@ class LoadingScreen extends MenuScreen {
 class WorldListScreen extends MenuScreen {
   constructor(game) { super(game, '选择世界'); this.bgDirt = true; this.worlds = null; this.sel = -1; this.scroll = 0; DB.listWorlds().then(w => { this.worlds = w; this.layout(); }); }
   layout() {
-    const u = this.game.ui, cx = u.w / 2, by = u.h - 52;
+    const u = this.game.ui, cx = u.w / 2, by = u.h - 76;
     const has = this.sel >= 0 && this.worlds && this.worlds[this.sel];
     this.widgets = [
       { x: cx - 154, y: by, w: 150, h: 20, label: '进入选中的世界', enabled: !!has, onClick: () => this.play() },
       { x: cx + 4, y: by, w: 150, h: 20, label: '创建新的世界', onClick: () => this.game.ui.open(new CreateWorldScreen(this.game, this)) },
-      { x: cx - 154, y: by + 24, w: 72, h: 20, label: '删除', enabled: !!has, onClick: () => this.del() },
-      { x: cx - 78, y: by + 24, w: 72, h: 20, label: '重命名', enabled: !!has, onClick: () => this.rename() },
-      { x: cx + 4, y: by + 24, w: 150, h: 20, label: '取消', onClick: () => this.game.ui.open(new TitleScreen(this.game)) },
+      { x: cx - 154, y: by + 24, w: 150, h: 20, label: '导出存档 (.json)', enabled: !!has, onClick: () => this.exportWorld() },
+      { x: cx + 4, y: by + 24, w: 150, h: 20, label: '导入存档', onClick: () => this.importWorld() },
+      { x: cx - 154, y: by + 48, w: 72, h: 20, label: '删除', isDelete: true, enabled: !!has, onClick: () => this.del() },
+      { x: cx - 78, y: by + 48, w: 72, h: 20, label: '重命名', enabled: !!has, onClick: () => this.rename() },
+      { x: cx + 4, y: by + 48, w: 150, h: 20, label: '取消', onClick: () => this.game.ui.open(new TitleScreen(this.game)) },
     ];
-    this.listY = 36; this.listH = by - 8 - 36; this.titleY = 16;
+    this.listY = 32; this.listH = Math.max(36, by - 6 - 32); this.titleY = 14;
   }
   play() { const w = this.worlds[this.sel]; if (w) this.game.loadWorld(w.id); }
+  async exportWorld() {
+    const w = this.worlds && this.worlds[this.sel];
+    if (!w) return;
+    try { await this.game.exportWorld(w.id); } catch (e) { this.game.ui.message('导出存档失败: ' + e.message, '#FF5555'); }
+  }
+  importWorld() {
+    this.game.importWorldFromFile(async (meta) => {
+      this.worlds = await DB.listWorlds();
+      this.sel = this.worlds.findIndex(w => w.id === meta.id);
+      this.layout();
+    });
+  }
   async del() {
     const w = this.worlds[this.sel]; if (!w) return;
-    if (this.confirmDel !== w.id) { this.confirmDel = w.id; this.game.ui.message(`再次点击“删除”以确认删除 “${w.name}”`, '#FF5555'); this.widgets[2].label = '确认删除？'; return; }
+    if (this.confirmDel !== w.id) {
+      this.confirmDel = w.id;
+      this.game.ui.message(`再次点击“删除”以确认删除 “${w.name}”`, '#FF5555');
+      const delBtn = this.widgets.find(btn => btn.isDelete);
+      if (delBtn) delBtn.label = '确认删除？';
+      return;
+    }
     await DB.deleteWorld(w.id); this.confirmDel = null; this.sel = -1;
     this.worlds = await DB.listWorlds(); this.layout();
   }
@@ -267,9 +293,9 @@ const HELP_PAGES = [
   { title: '基本操作', lines: ['W A S D|移动', '空格|跳跃 / 游泳上浮 / (创造) 双击切换飞行', '左 Shift|潜行（不会从边缘掉落）/ 飞行下降', '左 Ctrl 或 双击 W|疾跑', '鼠标移动|转动视角', '鼠标左键|挖掘方块 / 攻击生物（按住持续挖掘）', '鼠标右键|放置方块 / 使用物品 / 打开容器 / 吃东西 / 拉弓', '鼠标中键|选取方块', '滚轮 / 1-9|切换快捷栏', 'E|打开物品栏', 'Q|丢弃物品 (Ctrl+Q 丢弃一组)', 'F1 / F3 / F5|隐藏界面 / 调试信息 / 切换视角', 'T 或 /|打开聊天与命令', 'Esc|游戏菜单（暂停）'] },
   { title: '物品栏操作', lines: ['左键|拿起 / 放下整组物品', '右键|拿起一半 / 放下一个', 'Shift + 左键|快速移动物品', '按住左键拖动|在多个格子之间平均分配', '按住右键拖动|每个格子放一个', '双击|收集同类物品', '悬停 + 数字键|与快捷栏交换', '悬停 + Q|丢弃物品', '', '创造模式物品栏：点击顶部标签切换分类，', '滚轮滚动；最后一个标签可以搜索物品。', '把物品放到右下角的 X 格可以删除。'] },
   { title: '生存入门', lines: ['1. 徒手撸树获得原木，合成木板（在物品栏 2x2 合成格）', '2. 4 个木板合成工作台，右键打开 3x3 合成', '3. 木板竖放 2 个合成木棍，制作木镐', '4. 挖石头获得圆石，制作石镐、熔炉', '5. 煤炭 + 木棍合成火把，照亮洞穴防止怪物生成', '6. 用熔炉把粗铁冶炼成铁锭，制作铁镐与铁甲', '7. 铁镐可以挖掘钻石矿（在 Y<16 的深层）', '', '饥饿值不足时无法疾跑、不能回血，记得吃东西！', '夜晚会生成僵尸、骷髅、苦力怕和蜘蛛。', '摔落、溺水、岩浆、仙人掌都会造成伤害。', '按 Esc → 进度 查看你的成就目标。'] },
-  { title: '常用配方', lines: ['工作台|4 木板 (2x2)', '木棍|2 木板竖放', '镐|上排 3 材料 + 中间竖放 2 木棍', '斧 / 锹 / 剑 / 锄|同原版摆法', '熔炉|8 圆石围一圈', '箱子|8 木板围一圈', '火把|煤炭/木炭 在 木棍 上方', '面包|3 小麦横排', 'TNT|火药与沙子交错 (5 火药 + 4 沙子)', '床|3 羊毛 + 3 木板，夜晚右键睡觉跳过黑夜', '弓 / 箭|木棍+线 / 燧石+木棍+羽毛', '桶|3 铁锭 V 形；可装水和熔岩', '盔甲|皮革/铁/钻石，同原版摆法', '红石元件|红石火把(红石+木棍)、拉杆(木棍+圆石)、红石灯(4红石+荧石)、中继器(2红石火把+红石+3石头)、标靶(4红石+干草块)'] },
+  { title: '常用配方', lines: ['工作台|4 木板 (2x2)', '木棍|2 木板竖放', '镐|上排 3 材料 + 中间竖放 2 木棍', '斧 / 锹 / 剑 / 锄|同原版摆法', '熔炉|8 圆石围一圈', '箱子|8 木板围一圈', '漏斗|5 铁锭 V 形 + 中间 1 箱子', '火把|煤炭/木炭 在 木棍 上方', '面包|3 小麦横排', 'TNT|火药与沙子交错 (5 火药 + 4 沙子)', '床|3 羊毛 + 3 木板，夜晚右键睡觉跳过黑夜', '弓 / 箭|木棍+线 / 燧石+木棍+羽毛', '桶|3 铁锭 V 形；可装水和熔岩', '盔甲|皮革/铁/钻石，同原版摆法', '红石元件|红石火把(红石+木棍)、拉杆(木棍+圆石)、红石灯(4红石+荧石)、中继器(2红石火把+红石+3石头)、标靶(4红石+干草块)'] },
   { title: '玩法机制', lines: ['• 平滑光照与环境光遮蔽，火把/荧石/熔岩发光', '• 真实的水与熔岩流动，水遇熔岩生成黑曜石/圆石', '• 沙子与沙砾会受重力下落', '• 完整红石核心套件：红石线(15格信号衰减与爬坡)、红石火把(非门反相)、中继器(4档延迟与信号放大)、拉杆/按钮/压力板/标靶，可驱动红石灯、TNT、门、活板门与音符盒',
-  '• TNT 与苦力怕爆炸可以破坏地形并连锁引爆', '• 用锄头耕地、种小麦，骨粉催熟；树苗可以长成树', '• 用剪刀剪羊毛，用小麦/种子/胡萝卜引诱并繁殖动物', '• 熔炉冶炼矿石与烹饪食物，获得经验', '• 昼夜循环、月相、星空、云层、雨雪天气；床可跳过夜晚', '• 多种生物群系：平原、森林、桦木林、针叶林、', '  雪原、沙漠、山地、海洋、河流、沙滩', '• 世界自动保存，可在主菜单管理多个存档'] },
+  '• TNT 与苦力怕爆炸可以破坏地形并连锁引爆', '• 用锄头耕地、种小麦，骨粉催熟；树苗可以长成树', '• 用剪刀剪羊毛，用小麦/种子/胡萝卜引诱并繁殖动物', '• 熔炉冶炼矿石与烹饪食物；漏斗可自动拉取/推送容器与熔炉物品', '• 村庄生成农民/图书管理员/铁匠村民，右键打开绿宝石交易界面', '• 昼夜循环、月相、星空、云层、雨雪天气；床可跳过夜晚', '• 多种生物群系：平原、森林、桦木林、针叶林、', '  雪原、沙漠、山地、海洋、河流、沙滩', '• 世界自动保存，可在主菜单管理多个存档'] },
   { title: '命令 (按 T 或 /)', lines: ['/gamemode creative|survival|切换游戏模式', '/time set day|night|noon|<数值>|设置时间', '/weather clear|rain|设置天气', '/give <物品英文名> [数量]|给予物品，如 /give diamond 64', '/tp <x> <y> <z>|传送', '/summon <生物>|生成 pig cow sheep chicken zombie ...', '/kill|自杀', '/spawnpoint|设置重生点为当前位置', '/seed|显示世界种子', '/clear|清空物品栏', '/xp <数量>|获得经验', '/enchant <附魔名> [等级]|为手持物品或书附加附魔（如 sharpness 5）'] },
 ];
 
@@ -375,6 +401,7 @@ function runCommand(g, text) {
         const d = g.lookDir();
         const m = new Mob(g, t, p.pos[0] + d[0] * 3, p.pos[1] + 0.5, p.pos[2] + d[2] * 3);
         m.persistent = true;
+        if (t === 'villager' && a[1] && typeof Trading !== 'undefined') Trading.ensureVillager(m, a[1]);
         g.addEntity(m);
         ui.message('已生成 ' + MOB_TYPES[t].cn, '#AAAAAA'); break;
       }

@@ -117,6 +117,7 @@ class UI {
   // ---- primitives ---------------------------------------------------------------
   sprite(name, x, y, w, h, sx = 0, sy = 0, sw, sh) {
     const im = this.img[name];
+    if (!im) return;
     this.ctx.drawImage(im, sx, sy, sw ?? (w ?? im.width), sh ?? (h ?? im.height), x, y, w ?? im.width, h ?? im.height);
   }
   nine(name, x, y, w, h, border) {
@@ -131,8 +132,10 @@ class UI {
     if (!stack) return;
     const r = this.game.renderer, S = r.iconSize, cols = r.iconCols, c = this.ctx;
     const id = stack.id;
-    const smooth = !!(ITEMS[id] && ITEMS[id].block && !ITEMS[id].flat && BLOCKS[id] && BLOCKS[id].shape !== SH_CROSS);
     const def = ITEMS[id];
+    if (!def) return;
+    const iconIdx = def.iconIdx ?? id;
+    const smooth = !!(def.block && !def.flat && BLOCKS[id] && BLOCKS[id].shape !== SH_CROSS);
     if (typeof Enchant !== 'undefined' && Enchant.hasEnch(stack)) {
       if (!this._glintCanvas) {
         this._glintCanvas = document.createElement('canvas');
@@ -145,7 +148,7 @@ class UI {
       gc.clearRect(0, 0, 16, 16);
       gc.imageSmoothingEnabled = smooth;
       gc.imageSmoothingQuality = 'high';
-      gc.drawImage(r.iconAtlas, (id % cols) * S, Math.floor(id / cols) * S, S, S, 0, 0, 16, 16);
+      gc.drawImage(r.iconAtlas, (iconIdx % cols) * S, Math.floor(iconIdx / cols) * S, S, S, 0, 0, 16, 16);
       gc.imageSmoothingEnabled = false;
       // Mask animated purple glint strictly to non-transparent item pixels
       gc.globalCompositeOperation = 'source-atop';
@@ -153,9 +156,9 @@ class UI {
       for (const off of [t - 14, t]) {
         const g = gc.createLinearGradient(off - 6, -2, off + 6, 18);
         g.addColorStop(0, 'rgba(150, 50, 255, 0.0)');
-        g.addColorStop(0.35, 'rgba(185, 85, 255, 0.42)');
-        g.addColorStop(0.5, 'rgba(235, 165, 255, 0.62)');
-        g.addColorStop(0.65, 'rgba(185, 85, 255, 0.42)');
+        g.addColorStop(0.35, 'rgba(185, 85, 255, 0.22)');
+        g.addColorStop(0.5, 'rgba(235, 165, 255, 0.36)');
+        g.addColorStop(0.65, 'rgba(185, 85, 255, 0.22)');
         g.addColorStop(1, 'rgba(150, 50, 255, 0.0)');
         gc.fillStyle = g;
         gc.fillRect(0, 0, 16, 16);
@@ -166,7 +169,7 @@ class UI {
     } else {
       c.imageSmoothingEnabled = smooth;
       c.imageSmoothingQuality = 'high';
-      c.drawImage(r.iconAtlas, (id % cols) * S, Math.floor(id / cols) * S, S, S, x, y, 16, 16);
+      c.drawImage(r.iconAtlas, (iconIdx % cols) * S, Math.floor(iconIdx / cols) * S, S, S, x, y, 16, 16);
       c.imageSmoothingEnabled = false;
     }
     if (def && def.durability && stack.dmg > 0) {
@@ -196,13 +199,22 @@ class UI {
   itemLines(stack) {
     const d = ITEMS[stack.id];
     const hasEnch = typeof Enchant !== 'undefined' && Enchant.hasEnch(stack);
-    const titleColor = d.key === 'enchanted_book' ? '#FFFF55' : (hasEnch || d.key.includes('diamond') || d.key === 'golden_apple' ? '#55FFFF' : '#FFFFFF');
+    const isEffectPotion = !!(d.potion && d.potion !== 'water' && d.potion !== 'awkward');
+    const titleColor = d.key === 'enchanted_book' ? '#FFFF55' : (hasEnch || isEffectPotion || d.key.includes('diamond') || d.key === 'golden_apple' ? '#55FFFF' : '#FFFFFF');
     const titleText = stack.name ? `${stack.name} (${d.cn})` : d.cn;
     const lines = [{ text: titleText, color: titleColor }];
     if (stack.ench && typeof Enchant !== 'undefined') {
       for (const ek of Object.keys(stack.ench)) {
         lines.push({ text: Enchant.formatEnch(ek, stack.ench[ek]), color: d.key === 'enchanted_book' ? '#FFFF55' : '#AA88FF' });
       }
+    }
+    if (d.potion) {
+      if (d.potion === 'water') lines.push({ text: '无效果', color: '#777777' });
+      else if (d.potion === 'awkward') lines.push({ text: '无效果 (酿造基底)', color: '#777777' });
+      else if (d.potion === 'instant_health') lines.push({ text: '瞬间治疗 (+8 生命值)', color: '#5588FF' });
+      else if (d.potion === 'fire_resistance') lines.push({ text: '抗火 (3:00) - 免疫火焰与熔岩', color: '#5588FF' });
+      else if (d.potion === 'speed') lines.push({ text: '迅捷 (3:00) - +20% 移动速度', color: '#5588FF' });
+      else if (d.potion === 'night_vision') lines.push({ text: '夜视 (3:00) - 黑暗与水下视野增强', color: '#5588FF' });
     }
     if (d.food) lines.push({ text: `食物: +${d.food[0]} 饥饿值`, color: '#AAAAAA' });
     const sharpBonus = (stack.ench && stack.ench.sharpness) ? (0.5 * stack.ench.sharpness + 0.5) : 0;
@@ -313,6 +325,7 @@ class UI {
     if (this.actionBar && performance.now() - this.actionBar.t < 2500) Font.center(c, this.actionBar.text, W / 2, H - (p.creative ? 50 : 70), this.actionBar.color || '#FFFFFF');
     this.drawChat();
     this.drawToasts();
+    this.drawStatusEffects();
     if (this.debug) this.drawDebug();
     if (g.sleepFade > 0) { c.fillStyle = `rgba(10,10,20,${g.sleepFade})`; c.fillRect(0, 0, W, H); }
     if (!this.screen && g.state === 'play' && document.pointerLockElement !== g.canvas && !g.debugPause) {
@@ -357,6 +370,50 @@ class UI {
       y += 32;
     }
   }
+  drawStatusEffects() {
+    const g = this.game, p = g.player, c = this.ctx, W = this.w;
+    if (!p || !p.effects || typeof STATUS_EFFECTS === 'undefined') return;
+    const keys = Object.keys(p.effects).filter(k => p.effects[k] && p.effects[k].ticks > 0);
+    if (!keys.length) return;
+    const toastOffset = (this.toasts && this.toasts.length)
+      ? this.toasts.length * 32 + 4
+      : (g.state === 'play' && g.tutorial >= 0 && g.mode === 'survival' && !this.debug ? 36 : 4);
+    let by = toastOffset;
+    for (const k of keys) {
+      const st = p.effects[k];
+      const def = STATUS_EFFECTS[k];
+      if (!def) continue;
+      const sec = Math.max(0, Math.ceil(st.ticks / 20));
+      const mm = Math.floor(sec / 60);
+      const ss = String(sec % 60).padStart(2, '0');
+      const timeStr = `${mm}:${ss}`;
+      const label = `${def.cn} ${timeStr}`;
+      const bx = W - 28;
+      // Background box (24x24)
+      if (this.img.effect_bg) {
+        this.sprite('effect_bg', bx, by, 24, 24);
+      } else {
+        c.fillStyle = 'rgba(24, 24, 32, 0.82)';
+        c.fillRect(bx, by, 24, 24);
+        c.fillStyle = '#8B8B8B';
+        c.fillRect(bx, by, 24, 1);
+        c.fillRect(bx, by, 1, 24);
+      }
+      // Blink icon when < 5 seconds left
+      const blinkAlpha = st.ticks <= 100 ? (0.4 + 0.6 * Math.abs(Math.sin(g.tickCount * 0.35))) : 1;
+      c.globalAlpha = blinkAlpha;
+      if (this.img[def.icon]) {
+        this.sprite(def.icon, bx + 3, by + 3, 18, 18);
+      }
+      c.globalAlpha = 1;
+      // Label & timer to the left of the effect box
+      const lw = Font.width(label);
+      c.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      c.fillRect(bx - lw - 5, by + 6, lw + 3, 11);
+      Font.draw(c, label, bx - lw - 4, by + 8, st.ticks <= 100 ? '#FF8888' : '#E8E8E8');
+      by += 26;
+    }
+  }
   drawDebug() {
     const g = this.game, p = g.player, c = this.ctx;
     const x = Math.floor(p.pos[0]), y = Math.floor(p.pos[1]), z = Math.floor(p.pos[2]);
@@ -367,9 +424,10 @@ class UI {
     const bi = ch ? BIOMES[ch.biome[((z & 15) << 4) | (x & 15)]] : '?';
     const l = g.world.getLight(x, y, z);
     const t = g.dayTime();
+    const wk = g.worker ? (g.worker.isReady() ? `Worker (队列 ${g.worker.queue.length})` : `主线程回退`) : '关闭';
     const L = [
       `Minecraft JS 复刻版 (26.2 官方材质)`,
-      `${g.fps} fps  区段: ${g.renderer.stats ? g.renderer.stats.sections : 0}  三角形: ${g.renderer.stats ? g.renderer.stats.tris : 0}`,
+      `${g.fps} fps  区段: ${g.renderer.stats ? g.renderer.stats.sections : 0}  三角形: ${g.renderer.stats ? g.renderer.stats.tris : 0}  计算: ${wk}`,
       `区块: 已加载 ${g.world.chunks.size}  待生成 ${g.genQueueLen || 0}  实体: ${g.entities.length}  粒子: ${g.particles.list.length}`,
       ``,
       `XYZ: ${p.pos[0].toFixed(3)} / ${p.pos[1].toFixed(3)} / ${p.pos[2].toFixed(3)}`,
@@ -386,6 +444,9 @@ class UI {
       let rsInfo = '';
       if (tid === 119) rsInfo = ` [信号强度: ${tm & 15}]`;
       else if (tid === 127 || tid === 156) rsInfo = ` [延迟: ${((tm >> 2) & 3) + 1}刻, 充能: ${tid === 156 ? '是' : '否'}]`;
+      else if (tid === 514) rsInfo = ` [模式: ${(tm & 4) ? '减法' : '比较'}, 输出: ${(tm >> 4) & 15}]`;
+      else if (tid === 515) rsInfo = ` [侦测面: ${tm & 7}, 脉冲: ${(tm & 8) ? '是' : '否'}]`;
+      else if (tid === 516 || tid === 517) rsInfo = ` [朝向: ${tm & 7}, 伸出: ${(tm & 8) ? '是' : '否'}]`;
       else if (tid === 122 || tid === 123 || tid === 159) rsInfo = ` [激活: ${(tm & 8) ? '是' : '否'}]`;
       else if (tid === 124 || tid === 169) rsInfo = ` [踩下: ${(tm & 1) ? '是' : '否'}]`;
       else if (typeof Redstone !== 'undefined' && Redstone.isBlockPowered(g.world, tx, ty, tz)) rsInfo = ` [受红石充能]`;
@@ -478,13 +539,13 @@ class UI {
 class ContainerScreen {
   constructor(game, bg, w, h, title) { this.game = game; this.bg = bg; this.gw = w; this.gh = h; this.title = title; this.slots = []; this.dragSlots = null; }
   layout() { const u = this.game.ui; this.x = Math.floor((u.w - this.gw) / 2); this.y = Math.floor((u.h - this.gh) / 2); }
-  addPlayerSlots(y0, hotY) {
+  addPlayerSlots(y0, hotY, x0 = 8) {
     const inv = this.game.player.inv;
     for (let r = 0; r < 3; r++) for (let c = 0; c < 9; c++) {
       const i = 9 + r * 9 + c;
-      this.slots.push({ x: 8 + c * 18, y: y0 + r * 18, get: () => inv.slots[i], set: (s) => { inv.slots[i] = s; }, group: 'main', idx: i });
+      this.slots.push({ x: x0 + c * 18, y: y0 + r * 18, get: () => inv.slots[i], set: (s) => { inv.slots[i] = s; }, group: 'main', idx: i });
     }
-    for (let c = 0; c < 9; c++) this.slots.push({ x: 8 + c * 18, y: hotY, get: () => inv.slots[c], set: (s) => { inv.slots[c] = s; }, group: 'hotbar', idx: c });
+    for (let c = 0; c < 9; c++) this.slots.push({ x: x0 + c * 18, y: hotY, get: () => inv.slots[c], set: (s) => { inv.slots[c] = s; }, group: 'hotbar', idx: c });
   }
   slotAt(mx, my) {
     for (const s of this.slots) if (mx >= this.x + s.x - 1 && mx < this.x + s.x + 17 && my >= this.y + s.y - 1 && my < this.y + s.y + 17) return s;
@@ -492,7 +553,14 @@ class ContainerScreen {
   }
   drawBase(ui) {
     ui.dim(0.6);
-    ui.ctx.drawImage(ui.img[this.bg], 0, 0, this.gw, this.gh, this.x, this.y, this.gw, this.gh);
+    if (this.bg && ui.img[this.bg]) {
+      ui.ctx.drawImage(ui.img[this.bg], 0, 0, this.gw, this.gh, this.x, this.y, this.gw, this.gh);
+    } else {
+      const c = ui.ctx;
+      c.fillStyle = '#C6C6C6'; c.fillRect(this.x, this.y, this.gw, this.gh);
+      c.fillStyle = '#FFFFFF'; c.fillRect(this.x, this.y, this.gw - 1, 1); c.fillRect(this.x, this.y, 1, this.gh - 1);
+      c.fillStyle = '#555555'; c.fillRect(this.x + 1, this.y + this.gh - 1, this.gw - 1, 1); c.fillRect(this.x + this.gw - 1, this.y + 1, 1, this.gh - 1);
+    }
     if (this.title) Font.draw(ui.ctx, this.title, this.x + 8, this.y + 6, '#404040', false);
   }
   drawSlots(ui) {
@@ -630,7 +698,12 @@ class ContainerScreen {
     return false;
   }
   outside(mx, my) { return mx < this.x || my < this.y || mx > this.x + this.gw || my > this.y + this.gh; }
-  changed() { }
+  changed() {
+    if (this.be && this.be.pos && typeof Redstone !== 'undefined' && Redstone.updateComparatorsNear) {
+      Redstone.updateComparatorsNear(this.game, this.be.pos[0], this.be.pos[1], this.be.pos[2]);
+      if (this.game.flushMesh) this.game.flushMesh();
+    }
+  }
 }
 
 class CraftingScreen extends ContainerScreen {
@@ -814,6 +887,258 @@ class ChestScreen extends ContainerScreen {
   close() { this.game.markBlockEntity(this.be); Sound.door(this.be.pos, false); }
 }
 
+class HopperScreen extends ContainerScreen {
+  constructor(game, be) {
+    super(game, 'hopper_gui', 176, 133, '漏斗');
+    this.be = be;
+    if (!Array.isArray(be.slots)) be.slots = new Array(5).fill(null);
+    for (let i = 0; i < 5; i++) {
+      this.slots.push({
+        x: 44 + i * 18,
+        y: 20,
+        get: () => be.slots[i],
+        set: (s) => { be.slots[i] = s; },
+        group: 'container',
+      });
+    }
+    this.addPlayerSlots(51, 109);
+  }
+  drawExtra(ui) {
+    Font.draw(ui.ctx, '物品栏', this.x + 8, this.y + 40, '#404040', false);
+  }
+  close() { this.game.markBlockEntity(this.be); }
+}
+
+class TradingScreen extends ContainerScreen {
+  constructor(game, villager) {
+    if (typeof Trading !== 'undefined') Trading.ensureVillager(villager, game);
+    const profDef = typeof Trading !== 'undefined' ? Trading.profDef(villager.profession) : { cn: '村民' };
+    const lvlName = typeof Trading !== 'undefined' ? Trading.levelName(villager.level || 1) : '新手';
+    super(game, null, 276, 166, `${profDef.cn} - ${lvlName}`);
+    this.villager = villager;
+    this.selTrade = 0;
+    this.scroll = 0;
+    this.payA = null;
+    this.payB = null;
+    this.result = null;
+    this.tradeCells = [];
+
+    this.slots.push({
+      x: 136, y: 37, group: 'container',
+      get: () => this.payA,
+      set: (s) => { this.payA = s; },
+    });
+    this.slots.push({
+      x: 162, y: 37, group: 'container',
+      get: () => this.payB,
+      set: (s) => { this.payB = s; },
+    });
+    this.slots.push({
+      x: 220, y: 37, output: true,
+      get: () => this.result,
+      set: () => { },
+      onTake: () => this.consumeTrade(),
+    });
+    this.addPlayerSlots(84, 142, 108);
+  }
+
+  trades() {
+    return (this.villager && this.villager.trades) || [];
+  }
+
+  activeTrade() {
+    const list = this.trades();
+    return list[this.selTrade] || null;
+  }
+
+  changed() {
+    const list = this.trades();
+    if (!list.length) { this.result = null; return; }
+    let t = this.activeTrade();
+    if (typeof Trading !== 'undefined') {
+      if (!Trading.canFulfill(t, this.payA, this.payB)) {
+        const matchIdx = list.findIndex(cand => Trading.canFulfill(cand, this.payA, this.payB));
+        if (matchIdx >= 0) {
+          this.selTrade = matchIdx;
+          t = list[matchIdx];
+        }
+      }
+      if (Trading.canFulfill(t, this.payA, this.payB)) {
+        this.result = typeof Enchant !== 'undefined' ? Enchant.cloneStack(t.result) : { ...t.result };
+      } else {
+        this.result = null;
+      }
+    }
+  }
+
+  selectTrade(idx, fillMax = false) {
+    const list = this.trades();
+    if (idx < 0 || idx >= list.length) return;
+    this.selTrade = idx;
+    const t = list[idx];
+    const ui = this.game.ui;
+    const inv = this.game.player.inv;
+    // Return existing payment slots back to player inventory first
+    if (this.payA) { ui.returnStack(this.payA); this.payA = null; }
+    if (this.payB) { ui.returnStack(this.payB); this.payB = null; }
+    if (!t || (typeof Trading !== 'undefined' && Trading.isOutOfStock(t))) {
+      this.changed();
+      return;
+    }
+    const haveA = inv.count(t.costA.id);
+    const haveB = t.costB ? inv.count(t.costB.id) : Infinity;
+    const remUses = Math.max(1, (t.maxUses || 12) - (t.uses || 0));
+    const maxTimesA = Math.floor(haveA / t.costA.count);
+    const maxTimesB = t.costB ? Math.floor(haveB / t.costB.count) : Infinity;
+    let times = fillMax ? Math.min(remUses, maxTimesA, maxTimesB) : 1;
+    times = Math.max(1, times);
+
+    const pullA = Math.min(haveA, maxStack(t.costA.id), t.costA.count * times);
+    if (pullA > 0) {
+      inv.remove(t.costA.id, pullA);
+      this.payA = { id: t.costA.id, count: pullA, dmg: 0 };
+    }
+    if (t.costB) {
+      const pullB = Math.min(haveB, maxStack(t.costB.id), t.costB.count * times);
+      if (pullB > 0) {
+        inv.remove(t.costB.id, pullB);
+        this.payB = { id: t.costB.id, count: pullB, dmg: 0 };
+      }
+    }
+    this.changed();
+    Sound.click();
+  }
+
+  consumeTrade() {
+    const t = this.activeTrade();
+    if (!t || typeof Trading === 'undefined') return;
+    Trading.consumePayment(
+      t,
+      () => this.payA,
+      (v) => { this.payA = v; },
+      () => this.payB,
+      (v) => { this.payB = v; },
+      this.villager,
+      this.game
+    );
+    const profDef = Trading.profDef(this.villager.profession);
+    const lvlName = Trading.levelName(this.villager.level || 1);
+    this.title = `${profDef.cn} - ${lvlName}`;
+    this.changed();
+  }
+
+  drawSlotBox(c, x, y) {
+    c.fillStyle = '#373737'; c.fillRect(x - 1, y - 1, 17, 1); c.fillRect(x - 1, y - 1, 1, 17);
+    c.fillStyle = '#FFFFFF'; c.fillRect(x - 1, y + 16, 18, 1); c.fillRect(x + 16, y - 1, 1, 18);
+    c.fillStyle = '#8B8B8B'; c.fillRect(x, y, 16, 16);
+  }
+
+  drawBase(ui) {
+    ui.dim(0.6);
+    const c = ui.ctx;
+    // Outer frame (276 x 166)
+    c.fillStyle = '#C6C6C6'; c.fillRect(this.x, this.y, this.gw, this.gh);
+    c.fillStyle = '#FFFFFF'; c.fillRect(this.x, this.y, this.gw - 1, 1); c.fillRect(this.x, this.y, 1, this.gh - 1);
+    c.fillStyle = '#555555'; c.fillRect(this.x + 1, this.y + this.gh - 1, this.gw - 1, 1); c.fillRect(this.x + this.gw - 1, this.y + 1, 1, this.gh - 1);
+    // Vertical divider between trade list (left 100px) and trading/inventory area (right 176px)
+    c.fillStyle = '#555555'; c.fillRect(this.x + 100, this.y + 4, 1, this.gh - 8);
+    c.fillStyle = '#FFFFFF'; c.fillRect(this.x + 101, this.y + 4, 1, this.gh - 8);
+    // Left trade list inset box
+    c.fillStyle = '#404040'; c.fillRect(this.x + 5, this.y + 17, 90, 142);
+    // Slot backgrounds on right panel
+    for (const s of this.slots) this.drawSlotBox(c, this.x + s.x, this.y + s.y);
+    Font.draw(c, '交易列表', this.x + 8, this.y + 6, '#404040', false);
+    Font.center(c, this.title, this.x + 188, this.y + 6, '#404040', false);
+    Font.draw(c, '物品栏', this.x + 108, this.y + 72, '#404040', false);
+  }
+
+  drawExtra(ui) {
+    const c = ui.ctx;
+    const list = this.trades();
+    // Villager XP bar under header
+    const vXp = (this.villager && this.villager.xp) || 0;
+    const vLvl = (this.villager && this.villager.level) || 1;
+    const curMin = (typeof VILLAGER_LEVELS !== 'undefined' && VILLAGER_LEVELS[vLvl - 1]) ? VILLAGER_LEVELS[vLvl - 1].minXp : 0;
+    const nextMin = (typeof VILLAGER_LEVELS !== 'undefined' && VILLAGER_LEVELS[vLvl]) ? VILLAGER_LEVELS[vLvl].minXp : curMin + 50;
+    const xpProg = vLvl >= 5 ? 1 : clamp((vXp - curMin) / Math.max(1, nextMin - curMin), 0, 1);
+    c.fillStyle = '#333333'; c.fillRect(this.x + 136, this.y + 18, 102, 5);
+    c.fillStyle = '#55FF55'; c.fillRect(this.x + 137, this.y + 19, Math.round(100 * xpProg), 3);
+
+    // Arrow between payment slots and output slot
+    const active = this.activeTrade();
+    const outOfStock = active && typeof Trading !== 'undefined' && Trading.isOutOfStock(active);
+    c.fillStyle = outOfStock ? '#AA3333' : '#606060';
+    c.fillRect(this.x + 186, this.y + 43, 22, 4);
+    if (outOfStock) {
+      Font.center(c, 'X', this.x + 197, this.y + 41, '#FF5555');
+    } else {
+      Font.draw(c, '>', this.x + 203, this.y + 41, '#404040', false);
+    }
+
+    // Trade offer rows on left panel (up to 7 visible at 20px height)
+    const vis = 7;
+    const maxSc = Math.max(0, list.length - vis);
+    this.scroll = clamp(this.scroll, 0, maxSc);
+    this.tradeCells = [];
+    let hovItem = null;
+
+    for (let i = 0; i < Math.min(vis, list.length - this.scroll); i++) {
+      const idx = this.scroll + i;
+      const t = list[idx];
+      const rx = this.x + 6, ry = this.y + 18 + i * 20, rw = 88, rh = 20;
+      const cell = { x: rx, y: ry, w: rw, h: rh, idx, trade: t };
+      this.tradeCells.push(cell);
+      const isSel = idx === this.selTrade;
+      const isHov = ui.hit(cell);
+      const locked = typeof Trading !== 'undefined' && Trading.isOutOfStock(t);
+
+      c.fillStyle = locked ? '#5A3A3A' : (isSel ? '#7A9A68' : (isHov ? '#8E8E8E' : '#727272'));
+      c.fillRect(rx, ry, rw, rh - 1);
+      c.fillStyle = isSel ? '#B8E098' : '#9E9E9E';
+      c.fillRect(rx, ry, rw, 1);
+
+      ui.drawItem(t.costA, rx + 2, ry + 2);
+      if (t.costB) ui.drawItem(t.costB, rx + 20, ry + 2);
+      Font.draw(c, locked ? 'X' : '→', rx + 43, ry + 6, locked ? '#FF5555' : '#FFFFFF', false);
+      ui.drawItem(t.result, rx + 58, ry + 2);
+      const stockStr = `${Math.max(0, (t.maxUses || 12) - (t.uses || 0))}`;
+      Font.draw(c, stockStr, rx + 86 - Font.width(stockStr), ry + 2, locked ? '#FF5555' : '#CCCCCC', false);
+
+      if (isHov && !ui.cursor) {
+        if (ui.mouse.x < rx + 20) hovItem = t.costA;
+        else if (t.costB && ui.mouse.x < rx + 38) hovItem = t.costB;
+        else if (ui.mouse.x >= rx + 56) hovItem = t.result;
+      }
+    }
+
+    if (hovItem && !ui.cursor) {
+      ui.tooltip(ui.itemLines(hovItem), ui.mouse.x, ui.mouse.y);
+    }
+  }
+
+  mouseDown(ui, mx, my, button, shift) {
+    if (button === 0) {
+      for (const cell of this.tradeCells) {
+        if (ui.hit(cell, mx, my)) {
+          this.selectTrade(cell.idx, shift);
+          return;
+        }
+      }
+    }
+    super.mouseDown(ui, mx, my, button, shift);
+  }
+
+  wheel(ui, dy) {
+    const list = this.trades();
+    this.scroll = clamp(this.scroll + Math.sign(dy), 0, Math.max(0, list.length - 7));
+  }
+
+  close() {
+    if (this.payA) { this.game.ui.returnStack(this.payA); this.payA = null; }
+    if (this.payB) { this.game.ui.returnStack(this.payB); this.payB = null; }
+  }
+}
+
 class FurnaceScreen extends ContainerScreen {
   constructor(game, be) {
     super(game, 'furnace', 176, 166, '熔炉');
@@ -851,6 +1176,98 @@ class FurnaceScreen extends ContainerScreen {
   close() { this.game.markBlockEntity(this.be); }
 }
 
+class BrewingScreen extends ContainerScreen {
+  constructor(game, be) {
+    super(game, 'brewing_stand_gui', 176, 166, '酿造台');
+    this.be = be;
+    if (!Array.isArray(be.bottles) || be.bottles.length < 3) be.bottles = [null, null, null];
+    if (be.brewTime === undefined) be.brewTime = 0;
+    if (be.fuelCharges === undefined) be.fuelCharges = 0;
+    // Slot 0: Blaze Powder fuel slot at (17, 17)
+    this.slots.push({
+      x: 17, y: 17, group: 'container',
+      accept: (st) => typeof Brewing !== 'undefined' ? Brewing.isFuel(st) : st.id === item('blaze_powder'),
+      get: () => be.fuel,
+      set: (s) => { be.fuel = s; },
+    });
+    // Slot 1: Ingredient slot at (79, 17)
+    this.slots.push({
+      x: 79, y: 17, group: 'container',
+      accept: (st) => typeof Brewing !== 'undefined' && Brewing.isIngredient(st),
+      get: () => be.ingredient,
+      set: (s) => { be.ingredient = s; },
+    });
+    // Slots 2..4: Three potion bottle slots at (56, 51), (79, 58), (102, 51)
+    const bCoords = [[56, 51], [79, 58], [102, 51]];
+    for (let i = 0; i < 3; i++) {
+      const [bx, by] = bCoords[i];
+      this.slots.push({
+        x: bx, y: by, max: 1, group: 'container',
+        accept: (st) => typeof Brewing !== 'undefined' && Brewing.isBottle(st),
+        get: () => be.bottles[i],
+        set: (s) => { be.bottles[i] = s; },
+      });
+    }
+    this.addPlayerSlots(84, 142);
+  }
+  quickMove(s) {
+    const st = s.get();
+    if (!st) return;
+    if (s.group === 'main' || s.group === 'hotbar') {
+      if (typeof Brewing !== 'undefined' && Brewing.isFuel(st)) {
+        const tgt = this.slots[0], ts = tgt.get();
+        if (!ts) { tgt.set(st); s.set(null); return; }
+        if (ts.id === st.id && ts.count < 64) {
+          const k = Math.min(st.count, 64 - ts.count);
+          ts.count += k; st.count -= k; if (!st.count) s.set(null);
+          return;
+        }
+      } else if (typeof Brewing !== 'undefined' && Brewing.isIngredient(st)) {
+        const tgt = this.slots[1], ts = tgt.get();
+        if (!ts) { tgt.set(st); s.set(null); return; }
+        if (ts.id === st.id && ts.count < 64) {
+          const k = Math.min(st.count, 64 - ts.count);
+          ts.count += k; st.count -= k; if (!st.count) s.set(null);
+          return;
+        }
+      } else if (typeof Brewing !== 'undefined' && Brewing.isBottle(st)) {
+        for (let i = 2; i <= 4; i++) {
+          if (!this.slots[i].get()) {
+            this.slots[i].set({ ...st, count: 1 });
+            st.count -= 1; if (!st.count) { s.set(null); return; }
+          }
+        }
+        return;
+      }
+    }
+    super.quickMove(s);
+  }
+  drawExtra(ui) {
+    const be = this.be, c = ui.ctx;
+    // Fuel bar (18x4 at 60, 44)
+    if ((be.fuelCharges || 0) > 0 && ui.img.brew_fuel) {
+      const fw = clamp(Math.ceil((be.fuelCharges / 20) * 18), 1, 18);
+      c.drawImage(ui.img.brew_fuel, 0, 0, fw, 4, this.x + 60, this.y + 44, fw, 4);
+    }
+    // Progress arrow (9x28 at 97, 16) & bubbles (12x29 at 63, 14)
+    if ((be.brewTime || 0) > 0) {
+      if (ui.img.brew_progress) {
+        const ph = clamp(Math.ceil((be.brewTime / 400) * 28), 1, 28);
+        c.drawImage(ui.img.brew_progress, 0, 0, 9, ph, this.x + 97, this.y + 16, 9, ph);
+      }
+      if (ui.img.brew_bubbles) {
+        const bLens = [0, 6, 11, 16, 20, 24, 29];
+        const bh = bLens[Math.floor((this.game.tickCount || 0) / 2) % bLens.length];
+        if (bh > 0) {
+          c.drawImage(ui.img.brew_bubbles, 0, 29 - bh, 12, bh, this.x + 63, this.y + 14 + 29 - bh, 12, bh);
+        }
+      }
+    }
+    Font.draw(c, '物品栏', this.x + 8, this.y + 73, '#404040', false);
+  }
+  close() { this.game.markBlockEntity(this.be); }
+}
+
 
 class EnchantingScreen extends ContainerScreen {
   constructor(game, pos) {
@@ -875,9 +1292,17 @@ class EnchantingScreen extends ContainerScreen {
     this.addPlayerSlots(84, 142);
   }
   changed() {
+    const curKey = this.itemSlot ? `${this.itemSlot.id}:${Object.keys(this.itemSlot.ench || {}).join(',')}` : '';
     if (typeof Enchant !== 'undefined' && this.itemSlot) {
+      if (this._lastItemKey !== curKey) {
+        if (this.game.player && this.game.player.creative && this._lastItemKey !== undefined) {
+          this.game.player.enchantSeed = ((this.game.player.enchantSeed || 1337) * 1664525 + 1013904223) | 0;
+        }
+        this._lastItemKey = curKey;
+      }
       this.options = Enchant.getTableOptions(this.game.player, this.itemSlot, this.bookshelves);
     } else {
+      this._lastItemKey = '';
       this.options = [null, null, null];
     }
   }
@@ -911,12 +1336,15 @@ class EnchantingScreen extends ContainerScreen {
   drawExtra(ui) {
     const c = ui.ctx, p = this.game.player;
     Font.draw(c, '物品栏', this.x + 8, this.y + 73, '#404040', false);
-    if (this.bookshelves > 0) {
-      Font.draw(c, `书架: ${this.bookshelves}/15`, this.x + 92, this.y + 5, '#5533AA', false);
-    }
-    // Draw book icon above the slots
+    const bsLabel = (p.creative && this.bookshelves < 15) ? '书架: 15/15 (创造)' : `书架: ${this.bookshelves}/15`;
+    Font.draw(c, bsLabel, this.x + 78, this.y + 5, '#5533AA', false);
+    // Draw 3D opening/closing book above the item & lapis slots
     const hasOpts = this.options.some(Boolean);
-    ui.drawItem({ id: item(hasOpts ? 'enchanted_book' : 'book'), count: 1 }, this.x + 25, this.y + 21);
+    if (this.game.renderer && typeof this.game.renderer.bookPreview === 'function') {
+      c.drawImage(this.game.renderer.bookPreview(hasOpts), this.x + 13, this.y + 12, 40, 32);
+    } else {
+      ui.drawItem({ id: item('book'), count: 1 }, this.x + 25, this.y + 21);
+    }
 
     let hovOpt = null;
     for (let i = 0; i < 3; i++) {
@@ -932,12 +1360,16 @@ class EnchantingScreen extends ContainerScreen {
       if (isHov) hovOpt = opt;
       ui.sprite(!afford ? 'enchant_slot_dis' : (isHov ? 'enchant_slot_hl' : 'enchant_slot'), bx, by);
       ui.sprite((afford ? 'enchant_lvl_' : 'enchant_lvl_') + (i + 1) + (afford ? '' : '_dis'), bx + 1, by + 1);
-      // Draw rune / galactic text
-      const words = opt.words.slice(0, 13);
-      Font.draw(c, words, bx + 20, by + 3, !afford ? '#685E4A' : (isHov ? '#FFFF80' : '#40362C'), false);
-      // Draw preview hint below
-      Font.draw(c, opt.preview, bx + 20, by + 10, !afford ? '#544C3D' : (isHov ? '#55FFFF' : '#7E644A'), false);
-      // Draw required level on right
+      // Top line (y = by + 2..7): compact scaled Galactic/rune text so it never collides with bottom line
+      const words = opt.words.slice(0, 14);
+      c.save();
+      c.translate(bx + 19, by + 2);
+      c.scale(0.65, 0.65);
+      Font.draw(c, words, 0, 0, !afford ? '#685E4A' : (isHov ? '#FFFF80' : '#40362C'), false);
+      c.restore();
+      // Bottom line (y = by + 10..17): Chinese enchantment preview hint with 3px vertical clearance
+      Font.draw(c, opt.preview, bx + 19, by + 10, !afford ? '#544C3D' : (isHov ? '#55FFFF' : '#2B2118'), false);
+      // Required XP level on right
       const lvlStr = String(opt.reqLevel);
       Font.draw(c, lvlStr, bx + 105 - Font.width(lvlStr), by + 9, afford ? '#80FF20' : '#407F10');
     }

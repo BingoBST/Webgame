@@ -2,13 +2,19 @@
 // ---------------------------------------------------------------------------
 // World: chunk storage, generation, lighting, fluids, block updates
 // ---------------------------------------------------------------------------
-const OPACITY = new Uint8Array(256), EMIT = new Uint8Array(256), SOLIDCUBE = new Uint8Array(256);
-const IS_FLUID = new Uint8Array(256), REPLACEABLE = new Uint8Array(256);
-for (let i = 0; i < 256; i++) {
-  const b = BLOCKS[i]; if (!b) { OPACITY[i] = 15; continue; }
+var BLOCK_CAP = typeof MAX_BLOCK_ID !== 'undefined' ? MAX_BLOCK_ID : 1024;
+var OPACITY = new Uint8Array(BLOCK_CAP), EMIT = new Uint8Array(BLOCK_CAP), SOLIDCUBE = new Uint8Array(BLOCK_CAP);
+var IS_FLUID = new Uint8Array(BLOCK_CAP), REPLACEABLE = new Uint8Array(BLOCK_CAP);
+var OPAQUE = SOLIDCUBE, LIGHT_EMIT = EMIT;
+function syncBlockProps(i) {
+  if (!OPACITY) return;
+  if (typeof OPACITY === "undefined") return;
+  const b = BLOCKS[i];
+  if (!b) { OPACITY[i] = 15; EMIT[i] = 0; SOLIDCUBE[i] = 0; IS_FLUID[i] = 0; REPLACEABLE[i] = 0; return; }
   OPACITY[i] = b.opacity; EMIT[i] = b.light; SOLIDCUBE[i] = b.opaque ? 1 : 0;
   IS_FLUID[i] = b.shape === SH_LIQUID ? 1 : 0; REPLACEABLE[i] = b.replaceable ? 1 : 0;
 }
+for (let i = 0; i < BLOCK_CAP; i++) syncBlockProps(i);
 const AIR = 0, WATER = 7, LAVA = 8;
 
 function ckey(cx, cz) { return (cx + 32768) * 65536 + (cz + 32768); }
@@ -16,19 +22,25 @@ function ckey(cx, cz) { return (cx + 32768) * 65536 + (cz + 32768); }
 class Chunk {
   constructor(cx, cz) {
     this.cx = cx; this.cz = cz;
-    this.blocks = new Uint8Array(16 * 16 * HEIGHT);
+    this.blocks = new Uint16Array(16 * 16 * HEIGHT);
     this.meta = new Uint8Array(16 * 16 * HEIGHT);
     this.light = new Uint8Array(16 * 16 * HEIGHT);
     this.grass = new Uint8Array(256 * 3);   // biome tint per column
     this.foliage = new Uint8Array(256 * 3);
     this.biome = new Uint8Array(256);
     this.dirty = 0;           // bitmask of sections needing remesh
+    this.meshingMask = 0;     // bitmask of sections currently queued/in-flight in Worker
+    this.secRev = new Uint32Array(SECTIONS); // per-section revision counter for stale mesh detection
     this.lit = false;
     this.meshes = new Array(SECTIONS).fill(null);
     this.modified = false;
     this.sectionCount = new Uint16Array(SECTIONS); // non-air block count per section
   }
   idx(x, y, z) { return (y << 8) | (z << 4) | x; }
+  bumpMask(mask) {
+    this.dirty |= mask;
+    for (let s = 0; s < SECTIONS; s++) if (mask & (1 << s)) this.secRev[s]++;
+  }
   recount() {
     this.sectionCount.fill(0);
     const b = this.blocks;
@@ -36,12 +48,13 @@ class Chunk {
   }
 }
 
-const BIOMES = ['海洋', '沙滩', '平原', '森林', '桦木森林', '针叶林', '雪原', '沙漠', '山地', '河流', '雪山', '冻洋'];
-const BI = { OCEAN: 0, BEACH: 1, PLAINS: 2, FOREST: 3, BIRCH: 4, TAIGA: 5, SNOWY: 6, DESERT: 7, MOUNTAIN: 8, RIVER: 9, SNOWPEAK: 10, FROZEN_OCEAN: 11 };
+const BIOMES = ['海洋', '沙滩', '平原', '森林', '桦木森林', '针叶林', '雪原', '沙漠', '山地', '河流', '雪山', '冻洋', '樱花树林'];
+const BI = { OCEAN: 0, BEACH: 1, PLAINS: 2, FOREST: 3, BIRCH: 4, TAIGA: 5, SNOWY: 6, DESERT: 7, MOUNTAIN: 8, RIVER: 9, SNOWPEAK: 10, FROZEN_OCEAN: 11, CHERRY_GROVE: 12 };
 
 class World {
   constructor(seed) {
     this.seed = seed | 0;
+    this.dimension = 'overworld';
     this.chunks = new Map();
     this.nCont = new Noise(seed);
     this.nErosion = new Noise(seed + 1);
@@ -57,9 +70,50 @@ class World {
     this.listener = null;     // game hooks
     this.ticks = new Map();   // scheduled block ticks: key -> {x,y,z,t}
     this.time = 0;            // game tick counter
-    this.savedChunks = null;  // map key -> saved data, filled by save system
+    this.modifiedChunkKeys = new Set(); // permanent in-memory set of all modified chunk keys
+    this.loadingChunks = new Set();     // chunk keys currently being fetched from IndexedDB
+    this.generatingChunks = new Set();  // chunk keys currently queued/in-flight in Worker
+    this.savedChunks = this._wrapSavedChunks(new Map()); // hot cache of saved chunk records (max 128 cold)
     this.lightQ = [];
     this.grassMap = null; this.foliageMap = null;
+  }
+
+  _wrapSavedChunks(map) {
+    const self = this;
+    const origSet = map.set.bind(map);
+    map.set = function (k, v) {
+      self.modifiedChunkKeys.add(k);
+      return origSet(k, v);
+    };
+    return map;
+  }
+
+  setSavedChunks(map, extraKeys) {
+    const m = map instanceof Map ? map : new Map();
+    for (const k of m.keys()) this.modifiedChunkKeys.add(k);
+    if (extraKeys) for (const k of extraKeys) this.modifiedChunkKeys.add(k);
+    this.savedChunks = this._wrapSavedChunks(m);
+  }
+
+  evictColdChunks(pcx = 0, pcz = 0, dirtySet = null, maxSaved = 128) {
+    if (!this.savedChunks || this.savedChunks.size <= maxSaved) return 0;
+    for (const k of this.savedChunks.keys()) this.modifiedChunkKeys.add(k);
+    const candidates = [];
+    for (const k of this.savedChunks.keys()) {
+      if (dirtySet && dirtySet.has(k)) continue;
+      const cx = Math.floor(k / 65536) - 32768;
+      const cz = (k % 65536) - 32768;
+      const d2 = (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz);
+      candidates.push([k, d2]);
+    }
+    candidates.sort((a, b) => b[1] - a[1]);
+    let evicted = 0;
+    for (const [k] of candidates) {
+      if (this.savedChunks.size <= maxSaved) break;
+      this.savedChunks.delete(k);
+      evicted++;
+    }
+    return evicted;
   }
 
   // ---- access -------------------------------------------------------------
@@ -123,6 +177,8 @@ class World {
     if (h <= SEA + 1 && col.river > 0.3) return BI.RIVER;
     if (h <= SEA + 2 && col.cont < 0.02) return t > 0.35 && hu < 0.1 ? BI.DESERT : BI.BEACH;
     if (h > 118) return BI.SNOWPEAK;
+    // High-altitude temperate & humid zone -> 1.20 Cherry Grove (樱花树林)
+    if (h >= 76 && h <= 112 && t >= -0.25 && t <= 0.45 && hu >= 0.02) return BI.CHERRY_GROVE;
     if (h > 98 && col.mount > 0.3) return BI.MOUNTAIN;
     if (t > 0.35 && hu < 0.1) return BI.DESERT;
     if (t < -0.42) return BI.SNOWY;
@@ -166,8 +222,13 @@ class World {
       maxH = Math.max(maxH, c.h);
       const bi = this.biomeOf(c);
       ch.biome[z * 16 + x] = bi;
-      this.tintFor(this.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
-      this.tintFor(this.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
+      if (bi === BI.CHERRY_GROVE) {
+        this.tintFor(this.grassMap, 0.45, 0.65, ch.grass, (z * 16 + x) * 3);
+        this.tintFor(this.foliageMap, 0.45, 0.65, ch.foliage, (z * 16 + x) * 3);
+      } else {
+        this.tintFor(this.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
+        this.tintFor(this.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
+      }
     }
     // cave noise on a coarse grid (4x8x4) then trilinear interpolation
     const gy = Math.min(HEIGHT, maxH + 9) >> 3;
@@ -313,7 +374,7 @@ class World {
     const r = RNG(hashStr('trees' + this.seed + ':' + ncx + ':' + ncz));
     const cc = this.column(ncx * 16 + 8, ncz * 16 + 8);
     const bi = this.biomeOf(cc);
-    const dens = { [BI.FOREST]: 9, [BI.BIRCH]: 9, [BI.TAIGA]: 7, [BI.SNOWY]: 1.5, [BI.PLAINS]: 0.25, [BI.MOUNTAIN]: 0.6, [BI.RIVER]: 0.3 }[bi] || 0;
+    const dens = { [BI.FOREST]: 9, [BI.BIRCH]: 9, [BI.TAIGA]: 7, [BI.CHERRY_GROVE]: 6, [BI.SNOWY]: 1.5, [BI.PLAINS]: 0.25, [BI.MOUNTAIN]: 0.6, [BI.RIVER]: 0.3 }[bi] || 0;
     let n = Math.floor(dens + r());
     for (let i = 0; i < n; i++) {
       const lx = r.int(16), lz = r.int(16);
@@ -326,12 +387,13 @@ class World {
       const c2 = this.column(X + 1, Z), c3 = this.column(X, Z + 1);
       if (Math.abs(c2.h - c.h) > 2 || Math.abs(c3.h - c.h) > 2) continue;
       let type = 'oak';
-      if (b === BI.TAIGA || b === BI.SNOWY || (b === BI.MOUNTAIN)) type = 'spruce';
+      if (b === BI.CHERRY_GROVE) type = 'cherry';
+      else if (b === BI.TAIGA || b === BI.SNOWY || (b === BI.MOUNTAIN)) type = 'spruce';
       else if (b === BI.BIRCH) type = r() < 0.85 ? 'birch' : 'oak';
       else if (b === BI.FOREST) type = r() < 0.25 ? 'birch' : (r() < 0.1 ? 'big' : 'oak');
-      t.push({ x: X, y: c.h + 1, z: Z, type, h: 4 + r.int(3), seed: r.int(1 << 30) });
+      t.push({ x: X, y: c.h + 1, z: Z, type, h: (type === 'cherry' ? 5 : 4) + r.int(3), seed: r.int(1 << 30) });
     }
-    if (this._treeCache.size > 4000) this._treeCache.clear();
+    while (this._treeCache.size >= 512) this._treeCache.delete(this._treeCache.keys().next().value);
     this._treeCache.set(k, t);
     return t;
   }
@@ -366,6 +428,41 @@ class World {
       set(x, y + h + 1, z, 50, 0, false);
       for (let dy = 0; dy < h; dy++) set(x, y + dy, z, 49, 0, true);
       set(x, y - 1, z, 3, 0, true);
+    } else if (type === 'cherry') {
+      // 1.20 Pink Canopy Cherry Tree (粉色华盖樱花树): cherry_log (519) & cherry_leaves (520)
+      const h = Math.max(5, tr.h);
+      const logId = 519, leafId = 520;
+      // Wide flat-topped pink canopy
+      for (let dy = h - 2; dy <= h + 1; dy++) {
+        const rad = dy === h + 1 ? 2 : 3;
+        const maxD2 = dy === h + 1 ? 5 : 11;
+        for (let dx = -rad; dx <= rad; dx++) {
+          for (let dz = -rad; dz <= rad; dz++) {
+            const d2 = dx * dx + dz * dz;
+            if (d2 > maxD2) continue;
+            if (d2 === maxD2 && r() < 0.35) continue;
+            set(x + dx, y + dy, z + dz, leafId, 0, false);
+          }
+        }
+      }
+      // Hanging outer blossom clusters
+      for (let dx = -3; dx <= 3; dx++) {
+        for (let dz = -3; dz <= 3; dz++) {
+          const d2 = dx * dx + dz * dz;
+          if (d2 >= 4 && d2 <= 9 && r() < 0.38) {
+            set(x + dx, y + h - 3, z + dz, leafId, 0, false);
+          }
+        }
+      }
+      // Trunk + 2 spreading canopy branches
+      for (let dy = 0; dy < h; dy++) set(x, y + dy, z, logId, 0, true);
+      const bDir = r() < 0.5 ? [1, 0] : [0, 1];
+      const bAxis = bDir[0] ? 1 : 2;
+      set(x + bDir[0], y + h - 2, z + bDir[1], logId, bAxis, true);
+      set(x + bDir[0] * 2, y + h - 1, z + bDir[1] * 2, logId, 0, true);
+      set(x - bDir[0], y + h - 2, z - bDir[1], logId, bAxis, true);
+      set(x - bDir[0] * 2, y + h - 1, z - bDir[1] * 2, logId, 0, true);
+      set(x, y - 1, z, 3, 0, true);
     }
   }
 
@@ -375,7 +472,7 @@ class World {
       const lx = wx - x0, lz = wz - z0;
       if (lx < 0 || lx > 15 || lz < 0 || lz > 15 || wy < 1 || wy >= HEIGHT) return;
       const i = (wy << 8) | (lz << 4) | lx, cur = B[i];
-      if (force ? (cur !== 6) : (cur === AIR || cur === 34 || cur === 39 || cur === 40)) { B[i] = id; M[i] = meta; }
+      if (force ? (cur !== 6) : (cur === AIR || cur === 34 || cur === 39 || cur === 40 || cur === 522)) { B[i] = id; M[i] = meta; }
     };
     for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
       for (const tr of this.treesFor(ch.cx + dx, ch.cz + dz)) {
@@ -401,7 +498,11 @@ class World {
       if (B[ai] !== AIR) continue;
       const g = B[gi], v = r();
       if (g === 2) {
-        if (bi === BI.PLAINS) {
+        if (bi === BI.CHERRY_GROVE) {
+          if (v < 0.28) { B[ai] = 522; M[ai] = r.int(4); }
+          else if (v < 0.34) B[ai] = 39;
+          else if (v < 0.36) B[ai] = r() < 0.6 ? 99 : 42;
+        } else if (bi === BI.PLAINS) {
           if (v < 0.25) B[ai] = 39;
           else if (v < 0.28) B[ai] = [41, 42, 98, 44, 101, 43][(this.nSurf.n2((x0 + x) / 30, (z0 + z) / 30) * 3 + 3) | 0] || 41;
           else if (v < 0.2805) B[ai] = 53;
@@ -491,12 +592,12 @@ class World {
     const s = 1 << (y >> 4);
     let m = s; const yy = y & 15;
     if (yy === 0 && y > 0) m |= s >> 1; else if (yy === 15) m |= s << 1;
-    ch.dirty |= m;
+    ch.bumpMask(m);
     if (lx === 0 || lx === 15 || lz === 0 || lz === 15) {
       const dx = lx === 0 ? -1 : lx === 15 ? 1 : 0, dz = lz === 0 ? -1 : lz === 15 ? 1 : 0;
-      if (dx) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz)); if (n) n.dirty |= m; }
-      if (dz) { const n = this.chunks.get(ckey(ch.cx, ch.cz + dz)); if (n) n.dirty |= m; }
-      if (dx && dz) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz + dz)); if (n) n.dirty |= m; }
+      if (dx) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz)); if (n) n.bumpMask(m); }
+      if (dz) { const n = this.chunks.get(ckey(ch.cx, ch.cz + dz)); if (n) n.bumpMask(m); }
+      if (dx && dz) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz + dz)); if (n) n.bumpMask(m); }
     }
   }
 
@@ -580,12 +681,12 @@ class World {
     const s = 1 << (y >> 4); let m = s;
     const yy = y & 15;
     if (yy === 0 && y > 0) m |= s >> 1; else if (yy === 15) m |= s << 1;
-    ch.dirty |= m;
+    ch.bumpMask(m);
     if (lx === 0 || lx === 15 || lz === 0 || lz === 15) {
       const dx = lx === 0 ? -1 : lx === 15 ? 1 : 0, dz = lz === 0 ? -1 : lz === 15 ? 1 : 0;
-      if (dx) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz)); if (n) n.dirty |= m; }
-      if (dz) { const n = this.chunks.get(ckey(ch.cx, ch.cz + dz)); if (n) n.dirty |= m; }
-      if (dx && dz) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz + dz)); if (n) n.dirty |= m; }
+      if (dx) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz)); if (n) n.bumpMask(m); }
+      if (dz) { const n = this.chunks.get(ckey(ch.cx, ch.cz + dz)); if (n) n.bumpMask(m); }
+      if (dx && dz) { const n = this.chunks.get(ckey(ch.cx + dx, ch.cz + dz)); if (n) n.bumpMask(m); }
     }
   }
 
@@ -600,6 +701,7 @@ class World {
     ch.blocks[i] = id; ch.meta[i] = meta;
     if (!old && id) ch.sectionCount[y >> 4]++; else if (old && !id) ch.sectionCount[y >> 4]--;
     ch.modified = true;
+    this.modifiedChunkKeys.add(ckey(ch.cx, ch.cz));
     this.markBlock(ch, x & 15, y, z & 15);
     if (!(flags & 2) && (OPACITY[old] !== OPACITY[id] || EMIT[old] !== EMIT[id])) this.relight(x, y, z);
     if (flags & 1) {
@@ -613,9 +715,14 @@ class World {
     const ch = this.getChunk(x >> 4, z >> 4);
     if (!ch || y < 0 || y >= HEIGHT) return;
     const i = (y << 8) | ((z & 15) << 4) | (x & 15);
-    if (ch.meta[i] === meta) return;
+    const oldMeta = ch.meta[i];
+    if (oldMeta === meta) return;
     ch.meta[i] = meta; ch.modified = true;
+    this.modifiedChunkKeys.add(ckey(ch.cx, ch.cz));
     this.markBlock(ch, x & 15, y, z & 15);
+    if (this.listener && this.listener.onBlockMetaChanged) {
+      this.listener.onBlockMetaChanged(x, y, z, ch.blocks[i], oldMeta, meta);
+    }
   }
 
   notify(x, y, z, changedOld) {
@@ -641,7 +748,7 @@ class World {
     }
   }
 
-  canFlowInto(id) { return id === AIR || (REPLACEABLE[id] && !IS_FLUID[id]) || (BLOCKS[id] && BLOCKS[id].needsSupport && (!BLOCKS[id].solid || BLOCKS[id].repeater)); }
+  canFlowInto(id) { return id === AIR || (REPLACEABLE[id] && !IS_FLUID[id]) || (BLOCKS[id] && BLOCKS[id].needsSupport && (!BLOCKS[id].solid || BLOCKS[id].repeater || BLOCKS[id].comparator)); }
 
   fluidTick(x, y, z) {
     if (!this.isLoaded(x, z)) return;
@@ -705,7 +812,7 @@ class World {
       for (let s = 1; s <= (water ? 4 : 2); s++) {
         const px = x + DIRS[d][0] * s, pz = z + DIRS[d][2] * s;
         const pid = this.getBlock(px, y, pz);
-        if (BLOCKS[pid].solid && !BLOCKS[pid].repeater && pid !== id) break;
+        if (BLOCKS[pid].solid && !BLOCKS[pid].repeater && !BLOCKS[pid].comparator && pid !== id) break;
         const under = this.getBlock(px, y - 1, pz);
         if (this.canFlowInto(under) || under === id) { dist[k] = s; break; }
       }

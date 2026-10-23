@@ -1,6 +1,6 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// Entities, physics, mobs, particles, explosions
+// Entities, physics, mobs, particles, explosions, status effects
 // ---------------------------------------------------------------------------
 function blockBoxes(world, x0, y0, z0, x1, y1, z1, out) {
   out.length = 0;
@@ -139,13 +139,68 @@ class Living extends Entity {
     this.fire = 0; this.air = 300;
     this.limbSwing = 0; this.limbAmt = 0; this.bodyYaw = 0; this.headYaw = 0;
     this.stepHeight = 0.6; this.slowFall = false;
+    this.effects = {};
+  }
+  applyEffect(id, duration = 0, amp = 0) {
+    if (!id) return;
+    if (id === 'instant_health') {
+      const healAmt = 8 << (amp || 0);
+      this.health = Math.min(this.maxHealth || 20, this.health + healAmt);
+      if (this.game && this.game.particles) {
+        for (let i = 0; i < 8; i++) {
+          this.game.particles.spawn('heart', this.pos[0] + (Math.random() - 0.5) * 0.8, this.pos[1] + 0.8 + Math.random() * 0.8, this.pos[2] + (Math.random() - 0.5) * 0.8, 0, 0.03, 0);
+        }
+      }
+      return;
+    }
+    if (!this.effects) this.effects = {};
+    const cur = this.effects[id];
+    const ticks = Math.max(cur ? cur.ticks : 0, duration);
+    const maxTicks = Math.max(cur ? (cur.maxTicks || 0) : 0, duration);
+    this.effects[id] = { id, ticks, maxTicks, amp: Math.max(cur ? (cur.amp || 0) : 0, amp) };
+    if (id === 'fire_resistance') this.fire = 0;
+  }
+  hasEffect(id) {
+    return !!(this.effects && this.effects[id] && this.effects[id].ticks > 0);
+  }
+  effectLevel(id) {
+    return this.hasEffect(id) ? ((this.effects[id].amp || 0) + 1) : 0;
+  }
+  clearEffects() {
+    this.effects = {};
+  }
+  tickEffects() {
+    if (!this.effects) return;
+    const keys = Object.keys(this.effects);
+    for (const k of keys) {
+      const eff = this.effects[k];
+      if (!eff || eff.ticks <= 0) {
+        delete this.effects[k];
+        continue;
+      }
+      eff.ticks--;
+      if (eff.ticks <= 0) delete this.effects[k];
+    }
+    if (keys.length && this.age % 8 === 0 && this.game && this.game.particles) {
+      const firstKey = Object.keys(this.effects)[0];
+      const def = (typeof STATUS_EFFECTS !== 'undefined' && STATUS_EFFECTS[firstKey]) || null;
+      let col = [140, 180, 255];
+      if (def && def.color) {
+        const hex = parseInt(def.color.slice(1), 16);
+        col = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+      }
+      this.game.particles.spawn('potion', this.pos[0] + (Math.random() - 0.5) * 0.6, this.pos[1] + 0.5 + Math.random() * 1.1, this.pos[2] + (Math.random() - 0.5) * 0.6, 0, 0.02, 0, { col });
+    }
   }
   hurt(amount, source) {
     if (this.dead || this.deathTime > 0) return false;
+    if (source && (source.type === 'fire' || source.type === 'lava') && this.hasEffect('fire_resistance')) return false;
     if (this.invuln > 10 && amount <= this.lastDamage) return false;
     const actual = this.invuln > 10 ? amount - this.lastDamage : amount;
+    const reduced = this.reduceDamage ? this.reduceDamage(actual, source) : actual;
+    if (reduced <= 0) return false;
     this.lastDamage = amount; this.invuln = 20; this.hurtTime = 10;
-    this.health -= this.reduceDamage ? this.reduceDamage(actual, source) : actual;
+    this.health -= reduced;
     if (source && source.knockFrom) {
       const dx = this.pos[0] - source.knockFrom[0], dz = this.pos[2] - source.knockFrom[2];
       const d = Math.hypot(dx, dz) || 1, k = source.knock ?? 0.4;
@@ -160,17 +215,25 @@ class Living extends Entity {
   die() { this.deathTime = 1; }
   baseTick() {
     this.age++;
+    this.tickEffects();
     if (this.hurtTime > 0) this.hurtTime--;
     if (this.invuln > 0) this.invuln--;
     this.updateFluids();
-    if (this.inLava) { this.hurt(4, { type: 'lava' }); this.fire = 300; }
+    const fireRes = this.hasEffect('fire_resistance');
+    if (this.inLava) {
+      if (!fireRes) { this.hurt(4, { type: 'lava' }); this.fire = 300; }
+      else this.fire = 0;
+    }
     if (this.fire > 0) {
-      const fp = (this.inv && typeof Enchant !== 'undefined') ? Enchant.maxArmorEnch(this.inv, 'fire_protection') : 0;
-      this.fire -= (fp > 0 && Math.random() < fp * 0.15) ? 2 : 1;
-      if (this.fire < 0) this.fire = 0;
-      if (this.inWater) this.fire = 0;
-      else if (this.fire > 0 && this.fire % 20 === 0) this.hurt(1, { type: 'fire' });
-      if (Math.random() < 0.3) this.game.particles.spawn('flame', this.pos[0] + (Math.random() - 0.5) * this.w, this.pos[1] + Math.random() * this.h, this.pos[2] + (Math.random() - 0.5) * this.w, 0, 0.02, 0);
+      if (fireRes || this.inWater) {
+        this.fire = 0;
+      } else {
+        const fp = (this.inv && typeof Enchant !== 'undefined') ? Enchant.maxArmorEnch(this.inv, 'fire_protection') : 0;
+        this.fire -= (fp > 0 && Math.random() < fp * 0.15) ? 2 : 1;
+        if (this.fire < 0) this.fire = 0;
+        if (this.fire > 0 && this.fire % 20 === 0) this.hurt(1, { type: 'fire' });
+        if (Math.random() < 0.3) this.game.particles.spawn('flame', this.pos[0] + (Math.random() - 0.5) * this.w, this.pos[1] + Math.random() * this.h, this.pos[2] + (Math.random() - 0.5) * this.w, 0, 0.02, 0);
+      }
     }
     if (this.eyeInWater && !this.waterBreather) {
       const resp = (this.inv && typeof Enchant !== 'undefined') ? Enchant.maxArmorEnch(this.inv, 'respiration') : 0;
@@ -182,7 +245,7 @@ class Living extends Entity {
     for (const [x, y, z] of [[b[0] - 0.01, b[1] + 0.3, this.pos[2]], [b[3] + 0.01, b[1] + 0.3, this.pos[2]], [this.pos[0], b[1] + 0.3, b[2] - 0.01], [this.pos[0], b[1] + 0.3, b[5] + 0.01]]) {
       if (this.world.getBlock(Math.floor(x), Math.floor(y), Math.floor(z)) === 37) { this.hurt(1, { type: 'cactus' }); break; }
     }
-    if (this.onGround && this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] - 0.1), Math.floor(this.pos[2])) === 103 && !this.sneaking) this.hurt(1, { type: 'fire' });
+    if (!fireRes && this.onGround && this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] - 0.1), Math.floor(this.pos[2])) === 103 && !this.sneaking) this.hurt(1, { type: 'fire' });
     if (this.pos[1] < -40) this.hurt(4, { type: 'void' });
   }
   onLand(d) {
@@ -207,8 +270,8 @@ class Living extends Entity {
       if (jump) v[1] += 0.04;
       const inWeb = this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + 0.1), Math.floor(this.pos[2])) === 177 ||
                   this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + this.h * 0.6), Math.floor(this.pos[2])) === 177;
-    if (inWeb) { v[0] *= 0.25; v[1] = Math.max(-0.05, v[1] * 0.15); v[2] *= 0.25; this.fallDist = 0; }
-    this.move(v[0], v[1], v[2]);
+      if (inWeb) { v[0] *= 0.25; v[1] = Math.max(-0.05, v[1] * 0.15); v[2] *= 0.25; this.fallDist = 0; }
+      this.move(v[0], v[1], v[2]);
       v[0] *= drag; v[1] *= drag; v[2] *= drag;
       v[1] -= 0.02;
       if (this.collidedH && jump) {
@@ -326,6 +389,7 @@ class Player extends Living {
   reduceDamage(a, src) {
     if (this.creative && src && src.type !== 'void') return 0;
     const type = src && src.type;
+    if ((type === 'fire' || type === 'lava') && this.hasEffect('fire_resistance')) return 0;
     if (type === 'drown' || type === 'starve' || type === 'void') return a;
     let dmg = a;
     if (type !== 'fall' && type !== 'fire') {
@@ -357,6 +421,7 @@ class Player extends Living {
   hurt(a, src) {
     if (this.creative && (!src || src.type !== 'void')) return false;
     if (this.game.gameOver) return false;
+    if (src && (src.type === 'fire' || src.type === 'lava') && this.hasEffect('fire_resistance')) return false;
     const r = super.hurt(a, src);
     if (r) { this.exhaust(0.1); Sound.hurt(null); this.game.onPlayerHurt(src); }
     return r;
@@ -380,12 +445,13 @@ class Player extends Living {
     const canSprint = cr || this.food > 6;
     if (input.sprint && input.fwd > 0 && canSprint && !this.sneaking) this.sprinting = true;
     if (input.fwd <= 0 || this.collidedH || !canSprint || this.sneaking) this.sprinting = false;
-    const sp = this.sprinting ? 0.13 : 0.1;
+    const speedMult = 1 + 0.2 * this.effectLevel('speed');
+    const sp = (this.sprinting ? 0.13 : 0.1) * speedMult;
     let fwd = input.fwd * 0.98, str = input.strafe * 0.98;
     if (this.sneaking) { fwd *= 0.3; str *= 0.3; }
     if (this.useT > 0 && this.usingItem) { fwd *= 0.2; str *= 0.2; }
-    this.airSpeed = this.sprinting ? 0.026 : 0.02;
-    this.waterSpeed = 1 + (typeof Enchant !== 'undefined' ? Enchant.maxArmorEnch(this.inv, 'depth_strider') * 0.65 : 0);
+    this.airSpeed = (this.sprinting ? 0.026 : 0.02) * speedMult;
+    this.waterSpeed = (1 + (typeof Enchant !== 'undefined' ? Enchant.maxArmorEnch(this.inv, 'depth_strider') * 0.65 : 0)) * speedMult;
     this.slowFall = false;
     if (this.flying) {
       const v = this.vel;
@@ -458,7 +524,7 @@ const MOB_TYPES = {
 };
 
 class Mob extends Living {
-  constructor(game, type, x, y, z) {
+  constructor(game, type, x, y, z, prof) {
     const T = MOB_TYPES[type];
     super(game, x, y, z, T.w, T.h, T.hp);
     this.type = type; this.T = T;
@@ -471,6 +537,8 @@ class Mob extends Living {
     this.waterSpeed = 1.5;
     if (type === 'chicken') this.slowFall = true;
     if (type === 'sheep') { const r = Math.random(); this.woolColor = r < 0.05 ? 15 : r < 0.1 ? 7 : r < 0.15 ? 8 : r < 0.18 ? 12 : r < 0.182 ? 6 : 0; }
+    if (prof) this.profession = prof;
+    if (type === 'villager' && typeof Trading !== 'undefined') Trading.ensureVillager(this, game, prof);
   }
   hurt(a, src) {
     const r = super.hurt(a, src);
@@ -507,6 +575,9 @@ class Mob extends Living {
         for (let i = 0; i < 12; i++) this.game.particles.spawn('poof', this.pos[0] + (Math.random() - 0.5) * this.w, this.pos[1] + Math.random() * this.h, this.pos[2] + (Math.random() - 0.5) * this.w, (Math.random() - 0.5) * 0.1, Math.random() * 0.1, (Math.random() - 0.5) * 0.1);
       }
       return;
+    }
+    if (this.type === 'villager' && typeof Trading !== 'undefined' && this.age % 20 === 0) {
+      Trading.checkRestock(this, this.game);
     }
     const g = this.game, p = g.player, T = this.T;
     let fwd = 0, jump = false, mod = 1;
@@ -892,6 +963,15 @@ class Particles {
       case 'damage': p.layer = T('p_damage'); p.life = 15; p.size = 0.1; p.grav = 0.02; break;
       case 'glint': p.layer = T('p_glint'); p.life = 20; p.size = 0.08; p.bright = true; break;
       case 'bone_meal': p.layer = T('p_effect_' + (r() * 3 | 0)); p.life = 20; p.size = 0.08; p.col = [120, 220, 90]; p.bright = true; break;
+      case 'potion': p.layer = T('p_effect_' + (r() * 3 | 0)); p.life = 24 + (r() * 12 | 0); p.size = 0.08; p.col = (extra && extra.col) || [200, 100, 255]; p.bright = true; break;
+      case 'cherry_petal':
+        p.layer = T('p_leaf_' + (r() * 3 | 0));
+        p.life = 60 + (r() * 40 | 0);
+        p.size = 0.055 + r() * 0.025;
+        p.grav = 0.0012;
+        p.col = (extra && extra.col) || [255, 182 + (r() * 35 | 0), 208 + (r() * 35 | 0)];
+        p.swayPhase = r() * Math.PI * 2;
+        break;
       case 'rain': p.layer = T('p_splash_' + (r() * 4 | 0)); p.life = 6; p.size = 0.06; p.grav = 0.04; p.col = [100, 140, 230]; break;
     }
     this.list.push(p);
@@ -919,6 +999,11 @@ class Particles {
       p.px = p.x; p.py = p.y; p.pz = p.z;
       p.age++;
       p.vy -= p.grav;
+      if (p.type === 'cherry_petal') {
+        p.vx += Math.cos(p.age * 0.12 + (p.swayPhase || 0)) * 0.0014;
+        p.vz += Math.sin(p.age * 0.12 + (p.swayPhase || 0)) * 0.0014;
+        if (p.vy < -0.035) p.vy = -0.035;
+      }
       let nx = p.x + p.vx, ny = p.y + p.vy, nz = p.z + p.vz;
       if (p.grav > 0) {
         const id = w.getBlock(Math.floor(nx), Math.floor(ny), Math.floor(nz));

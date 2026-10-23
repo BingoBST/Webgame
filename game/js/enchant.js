@@ -50,10 +50,10 @@ const ENCHANTS = {
     maxE: (l) => 60 + (l - 1) * 20,
   },
   looting: {
-    key: 'looting', cn: '抢夺', max: 3, weight: 2, anvilCost: 4,
+    key: 'looting', cn: '抢夺', max: 3, weight: 4, anvilCost: 4,
     tableItems: ['sword'],
     anvilItems: ['sword'],
-    minE: (l) => 15 + (l - 1) * 9,
+    minE: (l) => 12 + (l - 1) * 8,
     maxE: (l) => 65 + (l - 1) * 9,
   },
 
@@ -66,19 +66,19 @@ const ENCHANTS = {
     maxE: (l) => 51 + (l - 1) * 10,
   },
   silk_touch: {
-    key: 'silk_touch', cn: '精准采集', max: 1, weight: 1, anvilCost: 8,
+    key: 'silk_touch', cn: '精准采集', max: 1, weight: 2, anvilCost: 8,
     conflict: 'mine_drop',
     tableItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
     anvilItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
-    minE: () => 15,
+    minE: () => 12,
     maxE: () => 65,
   },
   fortune: {
-    key: 'fortune', cn: '时运', max: 3, weight: 2, anvilCost: 4,
+    key: 'fortune', cn: '时运', max: 3, weight: 4, anvilCost: 4,
     conflict: 'mine_drop',
     tableItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
     anvilItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
-    minE: (l) => 15 + (l - 1) * 9,
+    minE: (l) => 12 + (l - 1) * 8,
     maxE: (l) => 65 + (l - 1) * 9,
   },
 
@@ -317,7 +317,8 @@ const Enchant = {
   // Generate the 3 Enchanting Table options for a given item stack and bookshelf count (0..15)
   getTableOptions(player, stack, bookshelves) {
     if (!this.canTableEnchant(stack)) return [null, null, null];
-    const b = clamp(bookshelves, 0, 15);
+    const effBs = (player && player.creative && bookshelves < 15) ? 15 : bookshelves;
+    const b = clamp(effBs, 0, 15);
     const seedBase = (player.enchantSeed || (player.enchantSeed = 1337)) ^ (stack.id * 7919);
     const r = RNG(seedBase);
     const base = 1 + r.int(8) + Math.floor(b / 2) + r.int(b + 1);
@@ -331,7 +332,8 @@ const Enchant = {
       const ench = this.rollEnchantments(sr, stack.id, reqLevel);
       const keys = Object.keys(ench);
       if (!keys.length) return null;
-      const firstKey = keys[0];
+      // Show rarest / signature enchantment in preview hint so Fortune/Silk Touch/Looting are never hidden behind Efficiency/Unbreaking
+      const firstKey = keys.slice().sort((ka, kb) => (ENCHANTS[ka].weight || 10) - (ENCHANTS[kb].weight || 10))[0];
       const w1 = GALACTIC_WORDS[sr.int(GALACTIC_WORDS.length)];
       const w2 = GALACTIC_WORDS[sr.int(GALACTIC_WORDS.length)];
       return {

@@ -446,10 +446,10 @@ const Structures = {
               if (w === 0 && r() < 0.15) continue; // occasional weathered gap in beam
               set(cx + px * w, p.y + 2, cz + pz * w, PLANKS, 0, false);
             }
-            // Torch on support beam
+            // Torch mounted on the side of the oak support pillar
             if (r() < 0.55) {
-              const tMeta = dx !== 0 ? (dx > 0 ? 1 : 0) : (dz > 0 ? 5 : 4);
-              if (s + 1 < p.len) set(cx + dx, p.y + 2, cz + dz, TORCH, tMeta, false);
+              const tMeta = dx !== 0 ? (dx > 0 ? 6 : 1) : (dz > 0 ? 4 : 5);
+              if (s + 1 < p.len) set(cx - px + dx, p.y + 2, cz - pz + dz, TORCH, tMeta, false);
             }
           } else {
             // Cobwebs in upper corners (connected to ceiling/walls or spawner area)
@@ -776,7 +776,7 @@ const Structures = {
       set(bx + 1, by + 1, bz + 2, 118, 0, true); // bed foot
       set(bx + 1, by + 1, bz + 1, 118, 4, true); // bed head (north)
       set(bx + 3, by + 1, bz + 1, 19, 0, true);  // crafting table
-      set(bx + 2, by + 3, bz + 2, 21, 0, true);  // torch
+      set(bx + 1, by + 2, bz + 1, 21, 4, true);  // wall torch attached to solid North wall (z = 0)
       buildRoof(W, D, H);
     } else if (kind === 'house_med') {
       const W = 7, D = 6, H = 4;
@@ -804,7 +804,8 @@ const Structures = {
       set(bx + 5, by + 1, bz + 1, 52, 4 | VIL_LOOT, true); // House loot chest
       set(bx + 1, by + 1, bz + 1, P.fence, 0, true);
       set(bx + 1, by + 2, bz + 1, 169, 0, true); // oak_pressure_plate tabletop
-      set(bx + 3, by + 3, bz + 2, 21, 0, true);
+      set(bx + 2, by + 2, bz + 1, 21, 4, true); // wall torch attached to solid North wall (z = 0)
+      set(bx + 4, by + 2, bz + 1, 21, 4, true);
       buildRoof(W, D, H);
     } else if (kind === 'library') {
       const W = 8, D = 6, H = 5;
@@ -832,8 +833,8 @@ const Structures = {
       set(bx + 6, by + 1, bz + 4, 19, 0, true); // crafting table
       set(bx + 4, by + 1, bz + 3, P.fence, 0, true);
       set(bx + 4, by + 2, bz + 3, 169, 0, true);
-      set(bx + 3, by + 3, bz + 2, 21, 0, true);
-      set(bx + 5, by + 3, bz + 2, 21, 0, true);
+      set(bx + 4, by + 3, bz + D - 2, 21, 5, true); // wall torches attached to solid South wall (z = D - 1)
+      set(bx + 6, by + 3, bz + D - 2, 21, 5, true);
       buildRoof(W, D, H);
     } else if (kind === 'smithy') {
       // Classic Minecraft Village Blacksmith (9x6x7) with open forge patio, lava basin, furnace & loot chest
@@ -883,7 +884,7 @@ const Structures = {
       // Blacksmith Loot Chest at (x = 7, z = 1) + Iron Block at (x = 7, z = 4)
       set(bx + 7, by + 1, bz + 1, 52, 5 | VIL_LOOT, true);
       set(bx + 7, by + 1, bz + 4, 29, 0, true); // iron_block
-      set(bx + 6, by + 3, bz + 2, 21, 0, true);
+      set(bx + 6, by + 2, bz + D - 2, 21, 5, true); // wall torch attached to solid South wall (z = D - 1)
     } else if (kind === 'temple') {
       // 3-story Village Church / Watchtower (6x9x6)
       const W = 6, D = 6, H = 9;
@@ -896,7 +897,7 @@ const Structures = {
             // Crenellated rooftop battlements
             if (wall && ((x + z) & 1) === 0) set(bx + x, by + dy, bz + z, P.cobble, 0, true);
           } else if (dy === H - 1) {
-            set(bx + x, by + dy, bz + z, P.cobble, 0, true);
+            if (!(x === W - 2 && z === 1)) set(bx + x, by + dy, bz + z, P.cobble, 0, true);
           } else if (wall) {
             const isWin = (dy === 3 || dy === 6) && ((x === 2 || x === 3) || (z === 2 || z === 3)) && !corner;
             set(bx + x, by + dy, bz + z, isWin ? 147 : (corner ? P.chiseled : P.cobble), 0, true); // yellow_stained_glass windows
@@ -907,12 +908,15 @@ const Structures = {
       set(bx, by + 1, bz + 2, 69, 0, true);
       set(bx, by + 2, bz + 2, 69, 8, true);
       set(bx - 1, by, bz + 2, P.roofStair, 0, true);
-      // Ladder up the East interior wall (x = W - 2, z = 2, dy = 1..H-1)
+      // Ladder up the solid East interior wall column (x = W - 2, z = 1, dy = 1..H-1, meta = 1 attached to +x wall)
       for (let dy = 1; dy < H; dy++) {
-        set(bx + W - 2, by + dy, bz + 2, 68, 0, true); // ladder attached to +x wall
+        set(bx + W - 2, by + dy, bz + 1, 68, 1, true);
       }
-      set(bx + 2, by + 4, bz + 2, 21, 0, true);
-      set(bx + 2, by + 7, bz + 2, 21, 0, true);
+      // Wall torches mounted on solid North (z = 0, meta = 4) and South (z = D - 1, meta = 5) walls
+      set(bx + 1, by + 3, bz + 1, 21, 4, true);
+      set(bx + 4, by + 3, bz + D - 2, 21, 5, true);
+      set(bx + 1, by + 6, bz + 1, 21, 4, true);
+      set(bx + 4, by + 6, bz + D - 2, 21, 5, true);
     } else if (kind === 'farm') {
       // Irrigated Village Farm (9x7): log border, central water channel, moist farmland & wheat
       const W = 9, D = 7;

@@ -45,7 +45,7 @@ class MeshBuffer {
 }
 
 const Mesher = {
-  ids: new Uint8Array(18 * 18 * 18),
+  ids: new Uint16Array(18 * 18 * 18),
   metas: new Uint8Array(18 * 18 * 18),
   lights: new Uint8Array(18 * 18 * 18),
   tints: new Uint8Array(18 * 18 * 6), // grass rgb + foliage rgb per padded column
@@ -57,6 +57,13 @@ const Mesher = {
 
   // Fill padded arrays for section (cx, sy, cz)
   gather(world, cx, sy, cz) {
+    if (world && world.ids && world.metas && world.lights && world.tints && typeof world.getChunk !== 'function') {
+      this.ids.set(world.ids);
+      this.metas.set(world.metas);
+      this.lights.set(world.lights);
+      this.tints.set(world.tints);
+      return;
+    }
     const ids = this.ids, metas = this.metas, lights = this.lights, tints = this.tints;
     const y0 = sy * 16;
     for (let dcz = -1; dcz <= 1; dcz++) for (let dcx = -1; dcx <= 1; dcx++) {
@@ -79,6 +86,17 @@ const Mesher = {
         }
       }
     }
+  },
+
+  // Create a dedicated 18^3 neighborhood copy for Worker Transferable dispatch
+  gatherSnapshot(world, cx, sy, cz) {
+    this.gather(world, cx, sy, cz);
+    return {
+      ids: new Uint16Array(this.ids),
+      metas: new Uint8Array(this.metas),
+      lights: new Uint8Array(this.lights),
+      tints: new Uint8Array(this.tints),
+    };
   },
 
   tintOf(b, x, z) {
@@ -135,6 +153,7 @@ const Mesher = {
 
   block(id, x, y, z, ox, oy, oz, single) {
     const b = BLOCKS[id];
+    if (!b) return;
     const meta = this.metas[this.P(x, y, z)];
     switch (b.shape) {
       case SH_CUBE: this.cube(b, id, meta, x, y, z, ox, oy, oz, single); break;
@@ -161,7 +180,7 @@ const Mesher = {
       if (SOLIDCUBE[nid]) continue;
       if (b.cullSame && nid === id) continue;
       if (isTrans && IS_FLUID[nid] && id !== 35) continue;
-      if (isTrans && BLOCKS[nid].render === 'translucent' && SOLIDCUBE[nid] === 0 && nid !== 0 && BLOCKS[nid].shape === SH_CUBE && id !== 35) continue;
+      if (isTrans && BLOCKS[nid] && BLOCKS[nid].render === 'translucent' && SOLIDCUBE[nid] === 0 && nid !== 0 && BLOCKS[nid].shape === SH_CUBE && id !== 35) continue;
       const buf = !isTrans ? this.opaqueBuf : (single ? this.transBuf : (f === 3 ? this.transTopBuf : (f === 2 ? this.transBotBuf : this.transBuf)));
       let layer = this.texOf(b, f, meta);
       let overlay = b.overlay[f];
@@ -348,8 +367,18 @@ const Mesher = {
     const list = b.boxes(effMeta);
     for (let bi = 0; bi < list.length; bi++) {
       const bx = list[bi];
-      const x0 = bx[0] / 16, y0 = bx[1] / 16, z0 = bx[2] / 16, x1 = bx[3] / 16, y1 = bx[4] / 16, z1 = bx[5] / 16;
+      let x0 = bx[0] / 16, y0 = bx[1] / 16, z0 = bx[2] / 16, x1 = bx[3] / 16, y1 = bx[4] / 16, z1 = bx[5] / 16;
+      if (b.ladder) {
+        if (meta === 0) x0 = x1 = 1 / 16;
+        else if (meta === 1) x0 = x1 = 15 / 16;
+        else if (meta === 5) z0 = z1 = 15 / 16;
+        else z0 = z1 = 1 / 16;
+      }
       for (let f = 0; f < 6; f++) {
+        if (b.ladder) {
+          const isX = meta === 0 || meta === 1;
+          if (isX ? (f !== 0 && f !== 1) : (f !== 4 && f !== 5)) continue;
+        }
         const n = FACES[f].n;
         const onEdge = (f === 0 && x0 === 0) || (f === 1 && x1 === 1) || (f === 2 && y0 === 0) || (f === 3 && y1 === 1) || (f === 4 && z0 === 0) || (f === 5 && z1 === 1);
         let light = own;
@@ -470,10 +499,14 @@ const Mesher = {
 
   wireConnects(id, meta, dir) {
     if (!id) return false;
-    if (id === 119 || id === 110 || id === 120 || id === 121 || id === 122 || id === 123 || id === 159 || id === 124 || id === 169 || id === 157) return true;
+    if (id === 119 || id === 110 || id === 120 || id === 121 || id === 122 || id === 123 || id === 159 || id === 124 || id === 169 || id === 157 || id === 514) return true;
     if (id === 127 || id === 156) {
       const outDir = [4, 1, 5, 0][meta & 3];
       return dir === outDir || dir === OPP[outDir];
+    }
+    if (id === 515) {
+      const backDir = OPP[meta & 7];
+      return dir === OPP[backDir];
     }
     return false;
   },

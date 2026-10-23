@@ -9,6 +9,7 @@ const ADVANCEMENTS = {
   diamond: ['钻石！', 'diamond'], redstone: ['红石工程师', 'redstone'], bread: ['烤面包', 'bread'], kill: ['怪物猎人', 'iron_sword'], armor: ['整装上阵', 'iron_chestplate'],
   tnt: ['轰隆隆！', 'tnt'], deep: ['深入地底', 'deepslate'], night: ['活过第一夜', 'torch'], build: ['建筑师', 'bricks'], farm: ['开始耕作', 'wheat'],
   cook: ['美味佳肴', 'cooked_beef'], bow: ['狙击手', 'bow'], sleep: ['甜蜜的梦', 'red_bed'], enchant: ['附魔师', 'enchanting_table'],
+  brew: ['本地酿造厂', 'brewing_stand'],
 };
 
 const TUTORIAL = [
@@ -25,6 +26,8 @@ class Game {
     this.settings = Object.assign({ fov: 70, renderDist: 8, sens: 0.5, volume: 0.8, music: 0.45, gamma: 0.5, guiScale: 0, clouds: true, bobbing: true, advTooltips: false, resScale: 1 }, this.loadSettings());
     this.state = 'boot';
     this.mode = 'survival';
+    this.worldSessionId = 0;
+    this.worker = null;
     this.entities = []; this.blockEntities = new Map();
     this.keys = {}; this.mouseBtn = [false, false, false];
     this.tickCount = 0; this.worldTime = 1000; this.fps = 0;
@@ -46,6 +49,7 @@ class Game {
     await this.renderer.init();
     Font.init(this.renderer.images.font);
     this.renderer.buildIcons();
+    if (typeof WorldWorker !== 'undefined') this.worker = new WorldWorker(this);
     this.ui = new UI(this, document.getElementById('ui'));
     this.particles = new Particles(this);
     this.applySettings();
@@ -90,12 +94,17 @@ class Game {
 
   // ---- worlds -----------------------------------------------------------------
   setupWorld(seed) {
+    this.worldSessionId = (this.worldSessionId || 0) + 1;
     if (this.world) this.unloadAll();
+    if (typeof Structures !== 'undefined' && Structures.clearCaches) Structures.clearCaches();
     this.world = new World(seed);
     this.world.grassMap = this.renderer.grassMap; this.world.foliageMap = this.renderer.foliageMap;
     this.world.listener = this;
     this.entities = []; this.blockEntities = new Map(); this.particles.list = [];
     this.genQueue = []; this.meshQueue = [];
+    this._loadingPromises = new Map();
+    this.spawnedChunks = new Set();
+    if (this.worker) this.worker.resetSession(this.worldSessionId, this.world);
   }
   unloadAll() {
     for (const ch of this.world.chunks.values()) this.renderer.dropChunk(ch.cx, ch.cz);
@@ -142,7 +151,7 @@ class Game {
     if (!seedStr) seed = (Math.random() * 2 ** 31) | 0;
     else if (isNaN(seed) || String(seed) !== seedStr.trim()) seed = hashStr(seedStr);
     const id = 'w' + Date.now().toString(36);
-    const meta = { id, name: name || '新的世界', seed, mode, flat: !!flat, created: Date.now(), lastPlayed: Date.now(), time: 1000, player: null };
+    const meta = { id, name: name || '新的世界', seed, mode, flat: !!flat, created: Date.now(), lastPlayed: Date.now(), time: 1000, player: null, schemaVersion: 2, blockBits: 16, modifiedChunkKeys: [] };
     await DB.putWorld(meta);
     return this.loadWorld(id);
   }
@@ -153,8 +162,10 @@ class Game {
     this.worldMeta = meta;
     this.setupWorld(meta.seed);
     this.world.flat = !!meta.flat;
-    this.world.savedChunks = await DB.loadChunks(id);
+    if (this.worker) this.worker.resetSession(this.worldSessionId, this.world);
+    const loadedChunks = await DB.loadChunks(id, meta.blockBits);
     this.dirtySaved = new Set();
+    this.world.setSavedChunks(loadedChunks, meta.modifiedChunkKeys || []);
     this.mode = meta.mode;
     this.worldTime = meta.time || 1000;
     this.weather = meta.weather || 0; this.rainTarget = meta.rainTarget || 0;
@@ -168,16 +179,32 @@ class Game {
       p.pos = [...d.pos]; p.prev = [...d.pos]; p.yaw = d.yaw; p.pitch = d.pitch;
       p.health = d.health; p.food = d.food; p.saturation = d.sat; p.xp = d.xp || 0; p.flying = !!d.flying;
       p.enchantSeed = d.enchantSeed || 1337;
-      p.inv.slots = d.inv.map(s => s ? { ...s } : null); while (p.inv.slots.length < 40) p.inv.slots.push(null);
+      p.inv.slots = d.inv.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null); while (p.inv.slots.length < 40) p.inv.slots.push(null);
       p.inv.sel = d.sel || 0;
       p.air = 300;
+      p.effects = {};
+      if (d.effects && typeof d.effects === 'object') {
+        for (const [ek, ev] of Object.entries(d.effects)) {
+          if (ev && ev.ticks > 0) {
+            const ticks = ev.ticks | 0;
+            const maxTicks = (ev.maxTicks || ev.duration || ticks) | 0;
+            const amp = ev.amp !== undefined ? (ev.amp | 0) : 0;
+            p.effects[ek] = { id: ek, ticks, maxTicks, duration: maxTicks, amp, level: amp + 1 };
+          }
+        }
+      }
     } else {
       p.needsGround = true;
       p.enchantSeed = ((Math.random() * 0x7FFFFFFF) | 0) || 1337;
       if (this.mode === 'creative') this.giveCreativeKit();
     }
+    this.world.evictColdChunks(Math.floor(p.pos[0]) >> 4, Math.floor(p.pos[2]) >> 4, this.dirtySaved);
     for (const [k, v] of Object.entries(meta.blockEntities || {})) this.blockEntities.set(k, v);
-    this.pendingMobs = meta.mobs || [];
+    this.pendingMobs = (meta.mobs || []).map(m => ({
+      ...m,
+      pos: [...m.pos],
+      trades: Array.isArray(m.trades) && typeof Trading !== 'undefined' ? m.trades.map(t => Trading.cloneTrade(t)) : m.trades,
+    }));
     this.spawnedChunks = new Set(meta.spawnedChunks || []);
     this.state = 'loading';
     this.loadStart = performance.now();
@@ -186,12 +213,63 @@ class Game {
     const inv = this.player.inv;
     ['grass_block', 'stone', 'oak_planks', 'redstone', 'redstone_torch', 'repeater', 'lever', 'redstone_lamp', 'tnt'].forEach((k, i) => inv.slots[i] = makeStack(k, 64));
   }
+  serializeMob(e) {
+    const out = { type: e.type, pos: [...e.pos], yaw: e.yaw, health: e.health, sheared: !!e.sheared, wool: e.woolColor || 0, baby: e.baby ? e.growT : 0 };
+    if (e.profession !== undefined) out.profession = e.profession;
+    if (e.trades !== undefined) {
+      out.trades = Array.isArray(e.trades) && typeof Trading !== 'undefined'
+        ? e.trades.map(t => Trading.cloneTrade(t))
+        : e.trades;
+    }
+    if (e.xp !== undefined) out.xp = e.xp;
+    if (e.level !== undefined) out.level = e.level;
+    if (e.restockDay !== undefined) out.restockDay = e.restockDay;
+    return out;
+  }
+  evictColdSavedChunks() {
+    const w = this.world;
+    if (!w || !w.savedChunks || w.savedChunks.size <= 128) return;
+    const center = this.state === 'title' ? (this.titleCam || [0, 0, 0]) : (this.player ? this.player.pos : [0, 0, 0]);
+    const pcx = Math.floor(center[0]) >> 4, pcz = Math.floor(center[2]) >> 4;
+    w.evictColdChunks(pcx, pcz, this.dirtySaved, 128);
+    if (w.savedChunks.size > 128 && this.dirtySaved && this.dirtySaved.size > 0 && !this._flushingDirty) {
+      this.flushDirtySavedChunks();
+    }
+  }
+  async flushDirtySavedChunks() {
+    if (!this.worldMeta || !this.dirtySaved || !this.dirtySaved.size || this._flushingDirty) return;
+    this._flushingDirty = true;
+    const w = this.world;
+    const dirtyKeys = [...this.dirtySaved];
+    const list = [];
+    for (const k of dirtyKeys) {
+      const rec = w.savedChunks.get(k);
+      if (rec) {
+        const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768;
+        list.push([cx, cz, rec]);
+      }
+    }
+    try {
+      await DB.putChunks(this.worldMeta.id, list);
+      for (const k of dirtyKeys) this.dirtySaved.delete(k);
+      if (this.world === w) {
+        const center = this.player ? this.player.pos : [0, 0, 0];
+        w.evictColdChunks(Math.floor(center[0]) >> 4, Math.floor(center[2]) >> 4, this.dirtySaved, 128);
+      }
+    } catch (e) {
+      console.error('flushDirtySavedChunks error', e);
+    } finally {
+      this._flushingDirty = false;
+    }
+  }
   async saveWorld(quiet) {
-    if (!this.worldMeta || this.state !== 'play') return;
+    if (!this.worldMeta || (this.state !== 'play' && this.state !== 'loading')) return;
     const w = this.world, p = this.player, list = [], modChunks = [];
     for (const ch of w.chunks.values()) if (ch.modified) {
+      const k = ckey(ch.cx, ch.cz);
       const rec = encodeChunk(ch);
-      w.savedChunks.set(ckey(ch.cx, ch.cz), rec);
+      w.savedChunks.set(k, rec);
+      w.modifiedChunkKeys.add(k);
       list.push([ch.cx, ch.cz, rec]);
       modChunks.push(ch);
     }
@@ -201,20 +279,85 @@ class Game {
       if (rec) { const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768; list.push([cx, cz, rec]); }
     }
     const m = this.worldMeta;
+    m.schemaVersion = 2; m.blockBits = 16;
     m.lastPlayed = Date.now(); m.time = this.worldTime; m.mode = this.mode; m.weather = this.weather; m.rainTarget = this.rainTarget;
     m.spawn = p.spawn; m.adv = this.adv; m.stats = this.stats; m.tutorial = this.tutorial;
-    m.player = { pos: [...p.pos], yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, enchantSeed: p.enchantSeed || 1337, inv: p.inv.slots, sel: p.inv.sel, flying: p.flying };
+    const savedEffects = {};
+    if (p.effects) {
+      for (const [ek, ev] of Object.entries(p.effects)) {
+        if (ev && ev.ticks > 0) {
+          const ticks = ev.ticks | 0;
+          const maxTicks = (ev.maxTicks || ev.duration || ticks) | 0;
+          const amp = ev.amp !== undefined ? (ev.amp | 0) : 0;
+          savedEffects[ek] = { id: ek, ticks, maxTicks, duration: maxTicks, amp, level: amp + 1 };
+        }
+      }
+    }
+    m.player = { pos: [...p.pos], yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, enchantSeed: p.enchantSeed || 1337, inv: p.inv.slots.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null), sel: p.inv.sel, flying: p.flying, effects: savedEffects };
     m.blockEntities = Object.fromEntries(this.blockEntities);
-    const activeMobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead).map(e => ({ type: e.type, pos: [...e.pos], yaw: e.yaw, health: e.health, sheared: e.sheared, wool: e.woolColor, baby: e.baby ? e.growT : 0 }));
+    const activeMobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead).map(e => this.serializeMob(e));
     m.mobs = [...(this.pendingMobs || []), ...activeMobs];
     m.spawnedChunks = [...(this.spawnedChunks || [])];
+    m.modifiedChunkKeys = [...w.modifiedChunkKeys];
     try {
       await DB.putChunks(m.id, list);
       await DB.putWorld(m);
       for (const ch of modChunks) ch.modified = false;
       for (const k of dirtyKeys) this.dirtySaved.delete(k);
+      w.evictColdChunks(Math.floor(p.pos[0]) >> 4, Math.floor(p.pos[2]) >> 4, this.dirtySaved, 128);
       if (!quiet) this.ui.message('世界已保存', '#AAAAAA');
     } catch (e) { this.ui.message('保存失败: ' + e.message, '#FF5555'); }
+  }
+  async exportWorld(id) {
+    if (this.worldMeta && this.worldMeta.id === id && (this.state === 'play' || this.state === 'loading')) {
+      await this.saveWorld(true);
+    }
+    const data = await DB.exportWorldData(id);
+    const json = JSON.stringify(data);
+    try {
+      if (typeof Blob !== 'undefined' && typeof URL !== 'undefined' && URL.createObjectURL && typeof document !== 'undefined' && document.body) {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const safeName = String((data.world && data.world.name) || id).replace(/[\\/:*?"<>|]+/g, '_').trim() || 'world';
+        a.href = url;
+        a.download = safeName + '.json';
+        document.body.appendChild(a);
+        if (typeof a.click === 'function') a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (e) { console.warn('Download trigger skipped:', e); }
+    if (this.ui) this.ui.message(`已导出存档 “${data.world.name}” (.json)`, '#55FF55');
+    return data;
+  }
+  async importWorldData(raw) {
+    const meta = await DB.importWorldData(raw);
+    if (this.ui) this.ui.message(`已导入存档 “${meta.name}”`, '#55FF55');
+    return meta;
+  }
+  importWorldFromFile(onDone) {
+    if (typeof document === 'undefined') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.style.display = 'none';
+    input.onchange = async () => {
+      const file = input.files && input.files[0];
+      if (input.parentNode) input.parentNode.removeChild(input);
+      if (!file) return;
+      try {
+        const text = typeof file.text === 'function' ? await file.text() : await new Promise((res, rej) => {
+          const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(file);
+        });
+        const meta = await this.importWorldData(text);
+        if (onDone) onDone(meta);
+      } catch (e) {
+        if (this.ui) this.ui.message('导入存档失败: ' + e.message, '#FF5555');
+      }
+    };
+    if (document.body) document.body.appendChild(input);
+    input.click();
   }
   async quitToTitle() {
     await this.saveWorld(true);
@@ -229,25 +372,37 @@ class Game {
     const center = this.state === 'title' ? this.titleCam : this.player.pos;
     const pcx = Math.floor(center[0]) >> 4, pcz = Math.floor(center[2]) >> 4;
     const t0 = performance.now();
+    const useWorker = !!(this.worker && this.worker.isReady());
+
     // generation queue: nearest missing chunks within R+1
     if (!this.genQueue.length || this._lastCC !== pcx + ',' + pcz) {
       this._lastCC = pcx + ',' + pcz;
       const q = [];
       for (let dx = -R - 1; dx <= R + 1; dx++) for (let dz = -R - 1; dz <= R + 1; dz++) {
         if (dx * dx + dz * dz > (R + 1.5) * (R + 1.5)) continue;
-        if (!w.chunks.has(ckey(pcx + dx, pcz + dz))) q.push([pcx + dx, pcz + dz, dx * dx + dz * dz]);
+        const ck = ckey(pcx + dx, pcz + dz);
+        if (!w.chunks.has(ck) && !w.loadingChunks.has(ck) && !(w.generatingChunks && w.generatingChunks.has(ck))) {
+          q.push([pcx + dx, pcz + dz, dx * dx + dz * dz]);
+        }
       }
       q.sort((a, b) => b[2] - a[2]);
       this.genQueue = q;
     }
-    this.genQueueLen = this.genQueue.length;
+    this.genQueueLen = this.genQueue.length + (w.generatingChunks ? w.generatingChunks.size : 0);
+
     let gen = 0;
-    while (this.genQueue.length && (performance.now() - t0 < budgetMs * 0.5 || gen === 0)) {
-      const [cx, cz] = this.genQueue.pop();
-      if (w.chunks.has(ckey(cx, cz))) continue;
-      this.loadChunk(cx, cz);
+    while (this.genQueue.length && (useWorker ? gen < 8 : (performance.now() - t0 < budgetMs * 0.5 || gen === 0))) {
+      const [cx, cz, distSq] = this.genQueue.pop();
+      const ck = ckey(cx, cz);
+      if (w.chunks.has(ck) || w.loadingChunks.has(ck) || (w.generatingChunks && w.generatingChunks.has(ck))) continue;
+      if (useWorker && !(w.savedChunks && w.savedChunks.has(ck)) && !(w.modifiedChunkKeys && w.modifiedChunkKeys.has(ck))) {
+        this.worker.enqueueGenerate(cx, cz, distSq);
+      } else {
+        this.loadChunk(cx, cz);
+      }
       gen++;
     }
+
     // meshing: dirty chunks whose neighbours exist
     const cand = [];
     for (const ch of w.chunks.values()) {
@@ -259,22 +414,64 @@ class Game {
       if (ok) cand.push([ch, dx * dx + dz * dz]);
     }
     cand.sort((a, b) => a[1] - b[1]);
-    for (const [ch] of cand) {
-      if (performance.now() - t0 > budgetMs) break;
-      this.meshChunk(ch);
+    if (useWorker) {
+      let queuedSections = 0;
+      for (const [ch, distSq] of cand) {
+        for (let sy = 0; sy < SECTIONS; sy++) {
+          if (!(ch.dirty & (1 << sy))) continue;
+          if (!ch.sectionCount[sy]) {
+            const key = ckey(ch.cx, ch.cz) * 16 + sy;
+            const s = this.renderer.sections.get(key);
+            if (s) { this.renderer.freeSection(s); this.renderer.sections.delete(key); }
+            ch.dirty &= ~(1 << sy);
+            ch.meshingMask &= ~(1 << sy);
+            continue;
+          }
+          if (!(ch.meshingMask & (1 << sy))) {
+            this.worker.enqueueMesh(ch.cx, sy, ch.cz, distSq, false);
+            queuedSections++;
+          }
+        }
+        if (queuedSections >= 16) break;
+      }
+    } else {
+      for (const [ch] of cand) {
+        if (performance.now() - t0 > budgetMs) break;
+        this.meshChunk(ch);
+      }
     }
     this.meshPending = cand.length;
-    // unload far chunks
-    if (this.tickCount % 40 === 0) {
+
+    // unload far chunks & evict cold savedChunks > 128
+    const maxLoadedRadiusSq = (R + 2) * (R + 2);
+    if (this.tickCount % 20 === 0 || w.chunks.size > 300) {
       for (const ch of [...w.chunks.values()]) {
         const dx = ch.cx - pcx, dz = ch.cz - pcz;
-        if (dx * dx + dz * dz > (R + 4) * (R + 4)) {
-          if (ch.modified && w.savedChunks && this.state === 'play') { const k = ckey(ch.cx, ch.cz); w.savedChunks.set(k, encodeChunk(ch)); this.dirtySaved.add(k); }
+        if (dx * dx + dz * dz > maxLoadedRadiusSq) {
+          const k = ckey(ch.cx, ch.cz);
+          if (ch.modified && w.savedChunks && (this.state === 'play' || this.state === 'loading')) {
+            w.savedChunks.set(k, encodeChunk(ch));
+            w.modifiedChunkKeys.add(k);
+            this.dirtySaved.add(k);
+          }
+          if (this.state === 'play' && this.entities.length) {
+            this.entities = this.entities.filter(e => {
+              if (e.dead) return false;
+              const ecx = Math.floor(e.pos[0]) >> 4, ecz = Math.floor(e.pos[2]) >> 4;
+              if (ecx !== ch.cx || ecz !== ch.cz) return true;
+              if (e instanceof Mob && e.persistent) {
+                if (!this.pendingMobs) this.pendingMobs = [];
+                this.pendingMobs.push(this.serializeMob(e));
+              }
+              return false;
+            });
+          }
           this.renderer.dropChunk(ch.cx, ch.cz);
-          w.chunks.delete(ckey(ch.cx, ch.cz));
+          w.chunks.delete(k);
         }
       }
     }
+    if (w.savedChunks && w.savedChunks.size > 128) this.evictColdSavedChunks();
   }
   meshChunk(ch) {
     const w = this.world;
@@ -282,7 +479,6 @@ class Game {
       if (!(ch.dirty & (1 << sy))) continue;
       const key = ckey(ch.cx, ch.cz) * 16 + sy;
       if (!ch.sectionCount[sy]) {
-        // also check if neighbours could make faces visible (only needed when this section has blocks)
         const s = this.renderer.sections.get(key);
         if (s) { this.renderer.freeSection(s); this.renderer.sections.delete(key); }
         continue;
@@ -291,28 +487,29 @@ class Game {
       this.renderer.setSection(key, ch.cx, sy, ch.cz, res);
     }
     ch.dirty = 0;
+    if (ch.meshingMask !== undefined) ch.meshingMask = 0;
   }
-  loadChunk(cx, cz) {
+  _buildChunkFromSaved(cx, cz, saved) {
     const w = this.world;
-    const saved = w.savedChunks && w.savedChunks.get(ckey(cx, cz));
-    let ch;
-    if (saved) {
-      ch = new Chunk(cx, cz);
-      decodeChunk(saved, ch);
-      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
-        const c = w.flat ? { temp: 0.3, humid: 0.2, h: 60, river: 0, cont: 0.3, mount: 0 } : w.column(cx * 16 + x, cz * 16 + z);
-        ch.biome[z * 16 + x] = w.biomeOf(c);
-        w.tintFor(w.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
-        w.tintFor(w.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
-      }
-      ch.recount();
-    } else {
-      ch = w.generate(cx, cz);
+    const ch = new Chunk(cx, cz);
+    decodeChunk(saved, ch, this.worldMeta && this.worldMeta.blockBits);
+    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      const c = w.flat ? { temp: 0.3, humid: 0.2, h: 60, river: 0, cont: 0.3, mount: 0 } : w.column(cx * 16 + x, cz * 16 + z);
+      ch.biome[z * 16 + x] = w.biomeOf(c);
+      w.tintFor(w.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
+      w.tintFor(w.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
     }
-    w.chunks.set(ckey(cx, cz), ch);
+    ch.recount();
+    return ch;
+  }
+  _mountLoadedChunk(cx, cz, ch, isSaved) {
+    const w = this.world;
+    const ck = ckey(cx, cz);
+    if (w.generatingChunks) w.generatingChunks.delete(ck);
+    w.chunks.set(ck, ch);
     w.initLight(ch);
-    ch.dirty = 0xFFFF;
-    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const n = w.getChunk(cx + a, cz + b); if (n && n !== ch) n.dirty |= 0xFFFF; }
+    ch.bumpMask(0xFFFF);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const n = w.getChunk(cx + a, cz + b); if (n && n !== ch) n.bumpMask(0xFFFF); }
     if (this.state === 'play' || this.state === 'loading') {
       // restore saved mobs
       if (this.pendingMobs && this.pendingMobs.length) {
@@ -320,29 +517,89 @@ class Game {
           if ((Math.floor(m.pos[0]) >> 4) === cx && (Math.floor(m.pos[2]) >> 4) === cz) {
             const e = new Mob(this, m.type, m.pos[0], m.pos[1], m.pos[2]);
             e.yaw = m.yaw; e.health = m.health; e.sheared = m.sheared; e.woolColor = m.wool || 0;
+            e.persistent = true;
+            if (m.profession !== undefined) e.profession = m.profession;
+            if (m.trades !== undefined) {
+              e.trades = Array.isArray(m.trades) && typeof Trading !== 'undefined'
+                ? m.trades.map(t => Trading.cloneTrade(t))
+                : m.trades;
+            }
+            if (m.xp !== undefined) e.xp = m.xp;
+            if (m.level !== undefined) e.level = m.level;
+            if (m.restockDay !== undefined) e.restockDay = m.restockDay;
+            if (e.type === 'villager' && typeof Trading !== 'undefined') Trading.ensureVillager(e, this, e.profession);
             if (m.baby) { e.makeBaby(); e.growT = m.baby; }
             this.entities.push(e); return false;
           }
           return true;
         });
       }
-      const ck = ckey(cx, cz);
-      if (!saved && !(this.worldMeta && this.worldMeta.noAnimals) && (!this.spawnedChunks || !this.spawnedChunks.has(ck))) {
+      if (!isSaved && !(this.worldMeta && this.worldMeta.noAnimals) && (!this.spawnedChunks || !this.spawnedChunks.has(ck))) {
         if (this.spawnedChunks) this.spawnedChunks.add(ck);
         this.spawnAnimals(ch);
       }
     }
+    return ch;
+  }
+  loadChunk(cx, cz) {
+    const w = this.world;
+    const ck = ckey(cx, cz);
+    if (w.chunks.has(ck)) return w.chunks.get(ck);
+    if (this.worker) this.worker.cancelGenerate(cx, cz);
+    if (w.generatingChunks) w.generatingChunks.delete(ck);
+    const saved = w.savedChunks && w.savedChunks.get(ck);
+    if (saved) {
+      const ch = this._buildChunkFromSaved(cx, cz, saved);
+      return this._mountLoadedChunk(cx, cz, ch, true);
+    }
+    if (w.modifiedChunkKeys && w.modifiedChunkKeys.has(ck)) {
+      if (!this._loadingPromises) this._loadingPromises = new Map();
+      if (this._loadingPromises.has(ck)) return this._loadingPromises.get(ck);
+      w.loadingChunks.add(ck);
+      const worldId = this.worldMeta ? this.worldMeta.id : '';
+      const fallbackBits = this.worldMeta ? this.worldMeta.blockBits : 16;
+      const p = DB.getChunk(worldId, cx, cz, fallbackBits).then((rec) => {
+        w.loadingChunks.delete(ck);
+        this._loadingPromises.delete(ck);
+        if (this.world !== w) return null;
+        if (w.chunks.has(ck)) return w.chunks.get(ck);
+        if (rec) {
+          if (w.savedChunks) {
+            w.savedChunks.set(ck, rec);
+            this.evictColdSavedChunks();
+          }
+          const ch = this._buildChunkFromSaved(cx, cz, rec);
+          return this._mountLoadedChunk(cx, cz, ch, true);
+        }
+        w.modifiedChunkKeys.delete(ck);
+        const ch = w.generate(cx, cz);
+        return this._mountLoadedChunk(cx, cz, ch, false);
+      }).catch((err) => {
+        w.loadingChunks.delete(ck);
+        this._loadingPromises.delete(ck);
+        console.error('Failed to async load modified chunk from DB:', cx, cz, err);
+        return null;
+      });
+      this._loadingPromises.set(ck, p);
+      return p;
+    }
+    const ch = w.generate(cx, cz);
+    return this._mountLoadedChunk(cx, cz, ch, false);
   }
   spawnAnimals(ch) {
     if (ch.village && !ch.villageSpawned) {
       ch.villageSpawned = true;
       const [vx, vy, vz] = ch.village.pos;
       const offsets = [[-2, -2], [2, -2], [-2, 2], [2, 2]];
-      for (const [ox, oz] of offsets) {
+      const profs = ['farmer', 'librarian', 'smith', 'farmer'];
+      offsets.forEach(([ox, oz], idx) => {
         const m = new Mob(this, 'villager', vx + ox + 0.5, vy, vz + oz + 0.5);
         m.persistent = true;
+        m.profession = profs[idx % profs.length];
+        m.trades = null;
+        if (typeof Trading !== 'undefined') Trading.ensureVillager(m, this, m.profession);
         this.entities.push(m);
-      }
+      });
     }
     const r = RNG(hashStr('animals' + this.world.seed + ch.cx + ':' + ch.cz));
     if (r() > 0.1) return;
@@ -428,6 +685,8 @@ class Game {
     Redstone.tickPressurePlates(this);
     this.world.randomTick(Math.floor(p.pos[0]), Math.floor(p.pos[2]), this.rng || (this.rng = RNG(12345)));
     this.tickFurnaces();
+    this.tickHoppers();
+    this.tickBrewingStands();
     this.tickSpawners();
     if (this.tickCount % 20 === 0) this.spawnMobs();
     if (this.tutorial >= 0) {
@@ -480,8 +739,10 @@ class Game {
         }
       } else if (id === 122 && (w.getMeta(x, y, z) & 8)) {
         this.particles.spawn('reddust', x + 0.5 + (Math.random() - 0.5) * 0.2, y + 0.5, z + 0.5 + (Math.random() - 0.5) * 0.2, 0, 0.004, 0, { col: [240, 20, 20] });
-      } else if (id === 156) {
+      } else if (id === 156 || (id === 514 && (w.getMeta(x, y, z) & 8))) {
         this.particles.spawn('reddust', x + 0.5 + (Math.random() - 0.5) * 0.3, y + 0.35, z + 0.5 + (Math.random() - 0.5) * 0.3, 0, 0.004, 0, { col: [255, 30, 20] });
+      } else if (id === 520 && w.getBlock(x, y - 1, z) === 0 && Math.random() < 0.38) {
+        this.particles.spawn('cherry_petal', x + Math.random(), y - 0.05, z + Math.random(), (Math.random() - 0.5) * 0.02, -0.02, (Math.random() - 0.5) * 0.02);
       } else if (id === 182) {
         this.particles.spawn('flame', x + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, z + 0.2 + Math.random() * 0.6, 0, 0.005, 0).life = 14;
         this.particles.spawn('smoke', x + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, z + 0.2 + Math.random() * 0.6, 0, 0.01, 0).size = 0.07;
@@ -632,17 +893,34 @@ class Game {
     if (old !== id) {
       const k = `${x},${y},${z}`;
       const be = this.blockEntities.get(k);
-      if (be && id !== 52 && id !== 20 && id !== 117) {
-        const drops = be.type === 'chest' ? be.slots : [be.input, be.fuel, be.output];
+      if (be && id !== 52 && id !== 20 && id !== 117 && id !== 513 && id !== 527) {
+        const drops = (be.type === 'chest' || be.type === 'hopper')
+          ? be.slots
+          : be.type === 'brewing'
+            ? [...(be.bottles || []), be.ingredient, be.fuel]
+            : [be.input, be.fuel, be.output];
         for (const s of drops) if (s) this.dropItem(x + 0.5, y + 0.5, z + 0.5, { ...s });
         this.blockEntities.delete(k);
         if (this.ui.screen && this.ui.screen.be === be) this.ui.close();
       }
     }
     Redstone.propagateFromSource(this, x, y, z);
+    if (typeof Redstone !== 'undefined') {
+      if (Redstone.checkObserversWatching) Redstone.checkObserversWatching(this, x, y, z);
+      if (Redstone.updateComparatorsNear) Redstone.updateComparatorsNear(this, x, y, z);
+    }
+  }
+  onBlockMetaChanged(x, y, z, id, oldMeta, newMeta) {
+    if (typeof Redstone !== 'undefined') {
+      if (Redstone.checkObserversWatching) Redstone.checkObserversWatching(this, x, y, z);
+      if (id === 52 || id === 20 || id === 117 || id === 513 || id === 527) {
+        if (Redstone.updateComparatorsNear) Redstone.updateComparatorsNear(this, x, y, z);
+      }
+    }
   }
   onNeighborUpdate(x, y, z, id) {
     const w = this.world, b = BLOCKS[id];
+    if (!b) return;
     if (b.gravity) {
       const below = w.getBlock(x, y - 1, z);
       if (y > 0 && (below === 0 || REPLACEABLE[below] || IS_FLUID[below]) && w.isLoaded(x, z)) {
@@ -662,9 +940,10 @@ class Game {
     this.flushMesh();
   }
   supported(x, y, z, id, meta) {
-    const w = this.world, below = w.getBlock(x, y - 1, z);
-    const solidBelow = SOLIDCUBE[below] || (BLOCKS[below].slab && (w.getMeta(x, y - 1, z) & 3) !== 0) || BLOCKS[below].stairs && (w.getMeta(x, y - 1, z) & 4) === 0 || below === 63;
     const b = BLOCKS[id];
+    if (!b) return true;
+    const w = this.world, below = w.getBlock(x, y - 1, z), bb = BLOCKS[below];
+    const solidBelow = SOLIDCUBE[below] || (bb && bb.slab && (w.getMeta(x, y - 1, z) & 3) !== 0) || (bb && bb.stairs && (w.getMeta(x, y - 1, z) & 4) === 0) || below === 63;
     switch (b.key) {
       case 'torch': case 'redstone_torch': case 'redstone_torch_off': {
         if (!meta) return solidBelow;
@@ -676,7 +955,7 @@ class Game {
         if (sd === 2) return solidBelow;
         return !!SOLIDCUBE[w.getBlock(x + DIRS[sd][0], y + DIRS[sd][1], z + DIRS[sd][2])];
       }
-      case 'redstone_wire': case 'stone_pressure_plate': case 'oak_pressure_plate': case 'repeater': case 'lit_repeater':
+      case 'redstone_wire': case 'stone_pressure_plate': case 'oak_pressure_plate': case 'repeater': case 'lit_repeater': case 'comparator':
         return solidBelow;
       case 'ladder': return !!SOLIDCUBE[w.getBlock(x + DIRS[meta][0], y, z + DIRS[meta][2])];
       case 'wheat': return below === 63;
@@ -684,7 +963,7 @@ class Game {
       case 'cactus': return below === 37 || below === 9 || below === 97;
       case 'dead_bush': return below === 9 || below === 97 || below === 3 || below === 2 || below === 83;
       case 'snow': return !!SOLIDCUBE[below] && below !== 35 && below !== 96;
-      case 'oak_door': return (meta & 8) ? w.getBlock(x, y - 1, z) === 69 : (SOLIDCUBE[below] && w.getBlock(x, y + 1, z) === 69);
+      case 'oak_door': case 'cherry_door': return (meta & 8) ? w.getBlock(x, y - 1, z) === id : (SOLIDCUBE[below] && w.getBlock(x, y + 1, z) === id);
       case 'red_mushroom': case 'brown_mushroom': return !!SOLIDCUBE[below];
     }
     if (b.needsSupport) return below === 2 || below === 3 || below === 63 || below === 88;
@@ -713,7 +992,7 @@ class Game {
         if (m < 7 && Math.max(w.skyAt(x, y, z) * this.daylight(), w.blockLightAt(x, y, z)) >= 9 && Math.random() < (w.getMeta(x, y - 1, z) ? 0.5 : 0.25)) w.setMeta(x, y, z, m + 1);
         break;
       }
-      case 65: case 66: case 67:
+      case 65: case 66: case 67: case 521:
         if (Math.random() < 0.15 && (w.skyAt(x, y, z) >= 9 || w.blockLightAt(x, y, z) >= 9)) this.growTree(x, y, z, id);
         break;
       case 63: {
@@ -731,7 +1010,7 @@ class Game {
         }
         break;
       }
-      case 15: case 47: case 50: {
+      case 15: case 47: case 50: case 520: {
         if (w.getMeta(x, y, z) & 4) break; // player placed
         if (!this.nearLog(x, y, z)) this.breakBlock(x, y, z, true, true);
         break;
@@ -750,17 +1029,17 @@ class Game {
         if (seen.has(k)) continue; seen.add(k);
         if (!w.isLoaded(nx, nz)) return true;
         const id = w.getBlock(nx, ny, nz);
-        if (id === 14 || id === 46 || id === 49) return true;
-        if ((id === 15 || id === 47 || id === 50) && d < 4) q.push([nx, ny, nz, d + 1]);
+        if (id === 14 || id === 46 || id === 49 || id === 519) return true;
+        if ((id === 15 || id === 47 || id === 50 || id === 520) && d < 4) q.push([nx, ny, nz, d + 1]);
       }
     }
     return false;
   }
   growTree(x, y, z, sap) {
     const w = this.world;
-    const type = sap === 66 ? 'birch' : sap === 67 ? 'spruce' : (Math.random() < 0.1 ? 'big' : 'oak');
+    const type = sap === 66 ? 'birch' : sap === 67 ? 'spruce' : sap === 521 ? 'cherry' : (Math.random() < 0.1 ? 'big' : 'oak');
     const h = 4 + ((Math.random() * 3) | 0);
-    for (let dy = 1; dy <= h + 1; dy++) { const id = w.getBlock(x, y + dy, z); if (id && !BLOCKS[id].replaceable && id !== 15 && id !== 47 && id !== 50) return false; }
+    for (let dy = 1; dy <= h + 1; dy++) { const id = w.getBlock(x, y + dy, z); if (id && !BLOCKS[id].replaceable && id !== 15 && id !== 47 && id !== 50 && id !== 520) return false; }
     w.setBlock(x, y, z, 0, 0, 0);
     this.world.placeTree((wx, wy, wz, id, meta, force) => {
       const cur = w.getBlock(wx, wy, wz);
@@ -802,7 +1081,7 @@ class Game {
     }
   }
 
-  // ---- furnaces ---------------------------------------------------------------------------
+  // ---- furnaces & hoppers ----------------------------------------------------------------
   tickFurnaces() {
     for (const [k, be] of this.blockEntities) {
       if (be.type !== 'furnace') continue;
@@ -820,12 +1099,15 @@ class Game {
           else { be.fuel.count--; if (!be.fuel.count) be.fuel = null; }
         }
       }
+      let slotChanged = false;
+      if (be.burn === 0 && canSmelt && be.fuel) slotChanged = true;
       if (be.burn > 0 && canSmelt) {
         if (++be.cook >= 200) {
           be.cook = 0;
           if (be.output) be.output.count++; else be.output = { id: rec.result, count: 1, dmg: 0 };
           be.xp = (be.xp || 0) + rec.xp;
           be.input.count--; if (!be.input.count) be.input = null;
+          slotChanged = true;
         }
       } else if (be.cook > 0) be.cook = Math.max(0, be.cook - 2);
       const burning = be.burn > 0;
@@ -833,14 +1115,71 @@ class Game {
         const meta = this.world.getMeta(x, y, z);
         this.world.setBlock(x, y, z, burning ? 117 : 20, meta, 0);
       }
+      if (slotChanged && typeof Redstone !== 'undefined' && Redstone.updateComparatorsNear) {
+        Redstone.updateComparatorsNear(this, x, y, z);
+      }
     }
   }
-  markBlockEntity() { }
+  tickHoppers() {
+    if (typeof Hopper !== 'undefined') Hopper.tickAll(this);
+  }
+  tickBrewingStands() {
+    if (typeof Brewing === 'undefined') return;
+    for (const [, be] of this.blockEntities) {
+      if (be.type !== 'brewing') continue;
+      const [x, y, z] = be.pos;
+      if (!this.world.isLoaded(x, z)) continue;
+      if (!Array.isArray(be.bottles) || be.bottles.length < 3) be.bottles = [null, null, null];
+      let slotChanged = false;
+      // Top up blaze powder fuel charges when empty
+      if ((be.fuelCharges || 0) <= 0 && be.fuel && Brewing.isFuel(be.fuel)) {
+        be.fuelCharges = 20;
+        be.fuel.count--;
+        if (be.fuel.count <= 0) be.fuel = null;
+        slotChanged = true;
+      }
+      const canBrew = (be.fuelCharges || 0) > 0 && Brewing.canBrew(be);
+      if (canBrew) {
+        be.brewTime = (be.brewTime || 0) + 1;
+        if (be.brewTime >= 400) {
+          be.brewTime = 0;
+          be.fuelCharges = Math.max(0, (be.fuelCharges || 0) - 1);
+          for (let i = 0; i < 3; i++) {
+            const outKey = Brewing.match(be.bottles[i], be.ingredient);
+            if (outKey) be.bottles[i] = makeStack(outKey, 1);
+          }
+          be.ingredient.count--;
+          if (be.ingredient.count <= 0) be.ingredient = null;
+          Sound.splash([x + 0.5, y + 0.5, z + 0.5]);
+          this.grant('brew');
+          slotChanged = true;
+        }
+      } else if (be.brewTime > 0) {
+        be.brewTime = 0;
+      }
+      // Sync bottle presence mask (0..7) to block metadata so 3D model updates
+      const mask = (be.bottles[0] ? 1 : 0) | (be.bottles[1] ? 2 : 0) | (be.bottles[2] ? 4 : 0);
+      if (this.world.getBlock(x, y, z) === 527 && (this.world.getMeta(x, y, z) & 7) !== mask) {
+        this.world.setMeta(x, y, z, mask);
+      }
+      if (slotChanged && typeof Redstone !== 'undefined' && Redstone.updateComparatorsNear) {
+        Redstone.updateComparatorsNear(this, x, y, z);
+      }
+    }
+  }
+  markBlockEntity(be) {
+    if (be && be.pos && typeof Redstone !== 'undefined' && Redstone.updateComparatorsNear) {
+      Redstone.updateComparatorsNear(this, be.pos[0], be.pos[1], be.pos[2]);
+    }
+  }
   getBlockEntity(x, y, z, type) {
     const k = `${x},${y},${z}`;
     let be = this.blockEntities.get(k);
     if (!be) {
-      be = type === 'chest' ? { type, pos: [x, y, z], slots: new Array(27).fill(null) } : { type, pos: [x, y, z], input: null, fuel: null, output: null, burn: 0, burnMax: 0, cook: 0 };
+      if (type === 'chest') be = { type, pos: [x, y, z], slots: new Array(27).fill(null) };
+      else if (type === 'hopper') be = { type, pos: [x, y, z], slots: new Array(5).fill(null), cd: 0 };
+      else if (type === 'brewing') be = { type, pos: [x, y, z], bottles: [null, null, null], ingredient: null, fuel: null, brewTime: 0, fuelCharges: 0 };
+      else be = { type, pos: [x, y, z], input: null, fuel: null, output: null, burn: 0, burnMax: 0, cook: 0 };
       this.blockEntities.set(k, be);
     }
     return be;
@@ -932,7 +1271,8 @@ class Game {
     if (k === 'furnace') this.grant('furnace');
     if (k === 'bread') this.grant('bread');
     if (k === 'bow') this.grant('bow');
-    if (['redstone_torch', 'repeater', 'redstone_lamp', 'lever', 'target'].includes(k)) this.grant('redstone');
+    if (['redstone_torch', 'repeater', 'comparator', 'observer', 'piston', 'sticky_piston', 'redstone_lamp', 'lever', 'target', 'hopper'].includes(k)) this.grant('redstone');
+    if (k === 'brewing_stand') this.grant('brew');
   }
   onPickup(id, n) {
     const k = ITEMS[id].key;
@@ -964,6 +1304,7 @@ class Game {
     const p = this.player, s = p.spawn;
     p.pos = [s[0] + 0.5, s[1], s[2] + 0.5]; p.prev = [...p.pos]; p.vel = [0, 0, 0];
     p.health = 20; p.food = 20; p.saturation = 5; p.deathTime = 0; p.fire = 0; p.air = 300; p.fallDist = 0; p.dead = false;
+    if (p.clearEffects) p.clearEffects();
     let y = s[1];
     while (p.collides(p.box()) && y < HEIGHT) { y++; p.pos[1] = y; }
     p.prev = [...p.pos];
@@ -989,7 +1330,7 @@ class Game {
     const b = BLOCKS[id];
     const silk = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'silk_touch') : 0;
     const fortune = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'fortune') : 0;
-    const SILK_SET = new Set(['stone', 'grass_block', 'coal_ore', 'deepslate_coal_ore', 'diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'emerald_ore', 'iron_ore', 'deepslate_iron_ore', 'gold_ore', 'deepslate_gold_ore', 'glass', 'ice', 'packed_ice', 'bookshelf', 'glowstone', 'sea_lantern', 'melon', 'clay', 'snow_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cobweb']);
+    const SILK_SET = new Set(['stone', 'grass_block', 'coal_ore', 'deepslate_coal_ore', 'diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'emerald_ore', 'iron_ore', 'deepslate_iron_ore', 'gold_ore', 'deepslate_gold_ore', 'glass', 'ice', 'packed_ice', 'bookshelf', 'glowstone', 'sea_lantern', 'melon', 'clay', 'snow_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cherry_leaves', 'cobweb']);
     let drops;
     if (tool && ITEMS[tool.id].key === 'shears' && (b.key.endsWith('leaves') || id === 39 || id === 40 || id === 45)) {
       drops = [[id, 1]];
@@ -1152,6 +1493,9 @@ class Game {
         if (def.food) {
           if (p.useT % 4 === 0 && p.useT > 6) { Sound.eat(p.pos); this.foodParticles(held.id); }
           if (p.useT >= 32) this.finishEating(held);
+        } else if (def.potion) {
+          if (p.useT % 4 === 0 && p.useT > 6) Sound.splash(p.pos);
+          if (p.useT >= 32) this.finishDrinking(held);
         }
       }
     }
@@ -1237,6 +1581,22 @@ class Game {
     }
     // door: remove other half
     if (b.door) { const oy = (meta & 8) ? y - 1 : y + 1; if (w.getBlock(x, oy, z) === id) w.setBlock(x, oy, z, 0, 0, 1); }
+    // extended piston: remove its piston_head
+    if ((id === 516 || id === 517) && (meta & 8)) {
+      const dir = meta & 7, D = DIRS[dir];
+      const hx = x + D[0], hy = y + D[1], hz = z + D[2];
+      if (w.getBlock(hx, hy, hz) === 518 && (w.getMeta(hx, hy, hz) & 7) === dir) w.setBlock(hx, hy, hz, 0, 0, 1);
+    }
+    // piston_head: break its base piston
+    if (id === 518) {
+      const dir = meta & 7, B = DIRS[OPP[dir]];
+      const bx = x + B[0], by = y + B[1], bz = z + B[2];
+      const baseId = w.getBlock(bx, by, bz);
+      if (baseId === 516 || baseId === 517) {
+        if (this.mode !== 'creative' || natural) this.dropBlockLoot(bx, by, bz, baseId, 0, null);
+        w.setBlock(bx, by, bz, 0, 0, 1);
+      }
+    }
     if (b.bed) {
       const R = [4, 1, 5, 0][meta & 3], D2 = DIRS[(meta & 4) ? OPP[R] : R];
       const ox = x + D2[0], oz = z + D2[2];
@@ -1254,15 +1614,26 @@ class Game {
     h.dmg = (h.dmg || 0) + loss;
     if (h.dmg >= ITEMS[h.id].durability) { p.inv.slots[p.inv.sel] = null; Sound.block('break', 'wood', p.pos); this.ui.actionBar = { text: (h.name || ITEMS[h.id].cn) + ' 损坏了', t: performance.now(), color: '#FF5555' }; }
   }
-  flushMesh() {
-    // remesh dirty sections near the player immediately for responsive edits
+  flushMesh(sync = false) {
+    // remesh dirty sections near the player immediately or via urgent Tier-0 Worker tasks
     const p = this.player, pcx = Math.floor(p.pos[0]) >> 4, pcz = Math.floor(p.pos[2]) >> 4;
+    const useWorker = !sync && !!(this.worker && this.worker.isReady());
     for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) {
       const ch = this.world.getChunk(pcx + a, pcz + b);
       if (!ch || !ch.dirty) continue;
       let ok = true;
       for (let i = -1; i <= 1 && ok; i++) for (let j = -1; j <= 1; j++) if (!this.world.getChunk(ch.cx + i, ch.cz + j)) { ok = false; break; }
-      if (ok) this.meshChunk(ch);
+      if (!ok) continue;
+      if (useWorker) {
+        const distSq = a * a + b * b;
+        for (let sy = 0; sy < SECTIONS; sy++) {
+          if (ch.dirty & (1 << sy)) {
+            this.worker.enqueueMesh(ch.cx, sy, ch.cz, distSq, true);
+          }
+        }
+      } else {
+        this.meshChunk(ch);
+      }
     }
   }
   attack(e) {
@@ -1305,6 +1676,27 @@ class Game {
     p.usingItem = null; p.useT = 0;
     this.useCd = 4;
   }
+  finishDrinking(held) {
+    const p = this.player, def = ITEMS[held.id];
+    if (!def || !def.potion) return;
+    if (def.potion !== 'water' && def.potion !== 'awkward') {
+      const dur = def.potionDuration ?? (def.effect && def.effect.duration) ?? 0;
+      const amp = (def.effect && def.effect.amp) ?? 0;
+      p.applyEffect(def.potion, dur, amp);
+    }
+    Sound.burp(p.pos);
+    if (this.mode !== 'creative') {
+      held.count--;
+      const emptyBottle = makeStack('glass_bottle', 1);
+      if (held.count <= 0) {
+        p.inv.slots[p.inv.sel] = emptyBottle;
+      } else if (p.inv.add(emptyBottle)) {
+        this.dropFromPlayer(emptyBottle);
+      }
+    }
+    p.usingItem = null; p.useT = 0;
+    this.useCd = 4;
+  }
   releaseBow() {
     const p = this.player, t = p.useT, held = p.inv.held;
     let f = t / 20; f = (f * f + f * 2) / 3; if (f > 1) f = 1;
@@ -1329,6 +1721,14 @@ class Game {
     const p = this.player, w = this.world, held = p.inv.held, def = held && ITEMS[held.id];
     const t = this.target;
     this.useCd = 4;
+    // Right-click Villager -> open TradingScreen (works with empty hand or holding items)
+    if (this.targetEntity && this.targetEntity.type === 'villager' && !p.sneaking) {
+      if (typeof Trading !== 'undefined') Trading.ensureVillager(this.targetEntity, this);
+      this.ui.open(new TradingScreen(this, this.targetEntity));
+      Sound.mob('villager', 'idle', this.targetEntity.pos);
+      p.swingT = 6;
+      return;
+    }
     // entity interaction
     if (this.targetEntity && held) {
       const e = this.targetEntity;
@@ -1362,6 +1762,8 @@ class Game {
       if (b.onUse === 'enchanting') { this.ui.open(new EnchantingScreen(this, [x, y, z])); return; }
       if (b.onUse === 'anvil') { this.ui.open(new AnvilScreen(this, [x, y, z])); return; }
       if (b.onUse === 'furnace') { this.ui.open(new FurnaceScreen(this, this.getBlockEntity(x, y, z, 'furnace'))); return; }
+      if (b.onUse === 'hopper') { this.ui.open(new HopperScreen(this, this.getBlockEntity(x, y, z, 'hopper'))); return; }
+      if (b.onUse === 'brewing') { this.ui.open(new BrewingScreen(this, this.getBlockEntity(x, y, z, 'brewing'))); return; }
       if (b.onUse === 'chest') {
         const be = this.getBlockEntity(x, y, z, 'chest');
         const cm = w.getMeta(x, y, z);
@@ -1405,6 +1807,22 @@ class Game {
         Sound.click();
         p.swingT = 6; this.flushMesh(); return;
       }
+      if (b.onUse === 'comparator') {
+        const cur = w.getMeta(x, y, z) ^ 4;
+        w.setMeta(x, y, z, cur);
+        Sound.click();
+        if (typeof Redstone !== 'undefined') {
+          Redstone.updateComparator(this, x, y, z);
+          Redstone.propagateFromSource(this, x, y, z);
+        }
+        p.swingT = 6; this.flushMesh(); return;
+      }
+      if (t.id === 522 && def && def.block === 522 && (w.getMeta(x, y, z) & 3) < 3) {
+        w.setMeta(x, y, z, w.getMeta(x, y, z) + 1);
+        Sound.block('place', 'grass', [x + 0.5, y + 0.5, z + 0.5]);
+        if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+        p.swingT = 6; this.flushMesh(); return;
+      }
       if (b.door) {
         const m = w.getMeta(x, y, z), base = (m & 8) ? y - 1 : y;
         const bm = w.getMeta(x, base, z) ^ 4;
@@ -1425,8 +1843,24 @@ class Game {
       if (def.key.startsWith('iron')) this.grant('armor');
       return;
     }
-    // food
+    // food & potions
     if (def.food) { if (p.food < 20 || this.mode === 'creative' || def.key === 'golden_apple') { p.usingItem = held.id; p.useT = 0; } return; }
+    if (def.potion) { p.usingItem = held.id; p.useT = 0; return; }
+    if (def.key === 'glass_bottle') {
+      const ft = this.raycast([p.pos[0], p.pos[1] + p.eye(), p.pos[2]], this.lookDir(), this.reach(), true);
+      if (ft && ft.id === WATER) {
+        const filled = makeStack('water_bottle', 1);
+        if (this.mode !== 'creative') {
+          held.count--;
+          if (!held.count) p.inv.slots[p.inv.sel] = filled;
+          else if (p.inv.add(filled)) this.dropFromPlayer(filled);
+        } else {
+          if (p.inv.add(filled)) this.dropFromPlayer(filled);
+        }
+        Sound.splash(ft.pos); p.swingT = 6;
+      }
+      return;
+    }
     if (def.key === 'bow') { if (this.mode === 'creative' || p.inv.count(item('arrow')) > 0) { p.usingItem = held.id; p.useT = 0; } return; }
     if (def.key === 'snowball' || def.key === 'egg') {
       const d = this.lookDir();
@@ -1458,7 +1892,12 @@ class Game {
     if (def.key === 'bone_meal') {
       let ok = false;
       if (t.id === 64 && w.getMeta(x, y, z) < 7) { w.setMeta(x, y, z, Math.min(7, w.getMeta(x, y, z) + 2 + ((Math.random() * 3) | 0))); ok = true; }
-      else if (t.id >= 65 && t.id <= 67) { if (Math.random() < 0.45) this.growTree(x, y, z, t.id); ok = true; }
+      else if ((t.id >= 65 && t.id <= 67) || t.id === 521) { if (Math.random() < 0.45) this.growTree(x, y, z, t.id); ok = true; }
+      else if (t.id === 522) {
+        if ((w.getMeta(x, y, z) & 3) < 3) w.setMeta(x, y, z, w.getMeta(x, y, z) + 1);
+        else this.dropItem(x + 0.5, y + 0.3, z + 0.5, makeStack('pink_petals', 1));
+        ok = true;
+      }
       else if (t.id === 2) {
         for (let i = 0; i < 40; i++) {
           const nx = x + ((Math.random() * 7) | 0) - 3, nz = z + ((Math.random() * 7) | 0) - 3;
@@ -1509,6 +1948,7 @@ class Game {
     const look = this.lookDir();
     const hdir = Math.abs(look[0]) > Math.abs(look[2]) ? (look[0] > 0 ? 1 : 0) : (look[2] > 0 ? 5 : 4);
     if (pb.facing) meta = OPP[hdir];
+    if (pb.hopper) meta = (t.face === 2 || t.face === 3) ? 2 : OPP[t.face];
     if (pb.axis) meta = (t.face === 0 || t.face === 1) ? 1 : (t.face === 4 || t.face === 5) ? 2 : 0;
     if (pb.slab) { const fy = t.point[1] - Math.floor(t.point[1]); meta = t.face === 2 || (t.face !== 3 && fy > 0.5) ? 1 : 0; }
     if (pb.stairs) {
@@ -1519,7 +1959,9 @@ class Game {
     if (pb.trapdoor) { const fy = t.point[1] - Math.floor(t.point[1]); if (t.face === 2 || (t.face !== 3 && fy > 0.5)) meta |= 8; }
     if (placeId === 21 || placeId === 120) { if (t.face === 2) return; meta = t.face === 3 ? 0 : (OPP[t.face] === 0 ? 6 : OPP[t.face]); }
     if (pb.lever || pb.button) { meta = OPP[t.face]; }
-    if (pb.repeater) { meta = { 4: 0, 1: 1, 5: 2, 0: 3 }[hdir]; }
+    if (pb.repeater || pb.comparator) { meta = { 4: 0, 1: 1, 5: 2, 0: 3 }[hdir]; }
+    if (pb.piston) { meta = Math.abs(look[1]) > 0.65 ? (look[1] > 0 ? 2 : 3) : OPP[hdir]; }
+    if (pb.observer) { meta = Math.abs(look[1]) > 0.65 ? (look[1] > 0 ? 3 : 2) : hdir; }
     if (pb.ladder) { if (t.face === 2 || t.face === 3) return; meta = OPP[t.face]; }
     if (pb.key.endsWith('leaves')) meta = 4;
     if (pb.bed) {
@@ -1566,12 +2008,16 @@ class Game {
   placeAt(x, y, z, id, meta, held, merge) {
     const p = this.player, w = this.world;
     w.setBlock(x, y, z, id, meta);
+    if (id === 513) this.getBlockEntity(x, y, z, 'hopper');
+    else if (id === 527) this.getBlockEntity(x, y, z, 'brewing');
+    else if (id === 52) this.getBlockEntity(x, y, z, 'chest');
+    else if (id === 20 || id === 117) this.getBlockEntity(x, y, z, 'furnace');
     Sound.block('place', BLOCKS[id].sound, [x + 0.5, y + 0.5, z + 0.5]);
     if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
     p.swingT = 6;
     this.stats.placed++;
     if (this.stats.placed >= 100) this.grant('build');
-    if (BLOCKS[id].redstone) this.grant('redstone');
+    if (BLOCKS[id].redstone || id === 513) this.grant('redstone');
     if (BLOCKS[id].gravity) this.onNeighborUpdate(x, y, z, id);
     Redstone.notifyRedstoneAt(this, x, y, z);
     Redstone.propagateFromSource(this, x, y, z);
@@ -1580,7 +2026,7 @@ class Game {
   pickBlock() {
     const t = this.target; if (!t) return;
     let id = t.id;
-    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 69: 'oak_door', 38: 'sugar_cane', 63: 3, 119: 'redstone', 121: 120, 126: 125, 127: 'repeater', 156: 'repeater', 158: 80 };
+    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 69: 'oak_door', 525: 'cherry_door', 38: 'sugar_cane', 63: 3, 119: 'redstone', 121: 120, 126: 125, 127: 'repeater', 156: 'repeater', 158: 80, 518: 516 };
     if (map[id] !== undefined) id = typeof map[id] === 'string' ? item(map[id]) : map[id];
     if (!ITEMS[id]) return;
     const inv = this.player.inv;
@@ -1626,8 +2072,13 @@ class Game {
       const wl = Math.max(0.12, day * ((this.world.getLight(Math.floor(p.pos[0]), Math.floor(p.pos[1] + 1.6), Math.floor(p.pos[2])) >> 4) / 15));
       fog = [0.05 * wl, 0.18 * wl, 0.45 * wl]; fogNear = -4; fogFar = 28;
     } else if (this.headInLava) { fog = [0.6, 0.1, 0]; fogNear = 0; fogFar = 2; }
+    const hasNightVision = !!(p && p.hasEffect && p.hasEffect('night_vision'));
+    if (hasNightVision) {
+      day = Math.max(day, 0.94);
+      fog = fog.map((v, i) => Math.max(v, [0.32, 0.38, 0.55][i]));
+    }
     // cave darkness: below y=50 with little sky light, darken fog
-    if (!this.headInWater && this.state === 'play') {
+    if (!this.headInWater && this.state === 'play' && !hasNightVision) {
       const sl = this.world.skyAt(Math.floor(p.pos[0]), Math.floor(p.pos[1] + 1.6), Math.floor(p.pos[2]));
       const k = clamp(sl / 10, 0.25, 1);
       fog = fog.map(v => v * k + (1 - k) * 0.02);
@@ -1660,6 +2111,7 @@ class Game {
       if (p.deathTime > 0) eye[1] -= Math.min(1.2, p.deathTime / 20);
       if (p.sprinting) fov *= 1.12;
       if (p.flying && p.sprinting) fov *= 1.05;
+      if (p.hasEffect && p.hasEffect('speed')) fov *= 1 + 0.07 * p.effectLevel('speed');
       if (this.headInWater) fov *= 0.9;
       if (p.usingItem === item('bow')) fov *= 1 - Math.min(1, p.useT / 20) * 0.15;
     }
@@ -1793,9 +2245,7 @@ class Game {
         const bob = Math.sin(t * 0.1 + tx * 0.7 + tz * 1.3) * 0.05;
         const dx = this.player.pos[0] - (tx + 0.5), dz = this.player.pos[2] - (tz + 0.5);
         const dist = Math.hypot(dx, dz);
-        // Model front is -Z: atan2(-dx, -dz) rotates -Z to face directly toward the player (dx, dz)
         const faceYaw = dist < 6.5 ? Math.atan2(-dx, -dz) : t * 0.04;
-        // foldAngle: 0 = 180 deg flat open; 0.24 rad (~14 deg) = ~152 deg wide open facing player; 1.15 rad = folded when far
         const foldAngle = dist < 6.5 ? 0.24 : 1.15;
         M4.translate(m, tx + 0.5, ty + 1.0 + bob, tz + 0.5);
         M4.rotY(m, faceYaw);
@@ -1858,7 +2308,13 @@ class Game {
       } else { M4.scale(am, 0.375, 0.375, 0.375); M4.translate(am, -0.5, -0.8, -0.5); }
       this.drawItemModel(heldId, am, lt, env, 'hand');
     } } : null;
-    r.drawModel(model, model === 'steve' ? 'steve' : e.type === 'sheep' ? 'sheep' : model, m, poses, lt, env, { overlay, attach });
+    let texName = model === 'steve' ? 'steve' : e.type === 'sheep' ? 'sheep' : model;
+    if (e.type === 'villager' && e.profession) {
+      const profTex = 'villager_' + e.profession;
+      if (r.entityTex[profTex]) texName = profTex;
+    }
+    r.drawModel(model, texName, m, poses, lt, env, { overlay, attach });
+    if (isPlayer) r.drawPlayerArmor(e, m, poses, lt, env, { overlay });
     if (e.type === 'sheep' && !e.sheared) {
       const col = WOOL_RGB[e.woolColor] || [1, 1, 1];
       r.drawModel('sheep_wool', 'sheep_wool', m, poses, lt, env, { overlay, tint: col });
@@ -1900,7 +2356,7 @@ class Game {
     } else {
       const mm = new Float32Array(m);
       if (ctx === 'ground') { M4.scale(mm, 0.25, 0.25, 0.25); M4.translate(mm, -0.5, 0, -0.5); }
-      let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1;
+      let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1; if (b.hopper) meta = 2; if (b.piston) meta = 3; if (b.observer) meta = 5;
       if (b.bed) { r.drawMesh(this.bedMesh || (this.bedMesh = Mesher.multi([[def.block, 0, 0, 0, 0], [def.block, 4, 0, 0, -1]])), mm, env, l); return; }
       r.drawMesh(this.blockMesh(def.block, meta), mm, env, l);
     }
@@ -1943,7 +2399,7 @@ class Game {
       const def = ITEMS[held.id];
       const b = def.block !== undefined ? BLOCKS[def.block] : null;
       const flat = !b || def.flat || b.shape === SH_CROSS || b.shape === SH_TORCH || b.ladder || b.door;
-      const eating = p.usingItem && def.food;
+      const eating = p.usingItem && (def.food || def.potion);
       const bowing = p.usingItem && def.key === 'bow';
       if (eating) {
         const left = 32 - p.useT - a + 1, f1 = left / 32;
@@ -1983,7 +2439,7 @@ class Game {
         M4.rotY(m, 45 * D);
         M4.scale(m, 0.4, 0.4, 0.4);
         M4.translate(m, -0.5, -0.5, -0.5);
-        let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1;
+        let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1; if (b.hopper) meta = 2; if (b.piston) meta = 3; if (b.observer) meta = 5;
         if (b.bed) { M4.translate(m, 0.25, 0.2, 0.5); M4.scale(m, 0.6, 0.6, 0.6); r.drawMesh(this.bedMesh || (this.bedMesh = Mesher.multi([[def.block, 0, 0, 0, 0], [def.block, 4, 0, 0, -1]])), m, env2, lt); }
         else r.drawMesh(this.blockMesh(def.block, meta), m, env2, lt);
       }

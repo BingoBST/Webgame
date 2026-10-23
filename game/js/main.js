@@ -113,8 +113,10 @@ Renderer.prototype.playerPreview = function (game, ui, x, y, w, h) {
   const m = M4.create(); M4.translate(m, 0, 0, 0); M4.rotY(m, Math.PI - Math.atan(mx) * 0.7);
   M4.scale(m, 0.9375, 0.9375, 0.9375);
   const env = { day: 1, fogColor: [0, 0, 0], fogNear: 1e8, fogFar: 2e8, nightTint: [1, 1, 1] };
+  const poses = { head: { ry: -Math.atan(mx) * 0.5, rx: Math.atan(my) * 0.6 } };
   const savedCam = this.camPos; this.camPos = [0, 0, 0];
-  this.drawModel('steve', 'steve', m, { head: { ry: -Math.atan(mx) * 0.5, rx: Math.atan(my) * 0.6 } }, [1, 0], env, { vp });
+  this.drawModel('steve', 'steve', m, poses, [1, 0], env, { vp });
+  if (ui && ui.game && ui.game.player) this.drawPlayerArmor(ui.game.player, m, poses, [1, 0], env, { vp });
   this.camPos = savedCam;
   gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pv.px);
   for (let r = 0; r < H; r++) pv.img.data.set(pv.px.subarray((H - 1 - r) * W * 4, (H - r) * W * 4), r * W * 4);
@@ -122,6 +124,53 @@ Renderer.prototype.playerPreview = function (game, ui, x, y, w, h) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   return pv.cv;
+};
+
+Renderer.prototype.bookPreview = function (hasOpts) {
+  const gl = this.gl;
+  const W = 80, H = 64;
+  if (!this.bpv) {
+    const fb = gl.createFramebuffer(), tex = gl.createTexture(), rb = gl.createRenderbuffer();
+    gl.bindTexture(gl.TEXTURE_2D, tex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, W, H);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    this.bpv = { fb, tex, rb, W, H, cv, ctx: cv.getContext('2d'), px: new Uint8Array(W * H * 4), img: cv.getContext('2d').createImageData(W, H), open: 0 };
+  }
+  const bpv = this.bpv;
+  bpv.open += ((hasOpts ? 1 : 0) - bpv.open) * 0.18;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, bpv.fb);
+  gl.viewport(0, 0, W, H);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE);
+  const vp = M4.create(); M4.ortho(vp, -0.52, 0.52, -0.42, 0.42, -5, 5);
+  const m = M4.create();
+  M4.translate(m, 0, -0.04, 0);
+  M4.rotX(m, 0.48);
+  M4.rotY(m, -0.55);
+  M4.scale(m, 1.15, 1.15, 1.15);
+  const openAngle = bpv.open * 1.18;
+  const flip = hasOpts ? Math.sin(performance.now() * 0.004) * 0.15 * bpv.open : 0;
+  const poses = {
+    coverL: { ry: openAngle },
+    coverR: { ry: -openAngle },
+    pagesL: { ry: openAngle * 0.92 },
+    pagesR: { ry: -openAngle * 0.92 },
+    flipL: { ry: openAngle * 0.55 + flip },
+    flipR: { ry: -openAngle * 0.55 + flip },
+  };
+  const env = { day: 1, fogColor: [0, 0, 0], fogNear: 1e8, fogFar: 2e8, nightTint: [1, 1, 1] };
+  const savedCam = this.camPos; this.camPos = [0, 0, 0];
+  this.drawModel('enchant_book', 'enchant_book', m, poses, [1, 0.8], env, { vp });
+  this.camPos = savedCam;
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, bpv.px);
+  for (let r = 0; r < H; r++) bpv.img.data.set(bpv.px.subarray((H - 1 - r) * W * 4, (H - r) * W * 4), r * W * 4);
+  bpv.ctx.putImageData(bpv.img, 0, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  return bpv.cv;
 };
 
 window.addEventListener('load', async () => {

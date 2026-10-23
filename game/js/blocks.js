@@ -1,6 +1,6 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// Block & item registry, recipes, smelting
+// Block & item registry, recipes, smelting, brewing
 // ---------------------------------------------------------------------------
 function T(name) {
   const l = ASSETS.tiles[name];
@@ -8,15 +8,20 @@ function T(name) {
   return l;
 }
 
-const BLOCKS = new Array(256).fill(null);
+const MAX_BLOCK_ID = 1024;
+const BLOCKS = new Array(MAX_BLOCK_ID).fill(null);
 const ITEMS = [];          // id -> item def (blocks + items)
 const ITEM_KEY = {};       // key -> id
 const BID = {};            // block key -> id
+let nextIconIdx = 0;       // compact 0..N-1 icon index for iconAtlas
 
 // Shape constants
 const SH_CUBE = 0, SH_CROSS = 1, SH_LIQUID = 2, SH_BOXES = 3, SH_TORCH = 4, SH_NONE = 5, SH_CROP = 6, SH_CACTUS = 7, SH_MODEL = 8, SH_WIRE = 9;
 
 function defBlock(id, key, cn, o = {}) {
+  if (!Number.isInteger(id) || id < 0 || id >= MAX_BLOCK_ID) throw new Error('Block ID out of range (0..' + (MAX_BLOCK_ID - 1) + '): ' + id);
+  if (id >= 256 && id < 512) throw new Error('Block ID ' + id + ' conflicts with standalone item range 256..511; use >= 512');
+  if (BLOCKS[id] && BLOCKS[id].key !== key && !o.allowOverride) throw new Error('Duplicate block ID: ' + id + ' (' + key + ')');
   const shape = o.shape ?? SH_CUBE;
   const b = {
     id, key, cn, shape,
@@ -48,7 +53,9 @@ function defBlock(id, key, cn, o = {}) {
     tex: [0, 0, 0, 0, 0, 0], overlay: [0, 0, 0, 0, 0, 0],
     particle: 0,
     slab: !!o.slab, stairs: !!o.stairs, door: !!o.door, trapdoor: !!o.trapdoor, ladder: !!o.ladder,
-    redstone: !!o.redstone, button: !!o.button, plate: !!o.plate, lever: !!o.lever, repeater: !!o.repeater, fence: !!o.fence, rail: !!o.rail, web: !!o.web,
+    redstone: !!o.redstone, button: !!o.button, plate: !!o.plate, lever: !!o.lever, repeater: !!o.repeater,
+    comparator: !!o.comparator, observer: !!o.observer, piston: !!o.piston, sticky: !!o.sticky, pistonHead: !!o.pistonHead,
+    fence: !!o.fence, rail: !!o.rail, web: !!o.web, hopper: !!o.hopper, brewing: !!o.brewing,
   };
   b.opaque = o.opaque ?? (shape === SH_CUBE && b.render === 'opaque');
   b.opacity = o.opacity ?? (b.opaque ? 15 : 0);
@@ -67,8 +74,14 @@ function defBlock(id, key, cn, o = {}) {
   }
   BLOCKS[id] = b; BID[key] = id;
   if (!b.noItem) {
-    ITEMS[id] = { id, key, cn, block: id, stack: o.stack || 64, fuel: b.fuel, flat: o.flatIcon || null };
+    if (ITEMS[id] && ITEMS[id].key !== key && !o.allowOverride) throw new Error('Item ID collision at ' + id + ' (' + key + ')');
+    const iconIdx = (ITEMS[id] && ITEMS[id].iconIdx !== undefined) ? ITEMS[id].iconIdx : nextIconIdx++;
+    ITEMS[id] = { id, key, cn, block: id, stack: o.stack || 64, fuel: b.fuel, flat: o.flatIcon || null, iconIdx };
     ITEM_KEY[key] = id;
+  }
+  if (typeof syncBlockProps === 'function') syncBlockProps(id);
+  if (typeof window !== 'undefined' && window.game && window.game.worker && typeof window.game.worker.syncBlock === 'function') {
+    window.game.worker.syncBlock(id);
   }
   return b;
 }
@@ -167,6 +180,170 @@ function repeaterModel(meta, lit) {
     ]
   };
 }
+function comparatorModel(meta) {
+  const rot = meta & 3;
+  const sub = !!(meta & 4);
+  const lit = !!(meta & 8) || ((meta >> 4) & 15) > 0;
+  const topTex = T(lit ? 'comparator_on' : 'comparator');
+  const sideTex = T('smooth_stone_slab_side');
+  const botTex = T('smooth_stone');
+  const frontTorchTex = T(sub ? 'redstone_torch' : 'redstone_torch_off');
+  const backTorchTex = T(lit ? 'redstone_torch' : 'redstone_torch_off');
+  const mkTorch = (x0, z0, y1, tex) => ({
+    from: [x0, 2, z0], to: [x0 + 2, y1, z0 + 2],
+    faces: {
+      up: [7, 5, 9, 7, tex],
+      north: [7, 6, 9, 11, tex],
+      south: [7, 6, 9, 11, tex],
+      west: [7, 6, 9, 11, tex],
+      east: [7, 6, 9, 11, tex],
+    }
+  });
+  return {
+    rot,
+    els: [
+      {
+        from: [0, 0, 0], to: [16, 2, 16],
+        faces: {
+          down: [0, 0, 16, 16, botTex],
+          up: [0, 0, 16, 16, topTex],
+          north: [0, 14, 16, 16, sideTex],
+          south: [0, 14, 16, 16, sideTex],
+          west: [0, 14, 16, 16, sideTex],
+          east: [0, 14, 16, 16, sideTex],
+        }
+      },
+      mkTorch(7, 2, sub ? 6 : 5, frontTorchTex),
+      mkTorch(3, 11, 7, backTorchTex),
+      mkTorch(11, 11, 7, backTorchTex),
+    ]
+  };
+}
+function observerTex(face, meta) {
+  const f = meta & 7, b = [1, 0, 3, 2, 5, 4][f];
+  if (face === f) return T('observer_front');
+  if (face === b) return T((meta & 8) ? 'observer_back_on' : 'observer_back');
+  if (face === 2 || face === 3) return T('observer_top');
+  return T('observer_side');
+}
+function pistonBoxes(meta) {
+  const dir = meta & 7, ext = !!(meta & 8);
+  if (!ext) return [[0, 0, 0, 16, 16, 16]];
+  if (dir === 0) return [[4, 0, 0, 16, 16, 16]];
+  if (dir === 1) return [[0, 0, 0, 12, 16, 16]];
+  if (dir === 2) return [[0, 4, 0, 16, 16, 16]];
+  if (dir === 3) return [[0, 0, 0, 16, 12, 16]];
+  if (dir === 4) return [[0, 0, 4, 16, 16, 16]];
+  return [[0, 0, 0, 16, 16, 12]];
+}
+function pistonModel(meta, sticky) {
+  const dir = meta & 7, ext = !!(meta & 8);
+  const b = pistonBoxes(meta)[0];
+  const tFront = ext ? T('piston_inner') : T(sticky ? 'piston_top_sticky' : 'piston_top');
+  const tBack = T('piston_bottom'), tSide = T('piston_side');
+  const opp = [1, 0, 3, 2, 5, 4][dir];
+  const fTex = (f) => f === dir ? tFront : f === opp ? tBack : tSide;
+  return {
+    rot: 0,
+    els: [{
+      from: [b[0], b[1], b[2]], to: [b[3], b[4], b[5]],
+      faces: {
+        west: [0, 0, 16, 16, fTex(0)],
+        east: [0, 0, 16, 16, fTex(1)],
+        down: [0, 0, 16, 16, fTex(2)],
+        up: [0, 0, 16, 16, fTex(3)],
+        north: [0, 0, 16, 16, fTex(4)],
+        south: [0, 0, 16, 16, fTex(5)],
+      }
+    }]
+  };
+}
+function pistonHeadBoxes(meta) {
+  const dir = meta & 7;
+  const plate = dir === 0 ? [0, 0, 0, 4, 16, 16]
+    : dir === 1 ? [12, 0, 0, 16, 16, 16]
+    : dir === 2 ? [0, 0, 0, 16, 4, 16]
+    : dir === 3 ? [0, 12, 0, 16, 16, 16]
+    : dir === 4 ? [0, 0, 0, 16, 16, 4]
+    : [0, 0, 12, 16, 16, 16];
+  const shaft = dir === 0 ? [4, 6, 6, 16, 10, 10]
+    : dir === 1 ? [0, 6, 6, 12, 10, 10]
+    : dir === 2 ? [6, 4, 6, 10, 16, 10]
+    : dir === 3 ? [6, 0, 6, 10, 12, 10]
+    : dir === 4 ? [6, 6, 4, 10, 10, 16]
+    : [6, 6, 0, 10, 10, 12];
+  return [plate, shaft];
+}
+function pistonHeadModel(meta) {
+  const dir = meta & 7, sticky = !!(meta & 8);
+  const [plate, shaft] = pistonHeadBoxes(meta);
+  const tFront = T(sticky ? 'piston_top_sticky' : 'piston_top');
+  const tBack = T('piston_top'), tSide = T('piston_side');
+  const opp = [1, 0, 3, 2, 5, 4][dir];
+  const pTex = (f) => f === dir ? tFront : f === opp ? tBack : tSide;
+  return {
+    rot: 0,
+    els: [
+      {
+        from: [plate[0], plate[1], plate[2]], to: [plate[3], plate[4], plate[5]],
+        faces: {
+          west: [0, 0, 16, 16, pTex(0)],
+          east: [0, 0, 16, 16, pTex(1)],
+          down: [0, 0, 16, 16, pTex(2)],
+          up: [0, 0, 16, 16, pTex(3)],
+          north: [0, 0, 16, 16, pTex(4)],
+          south: [0, 0, 16, 16, pTex(5)],
+        }
+      },
+      {
+        from: [shaft[0], shaft[1], shaft[2]], to: [shaft[3], shaft[4], shaft[5]],
+        faces: {
+          west: [0, 0, 16, 4, tSide],
+          east: [0, 0, 16, 4, tSide],
+          down: [0, 0, 16, 4, tSide],
+          up: [0, 0, 16, 4, tSide],
+          north: [0, 0, 16, 4, tSide],
+          south: [0, 0, 16, 4, tSide],
+        }
+      }
+    ]
+  };
+}
+function pinkPetalsModel(meta) {
+  const t = T('pink_petals');
+  const count = (meta & 3) + 1;
+  const quads = [
+    { from: [0, 0.4, 0], to: [10, 0.8, 10], faces: { up: [0, 0, 16, 16, t], down: [0, 0, 16, 16, t] } },
+    { from: [6, 0.5, 6], to: [16, 0.9, 16], faces: { up: [16, 16, 0, 0, t], down: [16, 16, 0, 0, t] } },
+    { from: [6, 0.6, 0], to: [16, 1.0, 10], faces: { up: [0, 16, 16, 0, t], down: [0, 16, 16, 0, t] } },
+    { from: [0, 0.7, 6], to: [10, 1.1, 16], faces: { up: [16, 0, 0, 16, t], down: [16, 0, 0, 16, t] } },
+  ];
+  return {
+    rot: 0,
+    els: quads.slice(0, count),
+  };
+}
+function brewingStandModel(meta) {
+  const tStand = T('brewing_stand'), tBase = T('brewing_stand_base');
+  const b0 = !!(meta & 1), b1 = !!(meta & 2), b2 = !!(meta & 4);
+  const armU = (hasBottle) => hasBottle ? [0, 2, 7, 16, tStand] : [9, 2, 16, 16, tStand];
+  const armFlipU = (hasBottle) => hasBottle ? [7, 2, 0, 16, tStand] : [16, 2, 9, 16, tStand];
+  return {
+    rot: 0,
+    els: [
+      { from: [7, 0, 7], to: [9, 14, 9], faces: { up: [7, 2, 9, 4, tStand], down: [7, 7, 9, 9, tStand], north: [7, 2, 9, 16, tStand], south: [7, 2, 9, 16, tStand], west: [7, 2, 9, 16, tStand], east: [7, 2, 9, 16, tStand] } },
+      { from: [9, 0, 5], to: [15, 2, 11], faces: { up: [9, 5, 15, 11, tBase], down: [9, 5, 15, 11, tBase], north: [9, 14, 15, 16, tBase], south: [9, 14, 15, 16, tBase], west: [5, 14, 11, 16, tBase], east: [5, 14, 11, 16, tBase] } },
+      { from: [2, 0, 1], to: [8, 2, 7], faces: { up: [2, 1, 8, 7, tBase], down: [2, 1, 8, 7, tBase], north: [2, 14, 8, 16, tBase], south: [2, 14, 8, 16, tBase], west: [1, 14, 7, 16, tBase], east: [1, 14, 7, 16, tBase] } },
+      { from: [2, 0, 9], to: [8, 2, 15], faces: { up: [2, 9, 8, 15, tBase], down: [2, 9, 8, 15, tBase], north: [2, 14, 8, 16, tBase], south: [2, 14, 8, 16, tBase], west: [9, 14, 15, 16, tBase], east: [9, 14, 15, 16, tBase] } },
+      // Arm 0 (+X East arm over [9,0,5..15,2,11])
+      { from: [9, 2, 7.8], to: [16, 16, 8.2], faces: { north: armU(b0), south: armFlipU(b0) } },
+      // Arm 1 (-X/North-West arm over [2,0,1..8,2,7])
+      { from: [1, 2, 3.8], to: [7, 16, 4.2], faces: { north: armFlipU(b1), south: armU(b1) } },
+      // Arm 2 (+Z/South-West arm over [2,0,9..8,2,15])
+      { from: [4.8, 2, 9], to: [5.2, 16, 15], faces: { west: armU(b2), east: armFlipU(b2) } },
+    ]
+  };
+}
 function fenceBoxes(meta) {
   const out = [[6, 0, 6, 10, 16, 10]];
   if (meta & 1) out.push([7, 6, 0, 9, 9, 6], [7, 12, 0, 9, 15, 6]);
@@ -213,6 +390,37 @@ function bellModel(meta) {
       { from: [5, 6, 5], to: [11, 13, 11], faces: { up: [1, 1, 7, 7, tTop], down: [1, 1, 7, 7, tBot], north: [1, 0, 7, 7, tSide], south: [1, 0, 7, 7, tSide], west: [1, 0, 7, 7, tSide], east: [1, 0, 7, 7, tSide] } },
       // Bell flared lower rim (8x2x8) mapped to opaque (0..8, 7..9) of bell_side and (0..8, 0..8) of bell_top/bottom
       { from: [4, 4, 4], to: [12, 6, 12], faces: { up: [0, 0, 8, 8, tTop], down: [0, 0, 8, 8, tBot], north: [0, 7, 8, 9, tSide], south: [0, 7, 8, 9, tSide], west: [0, 7, 8, 9, tSide], east: [0, 7, 8, 9, tSide] } },
+    ]
+  };
+}
+function hopperBoxes(meta) {
+  const dir = meta & 7;
+  const spout = dir === 0 ? [0, 4, 6, 4, 8, 10]
+    : dir === 1 ? [12, 4, 6, 16, 8, 10]
+    : dir === 4 ? [6, 4, 0, 10, 8, 4]
+    : dir === 5 ? [6, 4, 12, 10, 8, 16]
+    : [6, 0, 6, 10, 4, 10];
+  return [[0, 10, 0, 16, 16, 16], [4, 4, 4, 12, 10, 12], spout];
+}
+function hopperModel(meta) {
+  const tTop = T('hopper_top'), tOut = T('hopper_outside'), tIn = T('hopper_inside');
+  const dir = meta & 7;
+  const spout = dir === 0 ? [0, 4, 6, 4, 8, 10]
+    : dir === 1 ? [12, 4, 6, 16, 8, 10]
+    : dir === 4 ? [6, 4, 0, 10, 8, 4]
+    : dir === 5 ? [6, 4, 12, 10, 8, 16]
+    : [6, 0, 6, 10, 4, 10];
+  return {
+    rot: 0,
+    els: [
+      { from: [0, 10, 0], to: [16, 16, 16], faces: { up: [0, 0, 16, 16, tTop], down: [0, 0, 16, 16, tOut], north: [0, 0, 16, 6, tOut], south: [0, 0, 16, 6, tOut], west: [0, 0, 16, 6, tOut], east: [0, 0, 16, 6, tOut] } },
+      { from: [0, 11, 2], to: [2, 16, 14], faces: { east: [2, 0, 14, 5, tOut] } },
+      { from: [14, 11, 2], to: [16, 16, 14], faces: { west: [2, 0, 14, 5, tOut] } },
+      { from: [2, 11, 0], to: [14, 16, 2], faces: { south: [2, 0, 14, 5, tOut] } },
+      { from: [2, 11, 14], to: [14, 16, 16], faces: { north: [2, 0, 14, 5, tOut] } },
+      { from: [2, 10, 2], to: [14, 11, 14], faces: { up: [2, 2, 14, 14, tIn] } },
+      { from: [4, 4, 4], to: [12, 10, 12], faces: { down: [4, 4, 12, 12, tOut], north: [4, 6, 12, 12, tOut], south: [4, 6, 12, 12, tOut], west: [4, 6, 12, 12, tOut], east: [4, 6, 12, 12, tOut] } },
+      { from: [spout[0], spout[1], spout[2]], to: [spout[3], spout[4], spout[5]], faces: { up: [6, 6, 10, 10, tOut], down: [6, 6, 10, 10, tOut], north: [6, 12, 10, 16, tOut], south: [6, 12, 10, 16, tOut], west: [6, 12, 10, 16, tOut], east: [6, 12, 10, 16, tOut] } },
     ]
   };
 }
@@ -399,14 +607,100 @@ defBlock(183, 'bell', '钟', { shape: SH_MODEL, model: bellModel, boxes: () => [
 defBlock(184, 'spruce_slab', '云杉木台阶', { shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: 'spruce_planks', render: 'opaque', hardness: 2, tool: 'axe', sound: 'wood', slab: true, fuel: 150, drops: slabDrop('spruce_slab') });
 defBlock(185, 'enchanting_table', '附魔台', { shape: SH_BOXES, boxes: () => [[0, 0, 0, 16, 12, 16]], tex: { top: 'enchanting_table_top', bottom: 'enchanting_table_bottom', side: 'enchanting_table_side' }, render: 'opaque', opaque: false, light: 7, hardness: 5, tool: 'pickaxe', needsTool: true, sound: 'stone', onUse: 'enchanting' });
 defBlock(186, 'anvil', '铁砧', { shape: SH_MODEL, model: anvilModel, boxes: (m) => (m === 0 || m === 1) ? [[0, 0, 2, 16, 16, 14]] : [[2, 0, 0, 14, 16, 16]], tex: { top: 'anvil_top', bottom: 'anvil_base', side: 'anvil_side' }, render: 'opaque', opaque: false, facing: true, hardness: 5, tool: 'pickaxe', level: 1, needsTool: true, sound: 'metal', gravity: true, onUse: 'anvil' });
+defBlock(512, 'prismarine_bricks', '海晶石砖', { tex: 'prismarine_bricks', hardness: 1.5, tool: 'pickaxe', needsTool: true });
+BID.test_block = 512; ITEM_KEY.test_block = 512;
+defBlock(513, 'hopper', '漏斗', { shape: SH_MODEL, model: hopperModel, boxes: hopperBoxes, tex: { top: 'hopper_top', bottom: 'hopper_outside', side: 'hopper_outside' }, render: 'cutout', opaque: false, solid: true, hardness: 3, tool: 'pickaxe', needsTool: true, sound: 'metal', onUse: 'hopper', hopper: true });
+
+// ---- W2 Redstone Automation Trio (IDs 514..518) ---------------------------
+defBlock(514, 'comparator', '红石比较器', {
+  shape: SH_MODEL, model: comparatorModel, boxes: () => [[0, 0, 0, 16, 2, 16]],
+  tex: 'comparator', render: 'cutout', solid: true, opaque: false, hardness: 0,
+  sound: 'wood', needsSupport: true, onUse: 'comparator', flatIcon: 'i_comparator',
+  comparator: true, redstone: true
+});
+defBlock(515, 'observer', '侦测器', {
+  tex: { top: 'observer_top', bottom: 'observer_top', side: 'observer_side', front: 'observer_front' },
+  texFn: observerTex, hardness: 3, tool: 'pickaxe', needsTool: true, sound: 'stone',
+  observer: true, redstone: true
+});
+defBlock(516, 'piston', '活塞', {
+  shape: SH_MODEL, model: (m) => pistonModel(m, false), boxes: pistonBoxes,
+  tex: { top: 'piston_top', bottom: 'piston_bottom', side: 'piston_side', front: 'piston_top' },
+  render: 'opaque', solid: true, opaque: false, hardness: 1.5, tool: 'pickaxe', sound: 'stone',
+  piston: true, redstone: true
+});
+defBlock(517, 'sticky_piston', '黏性活塞', {
+  shape: SH_MODEL, model: (m) => pistonModel(m, true), boxes: pistonBoxes,
+  tex: { top: 'piston_top_sticky', bottom: 'piston_bottom', side: 'piston_side', front: 'piston_top_sticky' },
+  render: 'opaque', solid: true, opaque: false, hardness: 1.5, tool: 'pickaxe', sound: 'stone',
+  piston: true, sticky: true, redstone: true
+});
+defBlock(518, 'piston_head', '活塞头', {
+  shape: SH_MODEL, model: pistonHeadModel, boxes: pistonHeadBoxes,
+  tex: 'piston_top', render: 'opaque', solid: true, opaque: false, hardness: 1.5,
+  sound: 'stone', noItem: true, pistonHead: true, drops: nothing
+});
+
+// ---- 1.20 Cherry Grove & Cherry Wood Set (IDs 519..526) -------------------
+defBlock(519, 'cherry_log', '樱花原木', {
+  tex: { top: 'cherry_log_top', side: 'cherry_log' }, hardness: 2, tool: 'axe',
+  sound: 'wood', axis: true, texFn: logTex, fuel: 300, flammable: true
+});
+defBlock(520, 'cherry_leaves', '樱花树叶', {
+  tex: 'cherry_leaves', render: 'cutout', opaque: false, opacity: 1, hardness: 0.2,
+  tool: 'hoe', sound: 'grass', flammable: true,
+  drops: (m, r) => { const d = []; if (r() < 0.06) d.push(['cherry_sapling', 1]); if (r() < 0.03) d.push(['stick', 1 + (r() * 2 | 0)]); return d; }
+});
+defBlock(521, 'cherry_sapling', '樱花树苗', {
+  shape: SH_CROSS, tex: 'cherry_sapling', solid: false, hardness: 0, sound: 'grass',
+  needsSupport: true, flatIcon: 'cherry_sapling', fuel: 100
+});
+defBlock(522, 'pink_petals', '粉色花瓣簇', {
+  shape: SH_MODEL, model: pinkPetalsModel, boxes: () => [[0, 0, 0, 16, 2, 16]],
+  tex: 'pink_petals', render: 'cutout', solid: false, opaque: false, hardness: 0,
+  sound: 'grass', needsSupport: true, flatIcon: 'i_pink_petals',
+  drops: (m) => [['pink_petals', 1 + (m & 3)]]
+});
+defBlock(523, 'cherry_slab', '樱花木台阶', {
+  shape: SH_BOXES, boxes: (m) => SLAB_BOXES[m & 3], tex: 'cherry_planks',
+  render: 'opaque', hardness: 2, tool: 'axe', sound: 'wood', slab: true, fuel: 150,
+  drops: slabDrop('cherry_slab')
+});
+defBlock(524, 'cherry_stairs', '樱花木楼梯', {
+  shape: SH_BOXES, boxes: stairBoxes, tex: 'cherry_planks',
+  render: 'opaque', hardness: 2, tool: 'axe', sound: 'wood', stairs: true, fuel: 300
+});
+defBlock(525, 'cherry_door', '樱花木门', {
+  shape: SH_BOXES, boxes: doorBoxes, tex: 'cherry_door_bottom',
+  render: 'cutout', hardness: 3, tool: 'axe', sound: 'wood', door: true,
+  flatIcon: 'i_cherry_door', fuel: 200,
+  texFn(face, meta) { return (meta & 8) ? T('cherry_door_top') : T('cherry_door_bottom'); },
+  drops: (m) => (m & 8) ? [] : [['cherry_door', 1]]
+});
+defBlock(526, 'cherry_fence', '樱花木栅栏', {
+  shape: SH_BOXES, boxes: fenceBoxes, tex: 'cherry_planks',
+  render: 'opaque', opaque: false, hardness: 2, tool: 'axe', sound: 'wood', fence: true, fuel: 300
+});
+
+// ---- W1/W2 Brewing Stand (ID 527) -----------------------------------------
+defBlock(527, 'brewing_stand', '酿造台', {
+  shape: SH_MODEL, model: brewingStandModel,
+  boxes: () => [[1, 0, 1, 15, 2, 15], [7, 0, 7, 9, 14, 9]],
+  tex: { top: 'brewing_stand', bottom: 'brewing_stand_base', side: 'brewing_stand' },
+  render: 'cutout', solid: true, opaque: false, light: 1, hardness: 0.5,
+  tool: 'pickaxe', needsTool: true, sound: 'stone', onUse: 'brewing',
+  flatIcon: 'i_brewing_stand', brewing: true
+});
 
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------
 let nextItem = 256;
 function defItem(key, cn, o = {}) {
-  const id = nextItem++;
-  const it = Object.assign({ id, key, cn, stack: 64, tex: T('i_' + (o.texKey || key)) }, o);
+  if (nextItem >= 512 && nextItem < 1024) nextItem = 1024;
+  const id = o.id !== undefined ? o.id : nextItem++;
+  const iconIdx = (ITEMS[id] && ITEMS[id].iconIdx !== undefined) ? ITEMS[id].iconIdx : nextIconIdx++;
+  const it = Object.assign({ id, key, cn, stack: 64, tex: T('i_' + (o.texKey || key)), iconIdx }, o);
   ITEMS[id] = it; ITEM_KEY[key] = id;
   return it;
 }
@@ -488,10 +782,111 @@ for (const mat of ['leather', 'iron', 'diamond']) {
 for (const [m, cn] of [['pig', '猪'], ['cow', '牛'], ['sheep', '羊'], ['chicken', '鸡'], ['zombie', '僵尸'], ['skeleton', '骷髅'], ['creeper', '苦力怕'], ['spider', '蜘蛛']]) defItem(m + '_spawn_egg', cn + '刷怪蛋', { spawnEgg: m });
 defItem('villager_spawn_egg', '村民刷怪蛋', { spawnEgg: 'villager', texKey: 'pig_spawn_egg' });
 
+// ---- Brewing Ingredients & 4 Core Potions (1024+) -------------------------
+defItem('golden_carrot', '金胡萝卜', { food: [6, 14.4] });
+defItem('glass_bottle', '玻璃瓶', { stack: 64 });
+defItem('blaze_rod', '烈焰棒', { fuel: 2400 });
+defItem('blaze_powder', '烈焰粉');
+defItem('nether_wart', '下界疣');
+defItem('glistering_melon_slice', '闪烁的西瓜片');
+defItem('magma_cream', '岩浆膏');
+defItem('water_bottle', '水瓶', { stack: 1, potion: 'water', texKey: 'water_bottle' });
+defItem('awkward_potion', '粗制的药水', { stack: 1, potion: 'awkward', texKey: 'awkward_potion' });
+defItem('potion_healing', '瞬间治疗药水', {
+  stack: 1, potion: 'instant_health', potionDuration: 0, potionLevel: 1, texKey: 'potion_healing',
+  effect: { id: 'instant_health', cn: '瞬间治疗', duration: 0, amp: 0, heal: 8 }
+});
+defItem('potion_fire_resistance', '抗火药水', {
+  stack: 1, potion: 'fire_resistance', potionDuration: 3600, potionLevel: 1, texKey: 'potion_fire_resistance',
+  effect: { id: 'fire_resistance', cn: '抗火', duration: 3600, amp: 0 }
+});
+defItem('potion_swiftness', '迅捷药水', {
+  stack: 1, potion: 'speed', potionDuration: 3600, potionLevel: 1, texKey: 'potion_swiftness',
+  effect: { id: 'speed', cn: '迅捷', duration: 3600, amp: 0 }
+});
+defItem('potion_night_vision', '夜视药水', {
+  stack: 1, potion: 'night_vision', potionDuration: 3600, potionLevel: 1, texKey: 'potion_night_vision',
+  effect: { id: 'night_vision', cn: '夜视', duration: 3600, amp: 0 }
+});
+
+// Aliases for potion keys
+ITEM_KEY.potion_water = ITEM_KEY.water_bottle;
+ITEM_KEY.instant_health_potion = ITEM_KEY.potion_healing;
+ITEM_KEY.healing_potion = ITEM_KEY.potion_healing;
+ITEM_KEY.potion_instant_health = ITEM_KEY.potion_healing;
+ITEM_KEY.fire_resistance_potion = ITEM_KEY.potion_fire_resistance;
+ITEM_KEY.swiftness_potion = ITEM_KEY.potion_swiftness;
+ITEM_KEY.speed_potion = ITEM_KEY.potion_swiftness;
+ITEM_KEY.potion_speed = ITEM_KEY.potion_swiftness;
+ITEM_KEY.night_vision_potion = ITEM_KEY.potion_night_vision;
+
+const STATUS_EFFECTS = {
+  instant_health: { id: 'instant_health', cn: '瞬间治疗', icon: 'eff_instant_health', color: '#F82423', instant: true },
+  fire_resistance: { id: 'fire_resistance', cn: '抗火', icon: 'eff_fire_resistance', color: '#E49A3A' },
+  speed: { id: 'speed', cn: '迅捷', icon: 'eff_speed', color: '#7CAFC6' },
+  night_vision: { id: 'night_vision', cn: '夜视', icon: 'eff_night_vision', color: '#3F5FFF' },
+};
+
 function item(key) { const id = ITEM_KEY[key]; if (id === undefined) throw new Error('no item ' + key); return id; }
 function itemDef(id) { return ITEMS[id]; }
 function makeStack(key, count = 1) { const id = typeof key === 'number' ? key : item(key); return { id, count, dmg: 0 }; }
 function maxStack(id) { return ITEMS[id] ? ITEMS[id].stack : 64; }
+
+const BREWING_RECIPES = [
+  { base: 'water_bottle', ing: 'nether_wart', out: 'awkward_potion' },
+  { base: 'awkward_potion', ing: 'glistering_melon_slice', out: 'potion_healing' },
+  { base: 'awkward_potion', ing: 'magma_cream', out: 'potion_fire_resistance' },
+  { base: 'awkward_potion', ing: 'sugar', out: 'potion_swiftness' },
+  { base: 'awkward_potion', ing: 'golden_carrot', out: 'potion_night_vision' },
+  // Direct convenience fallback from water_bottle
+  { base: 'water_bottle', ing: 'glistering_melon_slice', out: 'potion_healing' },
+  { base: 'water_bottle', ing: 'magma_cream', out: 'potion_fire_resistance' },
+  { base: 'water_bottle', ing: 'sugar', out: 'potion_swiftness' },
+  { base: 'water_bottle', ing: 'golden_carrot', out: 'potion_night_vision' },
+];
+
+const Brewing = {
+  STATUS_EFFECTS,
+  BREWING_RECIPES,
+  isBottle(stOrId) {
+    const id = stOrId && typeof stOrId === 'object' ? stOrId.id : stOrId;
+    const d = ITEMS[id];
+    return !!(d && d.potion);
+  },
+  isIngredient(stOrId) {
+    const id = stOrId && typeof stOrId === 'object' ? stOrId.id : stOrId;
+    return BREWING_RECIPES.some(r => item(r.ing) === id);
+  },
+  isFuel(stOrId) {
+    const id = stOrId && typeof stOrId === 'object' ? stOrId.id : stOrId;
+    return id === item('blaze_powder');
+  },
+  match(baseStOrId, ingStOrId) {
+    const baseId = baseStOrId && typeof baseStOrId === 'object' ? baseStOrId.id : baseStOrId;
+    const ingId = ingStOrId && typeof ingStOrId === 'object' ? ingStOrId.id : ingStOrId;
+    if (!baseId || !ingId) return null;
+    for (const r of BREWING_RECIPES) {
+      if (item(r.base) === baseId && item(r.ing) === ingId) return item(r.out);
+    }
+    return null;
+  },
+  canBrew(be) {
+    if (!be || !be.ingredient || !Array.isArray(be.bottles)) return false;
+    return be.bottles.some(b => b && this.match(b, be.ingredient) !== null);
+  },
+  formatDuration(ticks) {
+    const sec = Math.max(0, Math.ceil((ticks || 0) / 20));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  },
+};
+
+if (typeof window !== 'undefined') {
+  window.STATUS_EFFECTS = STATUS_EFFECTS;
+  window.BREWING_RECIPES = BREWING_RECIPES;
+  window.Brewing = Brewing;
+}
 
 // ---------------------------------------------------------------------------
 // Recipes
@@ -500,7 +895,7 @@ const TAGS = {
   planks: ['oak_planks', 'birch_planks', 'spruce_planks', 'dark_oak_planks', 'jungle_planks', 'acacia_planks', 'cherry_planks'],
   coals: ['coal', 'charcoal'],
   stone_tool: ['cobblestone'],
-  logs: ['oak_log', 'birch_log', 'spruce_log'],
+  logs: ['oak_log', 'birch_log', 'spruce_log', 'cherry_log'],
   wool: ['white_wool', 'orange_wool', 'magenta_wool', 'light_blue_wool', 'yellow_wool', 'lime_wool', 'pink_wool', 'gray_wool', 'light_gray_wool', 'cyan_wool', 'purple_wool', 'blue_wool', 'brown_wool', 'green_wool', 'red_wool', 'black_wool'],
 };
 const RECIPES = [];
@@ -515,10 +910,12 @@ function shapeless(result, count, ingredients) {
 shapeless('oak_planks', 4, ['oak_log']);
 shapeless('birch_planks', 4, ['birch_log']);
 shapeless('spruce_planks', 4, ['spruce_log']);
+shapeless('cherry_planks', 4, ['cherry_log']);
 shaped('stick', 4, ['#', '#'], { '#': 'planks' });
 shaped('crafting_table', 1, ['##', '##'], { '#': 'planks' });
 shaped('furnace', 1, ['###', '# #', '###'], { '#': 'cobblestone' });
 shaped('chest', 1, ['###', '# #', '###'], { '#': 'planks' });
+shaped('hopper', 1, ['I I', 'ICI', ' I '], { I: 'iron_ingot', C: 'chest' });
 shaped('torch', 4, ['C', '#'], { C: 'coals', '#': 'stick' });
 const TOOL_KEYS = { wooden: 'planks', stone: 'cobblestone', iron: 'iron_ingot', golden: 'gold_ingot', diamond: 'diamond' };
 for (const m in TOOL_KEYS) {
@@ -565,13 +962,17 @@ shaped('polished_granite', 4, ['##', '##'], { '#': 'granite' });
 shaped('smooth_stone_slab', 6, ['###'], { '#': 'smooth_stone' });
 shaped('oak_slab', 6, ['###'], { '#': 'oak_planks' });
 shaped('birch_slab', 6, ['###'], { '#': 'birch_planks' });
+shaped('cherry_slab', 6, ['###'], { '#': 'cherry_planks' });
 shaped('cobblestone_slab', 6, ['###'], { '#': 'cobblestone' });
 shaped('stone_brick_slab', 6, ['###'], { '#': 'stone_bricks' });
 shaped('oak_stairs', 4, ['#  ', '## ', '###'], { '#': 'oak_planks' });
 shaped('spruce_stairs', 4, ['#  ', '## ', '###'], { '#': 'spruce_planks' });
+shaped('cherry_stairs', 4, ['#  ', '## ', '###'], { '#': 'cherry_planks' });
 shaped('cobblestone_stairs', 4, ['#  ', '## ', '###'], { '#': 'cobblestone' });
 shaped('stone_brick_stairs', 4, ['#  ', '## ', '###'], { '#': 'stone_bricks' });
 shaped('brick_stairs', 4, ['#  ', '## ', '###'], { '#': 'bricks' });
+// Register cherry_door BEFORE generic planks oak_door so cherry_planks craft cherry_door
+shaped('cherry_door', 3, ['##', '##', '##'], { '#': 'cherry_planks' });
 shaped('oak_door', 3, ['##', '##', '##'], { '#': 'planks' });
 shaped('oak_trapdoor', 2, ['###', '###'], { '#': 'planks' });
 shaped('ladder', 3, ['# #', '###', '# #'], { '#': 'stick' });
@@ -585,7 +986,7 @@ shaped('glowstone', 1, ['RG', 'GR'], { R: 'redstone', G: 'glass' });
 shaped('sea_lantern', 1, ['LGL', 'GGG', 'LGL'], { L: 'lapis_lazuli', G: 'glass' });
 shaped('note_block', 1, ['###', '#R#', '###'], { '#': 'planks', R: 'redstone' });
 shaped('quartz_block', 1, ['##', '##'], { '#': 'diorite' });
-// Redstone recipes
+// Redstone & Automation Trio recipes
 shaped('redstone_torch', 1, ['R', '#'], { R: 'redstone', '#': 'stick' });
 shaped('lever', 1, ['#', 'S'], { '#': 'stick', S: 'cobblestone' });
 shapeless('stone_button', 1, ['stone']);
@@ -594,7 +995,27 @@ shaped('stone_pressure_plate', 1, ['##'], { '#': 'stone' });
 shaped('oak_pressure_plate', 1, ['##'], { '#': 'planks' });
 shaped('redstone_lamp', 1, [' R ', 'RGR', ' R '], { R: 'redstone', G: 'glowstone' });
 shaped('repeater', 1, ['TRT', 'SSS'], { T: 'redstone_torch', R: 'redstone', S: 'stone' });
+shaped('comparator', 1, [' T ', 'TQT', 'SSS'], { T: 'redstone_torch', Q: 'quartz_block', S: 'stone' });
+shaped('comparator', 1, [' T ', 'TRT', 'SSS'], { T: 'redstone_torch', R: 'redstone', S: 'smooth_stone' });
+shaped('observer', 1, ['###', 'RRQ', '###'], { '#': 'cobblestone', R: 'redstone', Q: 'quartz_block' });
+shaped('observer', 1, ['###', 'RRF', '###'], { '#': 'cobblestone', R: 'redstone', F: 'flint' });
+shaped('piston', 1, ['PPP', '#I#', '#R#'], { P: 'planks', '#': 'cobblestone', I: 'iron_ingot', R: 'redstone' });
+shapeless('sticky_piston', 1, ['piston', 'magma_cream']);
+shapeless('sticky_piston', 1, ['piston', 'clay_ball']);
 shaped('target', 1, [' R ', 'RHR', ' R '], { R: 'redstone', H: 'hay_block' });
+
+// Brewing Stand & Brewing Ingredients recipes
+shaped('glass_bottle', 3, ['# #', ' # '], { '#': 'glass' });
+shaped('brewing_stand', 1, [' B ', '###'], { B: 'blaze_rod', '#': 'cobblestone' });
+shaped('blaze_rod', 1, ['G', 'M', 'G'], { G: 'gold_ingot', M: 'magma_block' });
+shapeless('blaze_powder', 2, ['blaze_rod']);
+shapeless('nether_wart', 2, ['red_mushroom', 'redstone']);
+shaped('glistering_melon_slice', 1, ['GGG', 'GMG', 'GGG'], { G: 'gold_ingot', M: 'melon_slice' });
+shapeless('glistering_melon_slice', 1, ['melon_slice', 'gold_ingot']);
+shaped('golden_carrot', 1, ['GGG', 'GCG', 'GGG'], { G: 'gold_ingot', C: 'carrot' });
+shapeless('golden_carrot', 1, ['carrot', 'gold_ingot']);
+shapeless('magma_cream', 1, ['blaze_powder', 'clay_ball']);
+shapeless('magma_cream', 2, ['magma_block']);
 
 // Match a crafting grid (array of stacks|null, width w) against recipes
 function matchRecipe(grid, w) {
@@ -637,7 +1058,7 @@ const SMELTING = {};
 function smelt(a, b, xp = 0.1) { SMELTING[item(a)] = { result: item(b), xp }; }
 smelt('raw_iron', 'iron_ingot', 0.7); smelt('raw_gold', 'gold_ingot', 1); smelt('sand', 'glass'); smelt('red_sand', 'glass');
 smelt('cobblestone', 'stone'); smelt('stone', 'smooth_stone'); smelt('clay_ball', 'brick', 0.3); smelt('clay', 'terracotta', 0.35);
-smelt('oak_log', 'charcoal', 0.15); smelt('birch_log', 'charcoal', 0.15); smelt('spruce_log', 'charcoal', 0.15);
+smelt('oak_log', 'charcoal', 0.15); smelt('birch_log', 'charcoal', 0.15); smelt('spruce_log', 'charcoal', 0.15); smelt('cherry_log', 'charcoal', 0.15);
 smelt('porkchop', 'cooked_porkchop', 0.35); smelt('beef', 'cooked_beef', 0.35); smelt('mutton', 'cooked_mutton', 0.35); smelt('chicken', 'cooked_chicken', 0.35);
 smelt('stone_bricks', 'cracked_stone_bricks'); smelt('cactus', 'green_concrete' in ITEM_KEY ? 'green_concrete' : 'lime_concrete');
 smelt('carrot', 'baked_potato', 0.35);
@@ -649,6 +1070,7 @@ shaped('sandstone_stairs', 4, ['#  ', '## ', '###'], { '#': 'sandstone' });
 shaped('spruce_slab', 6, ['###'], { '#': 'spruce_planks' });
 shaped('oak_fence', 3, ['W#W', 'W#W'], { W: 'oak_planks', '#': 'stick' });
 shaped('spruce_fence', 3, ['W#W', 'W#W'], { W: 'spruce_planks', '#': 'stick' });
+shaped('cherry_fence', 3, ['W#W', 'W#W'], { W: 'cherry_planks', '#': 'stick' });
 shaped('rail', 16, ['I I', 'I#I', 'I I'], { I: 'iron_ingot', '#': 'stick' });
 
 function fuelValue(id) { const d = ITEMS[id]; return d ? (d.fuel || (BLOCKS[id] && BLOCKS[id].fuel) || 0) : 0; }
@@ -656,17 +1078,17 @@ function fuelValue(id) { const d = ITEMS[id]; return d ? (d.fuel || (BLOCKS[id] 
 // Creative inventory ordering
 const CREATIVE_TABS = [
   { name: '建筑方块', icon: 'bricks', items: ['stone', 'cobblestone', 'mossy_cobblestone', 'smooth_stone', 'stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'andesite', 'polished_andesite', 'diorite', 'polished_diorite', 'granite', 'polished_granite', 'deepslate',
-    'oak_planks', 'birch_planks', 'spruce_planks', 'dark_oak_planks', 'jungle_planks', 'acacia_planks', 'cherry_planks', 'oak_log', 'birch_log', 'spruce_log',
-    'bricks', 'mud_bricks', 'sandstone', 'chiseled_sandstone', 'cut_sandstone', 'smooth_sandstone', 'terracotta', 'orange_terracotta', 'blue_terracotta', 'quartz_block', 'prismarine', 'sea_lantern', 'glowstone', 'obsidian', 'bone_block',
-    'smooth_stone_slab', 'oak_slab', 'spruce_slab', 'birch_slab', 'cobblestone_slab', 'stone_brick_slab', 'sandstone_slab', 'oak_stairs', 'spruce_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs', 'sandstone_stairs', 'oak_fence', 'spruce_fence',
+    'oak_planks', 'birch_planks', 'spruce_planks', 'dark_oak_planks', 'jungle_planks', 'acacia_planks', 'cherry_planks', 'oak_log', 'birch_log', 'spruce_log', 'cherry_log',
+    'bricks', 'mud_bricks', 'sandstone', 'chiseled_sandstone', 'cut_sandstone', 'smooth_sandstone', 'terracotta', 'orange_terracotta', 'blue_terracotta', 'quartz_block', 'prismarine', 'prismarine_bricks', 'sea_lantern', 'glowstone', 'obsidian', 'bone_block',
+    'smooth_stone_slab', 'oak_slab', 'spruce_slab', 'birch_slab', 'cherry_slab', 'cobblestone_slab', 'stone_brick_slab', 'sandstone_slab', 'oak_stairs', 'spruce_stairs', 'cherry_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs', 'sandstone_stairs', 'oak_fence', 'spruce_fence', 'cherry_fence',
     'glass', ...SGLASS.map(s => s[0] + '_stained_glass'), ...WOOLS.map(w => w[0] + '_wool'), ...CONCRETE.map(c => c[0] + '_concrete'),
     'iron_block', 'gold_block', 'diamond_block', 'emerald_block', 'lapis_block', 'redstone_block', 'coal_block', 'hay_block'] },
   { name: '自然方块', icon: 'grass_block', items: ['grass_block', 'dirt', 'dirt_path', 'farmland', 'sand', 'red_sand', 'gravel', 'clay', 'snow_block', 'snow', 'ice', 'packed_ice', 'moss_block', 'magma_block',
     'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_gold_ore', 'deepslate_diamond_ore', 'deepslate_redstone_ore',
-    'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'short_grass', 'fern', 'dead_bush', ...FLOWERS.map(f => f[0]),
+    'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cherry_leaves', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'cherry_sapling', 'pink_petals', 'short_grass', 'fern', 'dead_bush', ...FLOWERS.map(f => f[0]),
     'red_mushroom', 'brown_mushroom', 'cactus', 'sugar_cane', 'pumpkin', 'melon', 'bedrock'] },
-  { name: '功能方块', icon: 'crafting_table', items: ['crafting_table', 'furnace', 'chest', 'red_bed', 'torch', 'jack_o_lantern', 'bookshelf', 'ladder', 'oak_door', 'oak_trapdoor', 'tnt', 'note_block',
-    'redstone', 'redstone_torch', 'redstone_block', 'repeater', 'lever', 'stone_button', 'oak_button', 'stone_pressure_plate', 'oak_pressure_plate', 'redstone_lamp', 'target', 'rail', 'enchanting_table', 'anvil', 'bell', 'cobweb', 'spawner'] },
+  { name: '功能方块', icon: 'crafting_table', items: ['crafting_table', 'furnace', 'chest', 'hopper', 'brewing_stand', 'red_bed', 'torch', 'jack_o_lantern', 'bookshelf', 'ladder', 'oak_door', 'cherry_door', 'oak_trapdoor', 'tnt', 'note_block',
+    'redstone', 'redstone_torch', 'redstone_block', 'repeater', 'comparator', 'observer', 'piston', 'sticky_piston', 'lever', 'stone_button', 'oak_button', 'stone_pressure_plate', 'oak_pressure_plate', 'redstone_lamp', 'target', 'rail', 'enchanting_table', 'anvil', 'bell', 'cobweb', 'spawner'] },
   { name: '工具与战斗', icon: 'diamond_pickaxe', items: [] },
   { name: '食物与材料', icon: 'apple', items: [] },
   { name: '刷怪蛋', icon: 'creeper_spawn_egg', items: ['pig_spawn_egg', 'cow_spawn_egg', 'sheep_spawn_egg', 'chicken_spawn_egg', 'zombie_spawn_egg', 'skeleton_spawn_egg', 'creeper_spawn_egg', 'spider_spawn_egg', 'villager_spawn_egg'] },
@@ -674,5 +1096,7 @@ const CREATIVE_TABS = [
 for (const m of ['wooden', 'stone', 'iron', 'golden', 'diamond']) for (const t of ['pickaxe', 'axe', 'shovel', 'hoe', 'sword']) CREATIVE_TABS[3].items.push(m + '_' + t);
 CREATIVE_TABS[3].items.push('bow', 'arrow', 'shears', 'flint_and_steel', 'bucket', 'water_bucket', 'lava_bucket');
 for (const m of ['leather', 'iron', 'diamond']) for (const p of ['helmet', 'chestplate', 'leggings', 'boots']) CREATIVE_TABS[3].items.push(m + '_' + p);
-CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'baked_potato', 'carrot',
-  'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book', 'enchanted_book');
+CREATIVE_TABS[3].items.push('potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
+CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'golden_carrot', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'baked_potato', 'carrot',
+  'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book', 'enchanted_book',
+  'glass_bottle', 'water_bottle', 'awkward_potion', 'blaze_rod', 'blaze_powder', 'nether_wart', 'glistering_melon_slice', 'magma_cream', 'potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
