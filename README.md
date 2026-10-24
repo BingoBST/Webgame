@@ -11,8 +11,8 @@ git clone <repo-url>
 cd OpusMC
 ```
 
-1. **直接运行**：双击根目录下的 `启动游戏.bat`（或直接用 Chrome / Edge 打开 `game/index.html`），**零构建、零 npm 依赖**。
-2. **本地服务器运行（推荐）**：双击 `启动游戏(本地服务器模式).bat` 或执行：
+1. **直接运行**：直接用 Chrome / Edge 打开 `game/index.html`，**零构建、零 npm 依赖**。
+2. **本地服务器运行（推荐）**：执行：
    ```bash
    python3 tools/serve.py
    ```
@@ -110,11 +110,6 @@ OpusMC/
 │   ├── build_from_pack.py     # 从第三方资源包（Pixel Perfection Legacy）构建 assets.js
 │   ├── build_assets.py        # 原版 jar 资源提取脚本
 │   └── serve.py               # 本地零缓存静态 HTTP 服务器
-├── docs/
-│   ├── 01-current-state-audit.md  # 项目现状审计报告
-│   └── 02-project-design.md       # 面向 1.20+ 的演进架构设计讨论
-├── 启动游戏.bat
-├── 启动游戏(本地服务器模式).bat
 └── README.md
 ```
 
@@ -122,5 +117,5 @@ OpusMC/
 
 ## 5. 开源许可与声明
 
-- 本仓库的**源代码**（`game/js/` 下除 `assets.js`、`assets.vanilla.js` 以外的源码、`game/index.html`、`tools/`）基于 [MIT License](LICENSE) 开源。
+- 本仓库的**源代码**（`game/js/` 下除 `assets.js` 以外的源码、`game/index.html`、`tools/`）基于 [MIT License](LICENSE) 开源。
 - `game/js/assets.js` 中打包的贴图与 GUI 素材源自 `Pixel Perfection Legacy` 资源包及 Minecraft 官方素材，版权归原作者及 **Mojang Studios / Microsoft** 所有，仅供学习与技术演示使用。

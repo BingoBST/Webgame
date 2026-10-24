@@ -8,7 +8,7 @@ from PIL import Image
 import glob
 _zip_candidates = glob.glob('/working_dir/*/user_uploaded_files/ttl=63d/user_uploaded/Pixel Perfection Legacy 13.21.2.zip')
 ZIP_PATH = _zip_candidates[0] if _zip_candidates else '/working_dir/c_6d0795a50601cd28/user_uploaded_files/ttl=63d/user_uploaded/Pixel Perfection Legacy 13.21.2.zip'
-ORIG_JS = 'game/js/assets.vanilla.js'
+ORIG_JS = 'game/js/assets.vanilla.js' if os.path.exists('game/js/assets.vanilla.js') else 'game/js/assets.js'
 OUT_JS = 'game/js/assets.js'
 
 # Load original assets as fallback
