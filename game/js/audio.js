@@ -26,14 +26,14 @@ const Sound = {
   setVolume(v) { this.volume = v; if (this.sfx) this.sfx.gain.value = v; },
   setMusic(v) { this.musicVolume = v; if (this.music) this.music.gain.value = v; },
   // spatial output node
-  out(pos, vol = 1) {
+  out(pos, vol = 1, maxDist = 20) {
     const c = this.ctx;
     const g = c.createGain();
     let v = vol;
     if (pos) {
       const L = this.listener, dx = pos[0] - L.x, dy = pos[1] - L.y, dz = pos[2] - L.z;
       const d = Math.hypot(dx, dy, dz);
-      v *= Math.max(0, 1 - d / 20);
+      v *= Math.max(0, 1 - d / maxDist);
       if (v <= 0.001) return null;
       if (c.createStereoPanner) {
         const p = c.createStereoPanner();
@@ -45,9 +45,9 @@ const Sound = {
     g.gain.value = v;
     return g;
   },
-  noise(pos, { dur = 0.15, vol = 0.5, type = 'bandpass', freq = 1000, q = 1, freqEnd, attack = 0.005, delay = 0 }) {
+  noise(pos, { dur = 0.15, vol = 0.5, type = 'bandpass', freq = 1000, q = 1, freqEnd, attack = 0.005, delay = 0, maxDist = 20 }) {
     if (!this.ctx) return;
-    const c = this.ctx, o = this.out(pos, vol); if (!o) return;
+    const c = this.ctx, o = this.out(pos, vol, maxDist); if (!o) return;
     const t = c.currentTime + delay;
     const src = c.createBufferSource(); src.buffer = this.noiseBuf;
     src.playbackRate.value = 0.8 + Math.random() * 0.4;
@@ -57,9 +57,9 @@ const Sound = {
     src.connect(f); f.connect(g); g.connect(o);
     src.start(t, Math.random() * 1.5); src.stop(t + dur + 0.05);
   },
-  tone(pos, { freq = 440, freqEnd, dur = 0.2, vol = 0.3, type = 'sine', attack = 0.01, delay = 0, dest }) {
+  tone(pos, { freq = 440, freqEnd, dur = 0.2, vol = 0.3, type = 'sine', attack = 0.01, delay = 0, dest, maxDist = 20 }) {
     if (!this.ctx) return;
-    const c = this.ctx, o = dest || this.out(pos, vol); if (!o) return;
+    const c = this.ctx, o = dest || this.out(pos, vol, maxDist); if (!o) return;
     const t = c.currentTime + delay;
     const osc = c.createOscillator(); osc.type = type; osc.frequency.setValueAtTime(freq, t);
     if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, t + dur);
@@ -114,6 +114,17 @@ const Sound = {
     this.block('break', 'wood', pos);
     this.tone(pos, { freq: 380, freqEnd: 140, dur: 0.2, vol: 0.45, type: 'sawtooth' });
   },
+  ghastWarn(pos) {
+    this.lastGhastWarnAt = Date.now();
+    this.ghastWarnCount = (this.ghastWarnCount || 0) + 1;
+    this.tone(pos, { freq: 440, freqEnd: 980, dur: 0.48, vol: 0.65, type: 'sine', attack: 0.04, maxDist: 80 });
+    this.tone(pos, { freq: 620, freqEnd: 1240, dur: 0.42, vol: 0.45, type: 'triangle', attack: 0.06, delay: 0.05, maxDist: 80 });
+    this.noise(pos, { type: 'bandpass', freq: 1100, freqEnd: 1800, q: 3.5, dur: 0.35, vol: 0.3, delay: 0.04, maxDist: 80 });
+  },
+  ghastShoot(pos) {
+    this.noise(pos, { type: 'lowpass', freq: 1400, freqEnd: 280, q: 1.2, dur: 0.38, vol: 0.6, maxDist: 80 });
+    this.tone(pos, { freq: 280, freqEnd: 110, dur: 0.3, vol: 0.45, type: 'sawtooth', maxDist: 80 });
+  },
   door(pos, open) { this.tone(pos, { freq: open ? 200 : 160, freqEnd: open ? 140 : 100, dur: 0.18, vol: 0.4, type: 'triangle' }); this.noise(pos, { freq: 500, q: 3, dur: 0.15, vol: 0.3 }); },
   levelup() { [0, 4, 7, 12].forEach((n, i) => this.tone(null, { freq: 523 * Math.pow(2, n / 12), dur: 0.35, vol: 0.18, type: 'triangle', delay: i * 0.09 })); },
   toast() { [0, 7].forEach((n, i) => this.tone(null, { freq: 880 * Math.pow(2, n / 12), dur: 0.3, vol: 0.15, type: 'sine', delay: i * 0.12 })); },
@@ -132,7 +143,7 @@ const Sound = {
       case 'spider': this.noise(pos, { freq: 1200, q: 4, dur: 0.3, vol: 0.3 }); this.tone(pos, { freq: 90, dur: 0.3, vol: 0.2, type: 'sawtooth' }); break;
       case 'blaze': this.tone(pos, { freq: 340 + r * 80, freqEnd: 520, dur: 0.35, vol: 0.3, type: 'triangle' }); this.noise(pos, { freq: 1800, q: 3, dur: 0.25, vol: 0.25 }); break;
       case 'wither_skeleton': for (let i = 0; i < 4; i++) this.noise(pos, { freq: 1500, q: 4, dur: 0.06, vol: 0.4, delay: i * 0.08 }); break;
-      case 'ghast': this.tone(pos, { freq: 580 + r * 140, freqEnd: 310, dur: 0.75, vol: 0.4, type: 'sine', attack: 0.1 }); break;
+      case 'ghast': this.tone(pos, { freq: 580 + r * 140, freqEnd: 310, dur: 0.75, vol: 0.45, type: 'sine', attack: 0.1, maxDist: 80 }); break;
       case 'zombified_piglin': this.tone(pos, { freq: 170 + r * 40, freqEnd: 115, dur: 0.45, vol: 0.38, type: 'sawtooth' }); break;
       case 'enderman': this.tone(pos, { freq: 190 + r * 90, freqEnd: 410, dur: 0.35, vol: 0.32, type: 'sine' }); break;
     }

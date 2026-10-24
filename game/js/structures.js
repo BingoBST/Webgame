@@ -63,10 +63,11 @@ const Structures = {
     const key = `${ world.seed }:${ rx }:${ rz }`;
     if (this._pyramidCache.has(key)) return this._pyramidCache.get(key);
     const r = RNG(hashStr('pyramid_reg:' + key));
-    const REG = 10; // 10x10 chunks per region
+    const REG = 18; // 18x18 chunks per region (vanilla-like spacing)
     let found = null;
-    // Try up to 14 deterministic candidate chunks in this region so any desert gets a pyramid
-    for (let attempt = 0; attempt < 14; attempt++) {
+    const allowRegion = (rx === 0 && rz === 0) || r() < 0.55;
+    // Try up to 10 deterministic candidate chunks in eligible desert regions
+    for (let attempt = 0; allowRegion && attempt < 10; attempt++) {
       const cx = rx * REG + 1 + r.int(REG - 2);
       const cz = rz * REG + 1 + r.int(REG - 2);
       const wx = cx * 16 + 8, wz = cz * 16 + 8;
@@ -497,11 +498,12 @@ const Structures = {
     const key = `${ world.seed }:${ rx }:${ rz }`;
     if (this._villageCache.has(key)) return this._villageCache.get(key);
     const r = RNG(hashStr('village_reg:' + key));
-    const REG = 11; // 11x11 chunks per village region
+    const REG = 16; // 16x16 chunks per village region (vanilla-like spacing)
     let found = null;
+    const allowRegion = (rx === 0 && rz === 0) || r() < 0.60;
 
     // Region (0,0) probes extra candidates near spawn so a village is always easy to reach
-    const maxAttempts = (rx === 0 && rz === 0) ? 32 : 16;
+    const maxAttempts = !allowRegion ? 0 : ((rx === 0 && rz === 0) ? 32 : 12);
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const cx = (rx === 0 && rz === 0 && attempt < 12)
         ? (-4 + r.int(9))
@@ -518,7 +520,7 @@ const Structures = {
       if (!validBiome) continue;
 
       // Ensure village never overlaps a Desert Pyramid within 64 blocks
-      const prx = Math.floor(cx / 10), prz = Math.floor(cz / 10);
+      const prx = Math.floor(cx / 18), prz = Math.floor(cz / 18);
       let nearPyr = false;
       for (let pdz = -1; pdz <= 1; pdz++) for (let pdx = -1; pdx <= 1; pdx++) {
         const pyr = this.pyramidInRegion(world, prx + pdx, prz + pdz);
@@ -935,8 +937,9 @@ const Structures = {
             set(bx + x, by, bz + z, WATER, 0, true);
           } else {
             set(bx + x, by, bz + z, 63, 7, true); // moist farmland
-            const stage = 5 + ((x + z) % 3);      // mature wheat stages 5..7
-            set(bx + x, by + 1, bz + z, 64, stage, true);
+            const stage = 5 + ((x + z) % 3);      // mature crop stages 5..7
+            const cropId = z < 3 ? (x <= 4 ? 64 : 544) : (x <= 4 ? 545 : (((bx + bz) & 1) ? 544 : 64));
+            set(bx + x, by + 1, bz + z, cropId, stage, true);
           }
         }
       }
@@ -1355,9 +1358,9 @@ const Structures = {
       }
     }
 
-    // 2. Desert Pyramids (check 10x10 regions overlapping +-2 chunks around (cx, cz))
-    const prx0 = Math.floor((cx - 2) / 10), prx1 = Math.floor((cx + 2) / 10);
-    const prz0 = Math.floor((cz - 2) / 10), prz1 = Math.floor((cz + 2) / 10);
+    // 2. Desert Pyramids (check 18x18 regions overlapping +-2 chunks around (cx, cz))
+    const prx0 = Math.floor((cx - 2) / 18), prx1 = Math.floor((cx + 2) / 18);
+    const prz0 = Math.floor((cz - 2) / 18), prz1 = Math.floor((cz + 2) / 18);
     for (let rz = prz0; rz <= prz1; rz++) {
       for (let rx = prx0; rx <= prx1; rx++) {
         const p = this.pyramidInRegion(world, rx, rz);
@@ -1368,9 +1371,9 @@ const Structures = {
       }
     }
 
-    // 3. Villages (check 11x11 regions overlapping +-3 chunks around (cx, cz))
-    const vrx0 = Math.floor((cx - 3) / 11), vrx1 = Math.floor((cx + 3) / 11);
-    const vrz0 = Math.floor((cz - 3) / 11), vrz1 = Math.floor((cz + 3) / 11);
+    // 3. Villages (check 16x16 regions overlapping +-3 chunks around (cx, cz))
+    const vrx0 = Math.floor((cx - 3) / 16), vrx1 = Math.floor((cx + 3) / 16);
+    const vrz0 = Math.floor((cz - 3) / 16), vrz1 = Math.floor((cz + 3) / 16);
     for (let rz = vrz0; rz <= vrz1; rz++) {
       for (let rx = vrx0; rx <= vrx1; rx++) {
         const v = this.villageInRegion(world, rx, rz);
@@ -1402,8 +1405,8 @@ const Structures = {
     let best = null, bestDist = Infinity;
 
     if (type === 'village' || type === '村庄') {
-      const rx0 = Math.floor(pcx / 11), rz0 = Math.floor(pcz / 11);
-      for (let r = 0; r <= 8; r++) {
+      const rx0 = Math.floor(pcx / 16), rz0 = Math.floor(pcz / 16);
+      for (let r = 0; r <= 10; r++) {
         for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
           const v = this.villageInRegion(world, rx0 + dx, rz0 + dz);
@@ -1417,7 +1420,7 @@ const Structures = {
         if (best && r >= 1) break;
       }
     } else if (type === 'desert_pyramid' || type === 'pyramid' || type === 'temple' || type === '沙漠神殿') {
-      const rx0 = Math.floor(pcx / 10), rz0 = Math.floor(pcz / 10);
+      const rx0 = Math.floor(pcx / 18), rz0 = Math.floor(pcz / 18);
       for (let r = 0; r <= 12; r++) {
         for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;

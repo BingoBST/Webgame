@@ -379,7 +379,7 @@ crafting_table_front crafting_table_side crafting_table_top furnace_front furnac
 torch bricks stone_bricks mossy_stone_bricks cracked_stone_bricks mossy_cobblestone bookshelf tnt_side tnt_top tnt_bottom
 glowstone obsidian iron_block gold_block diamond_block coal_block emerald_block lapis_block redstone_block
 pumpkin_side pumpkin_top jack_o_lantern carved_pumpkin melon_side melon_top smooth_stone smooth_stone_slab_side
-farmland farmland_moist wheat_stage0 wheat_stage1 wheat_stage2 wheat_stage3 wheat_stage4 wheat_stage5 wheat_stage6 wheat_stage7
+farmland farmland_moist wheat_stage0 wheat_stage1 wheat_stage2 wheat_stage3 wheat_stage4 wheat_stage5 wheat_stage6 wheat_stage7 carrots_stage0 carrots_stage1 carrots_stage2 carrots_stage3 potatoes_stage0 potatoes_stage1 potatoes_stage2 potatoes_stage3
 oak_sapling birch_sapling spruce_sapling oak_door_top oak_door_bottom ladder red_mushroom brown_mushroom
 andesite diorite granite polished_andesite polished_diorite polished_granite terracotta
 white_wool orange_wool magenta_wool light_blue_wool yellow_wool lime_wool pink_wool gray_wool light_gray_wool cyan_wool
@@ -743,6 +743,10 @@ IMAGES = {
     'eff_speed': 'mob_effect/speed',
     'eff_night_vision': 'mob_effect/night_vision',
     'eff_wither': 'mob_effect/wither',
+    'eff_regeneration': 'mob_effect/regeneration',
+    'eff_absorption': 'mob_effect/absorption',
+    'heart_absorbing_full': 'gui/sprites/hud/heart/absorbing_full',
+    'heart_absorbing_half': 'gui/sprites/hud/heart/absorbing_half',
     'anvil_error': 'gui/sprites/container/anvil/error',
     'anvil_field': 'gui/sprites/container/anvil/text_field',
     'anvil_field_dis': 'gui/sprites/container/anvil/text_field_disabled',

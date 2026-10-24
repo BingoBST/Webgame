@@ -43,17 +43,17 @@ const ENCHANTS = {
     maxE: (l) => 55 + (l - 1) * 20,
   },
   fire_aspect: {
-    key: 'fire_aspect', cn: '火焰附加', max: 2, weight: 2, anvilCost: 4,
+    key: 'fire_aspect', cn: '火焰附加', max: 2, weight: 4, anvilCost: 4,
     tableItems: ['sword'],
     anvilItems: ['sword'],
-    minE: (l) => 10 + (l - 1) * 20,
+    minE: (l) => 10 + (l - 1) * 16,
     maxE: (l) => 60 + (l - 1) * 20,
   },
   looting: {
-    key: 'looting', cn: '抢夺', max: 3, weight: 4, anvilCost: 4,
+    key: 'looting', cn: '抢夺', max: 3, weight: 5, anvilCost: 4,
     tableItems: ['sword'],
     anvilItems: ['sword'],
-    minE: (l) => 12 + (l - 1) * 8,
+    minE: (l) => 10 + (l - 1) * 8,
     maxE: (l) => 65 + (l - 1) * 9,
   },
 
@@ -66,19 +66,19 @@ const ENCHANTS = {
     maxE: (l) => 51 + (l - 1) * 10,
   },
   silk_touch: {
-    key: 'silk_touch', cn: '精准采集', max: 1, weight: 2, anvilCost: 8,
+    key: 'silk_touch', cn: '精准采集', max: 1, weight: 4, anvilCost: 8,
     conflict: 'mine_drop',
     tableItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
     anvilItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
-    minE: () => 12,
+    minE: () => 10,
     maxE: () => 65,
   },
   fortune: {
-    key: 'fortune', cn: '时运', max: 3, weight: 4, anvilCost: 4,
+    key: 'fortune', cn: '时运', max: 3, weight: 5, anvilCost: 4,
     conflict: 'mine_drop',
     tableItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
     anvilItems: ['pickaxe', 'axe', 'shovel', 'hoe'],
-    minE: (l) => 12 + (l - 1) * 8,
+    minE: (l) => 10 + (l - 1) * 8,
     maxE: (l) => 65 + (l - 1) * 9,
   },
 
@@ -97,24 +97,24 @@ const ENCHANTS = {
     conflict: 'protect',
     tableItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     anvilItems: ['helmet', 'chestplate', 'leggings', 'boots'],
-    minE: (l) => 1 + (l - 1) * 11,
-    maxE: (l) => 12 + (l - 1) * 11,
+    minE: (l) => 1 + (l - 1) * 9,
+    maxE: (l) => 20 + (l - 1) * 11,
   },
   fire_protection: {
     key: 'fire_protection', cn: '火焰保护', max: 4, weight: 5, anvilCost: 2,
     conflict: 'protect',
     tableItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     anvilItems: ['helmet', 'chestplate', 'leggings', 'boots'],
-    minE: (l) => 10 + (l - 1) * 8,
-    maxE: (l) => 18 + (l - 1) * 8,
+    minE: (l) => 8 + (l - 1) * 8,
+    maxE: (l) => 28 + (l - 1) * 10,
   },
   blast_protection: {
-    key: 'blast_protection', cn: '爆炸保护', max: 4, weight: 2, anvilCost: 4,
+    key: 'blast_protection', cn: '爆炸保护', max: 4, weight: 4, anvilCost: 4,
     conflict: 'protect',
     tableItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     anvilItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     minE: (l) => 5 + (l - 1) * 8,
-    maxE: (l) => 13 + (l - 1) * 8,
+    maxE: (l) => 25 + (l - 1) * 10,
   },
   projectile_protection: {
     key: 'projectile_protection', cn: '弹射物保护', max: 4, weight: 5, anvilCost: 2,
@@ -122,41 +122,41 @@ const ENCHANTS = {
     tableItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     anvilItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     minE: (l) => 3 + (l - 1) * 6,
-    maxE: (l) => 9 + (l - 1) * 6,
+    maxE: (l) => 25 + (l - 1) * 10,
   },
   feather_falling: {
     key: 'feather_falling', cn: '摔落缓冲', max: 4, weight: 5, anvilCost: 2,
     tableItems: ['boots'],
     anvilItems: ['boots'],
     minE: (l) => 5 + (l - 1) * 6,
-    maxE: (l) => 11 + (l - 1) * 6,
+    maxE: (l) => 25 + (l - 1) * 10,
   },
   respiration: {
-    key: 'respiration', cn: '水下呼吸', max: 3, weight: 2, anvilCost: 4,
+    key: 'respiration', cn: '水下呼吸', max: 3, weight: 4, anvilCost: 4,
     tableItems: ['helmet'],
     anvilItems: ['helmet'],
-    minE: (l) => 10 * l,
-    maxE: (l) => 10 * l + 30,
+    minE: (l) => 8 * l,
+    maxE: (l) => 8 * l + 35,
   },
   aqua_affinity: {
-    key: 'aqua_affinity', cn: '水下速掘', max: 1, weight: 2, anvilCost: 4,
+    key: 'aqua_affinity', cn: '水下速掘', max: 1, weight: 4, anvilCost: 4,
     tableItems: ['helmet'],
     anvilItems: ['helmet'],
     minE: () => 1,
-    maxE: () => 41,
+    maxE: () => 45,
   },
   depth_strider: {
-    key: 'depth_strider', cn: '深海探索者', max: 3, weight: 2, anvilCost: 4,
+    key: 'depth_strider', cn: '深海探索者', max: 3, weight: 4, anvilCost: 4,
     tableItems: ['boots'],
     anvilItems: ['boots'],
-    minE: (l) => 10 * l,
-    maxE: (l) => 10 * l + 15,
+    minE: (l) => 8 * l,
+    maxE: (l) => 8 * l + 25,
   },
   thorns: {
-    key: 'thorns', cn: '荆棘', max: 3, weight: 1, anvilCost: 8,
-    tableItems: ['chestplate'],
+    key: 'thorns', cn: '荆棘', max: 3, weight: 3, anvilCost: 8,
+    tableItems: ['helmet', 'chestplate', 'leggings', 'boots'],
     anvilItems: ['helmet', 'chestplate', 'leggings', 'boots'],
-    minE: (l) => 10 + 20 * (l - 1),
+    minE: (l) => 10 + 15 * (l - 1),
     maxE: (l) => 60 + 20 * (l - 1),
   },
 
@@ -169,24 +169,24 @@ const ENCHANTS = {
     maxE: (l) => 16 + (l - 1) * 10,
   },
   punch: {
-    key: 'punch', cn: '冲击', max: 2, weight: 2, anvilCost: 4,
+    key: 'punch', cn: '冲击', max: 2, weight: 4, anvilCost: 4,
     tableItems: ['bow'],
     anvilItems: ['bow'],
-    minE: (l) => 12 + (l - 1) * 20,
-    maxE: (l) => 37 + (l - 1) * 20,
+    minE: (l) => 10 + (l - 1) * 14,
+    maxE: (l) => 45 + (l - 1) * 15,
   },
   flame: {
-    key: 'flame', cn: '火矢', max: 1, weight: 2, anvilCost: 4,
+    key: 'flame', cn: '火矢', max: 1, weight: 4, anvilCost: 4,
     tableItems: ['bow'],
     anvilItems: ['bow'],
-    minE: () => 20,
+    minE: () => 12,
     maxE: () => 50,
   },
   infinity: {
-    key: 'infinity', cn: '无限', max: 1, weight: 1, anvilCost: 8,
+    key: 'infinity', cn: '无限', max: 1, weight: 4, anvilCost: 8,
     tableItems: ['bow'],
     anvilItems: ['bow'],
-    minE: () => 20,
+    minE: () => 14,
     maxE: () => 50,
   },
 };
@@ -327,13 +327,21 @@ const Enchant = {
       Math.floor(base * 2 / 3) + 1,
       Math.max(base, b * 2),
     ];
+    const seenPreviews = new Set();
     return slotLevels.map((reqLevel, slotIdx) => {
-      const sr = RNG(seedBase + (slotIdx + 1) * 104729 + reqLevel * 31);
-      const ench = this.rollEnchantments(sr, stack.id, reqLevel);
-      const keys = Object.keys(ench);
+      let ench = {}, keys = [], firstKey = null, sr = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        sr = RNG(seedBase + (slotIdx + 1) * 104729 + reqLevel * 31 + attempt * 7919);
+        ench = this.rollEnchantments(sr, stack.id, reqLevel);
+        keys = Object.keys(ench);
+        if (!keys.length) continue;
+        firstKey = keys.slice().sort((ka, kb) => (ENCHANTS[ka].weight || 10) - (ENCHANTS[kb].weight || 10))[0];
+        if (!seenPreviews.has(firstKey) || attempt === 5) {
+          seenPreviews.add(firstKey);
+          break;
+        }
+      }
       if (!keys.length) return null;
-      // Show rarest / signature enchantment in preview hint so Fortune/Silk Touch/Looting are never hidden behind Efficiency/Unbreaking
-      const firstKey = keys.slice().sort((ka, kb) => (ENCHANTS[ka].weight || 10) - (ENCHANTS[kb].weight || 10))[0];
       const w1 = GALACTIC_WORDS[sr.int(GALACTIC_WORDS.length)];
       const w2 = GALACTIC_WORDS[sr.int(GALACTIC_WORDS.length)];
       return {
@@ -563,7 +571,7 @@ const Enchant = {
     if (sharp > 0) bonus += 0.5 * sharp + 0.5;
     const type = targetMob && targetMob.type;
     const smite = stack.ench.smite || 0;
-    if (smite > 0 && (type === 'zombie' || type === 'skeleton')) bonus += 2.5 * smite;
+    if (smite > 0 && (type === 'zombie' || type === 'skeleton' || type === 'wither_skeleton' || type === 'zombified_piglin')) bonus += 2.5 * smite;
     const bane = stack.ench.bane_of_arthropods || 0;
     if (bane > 0 && type === 'spider') bonus += 2.5 * bane;
     return bonus;
@@ -578,9 +586,9 @@ const Enchant = {
       const s = inv.slots[i];
       if (!s || !s.ench) continue;
       if (s.ench.protection) epf += s.ench.protection;
-      if (s.ench.fire_protection && (type === 'fire' || type === 'lava')) epf += s.ench.fire_protection * 2;
+      if (s.ench.fire_protection && (type === 'fire' || type === 'lava' || type === 'fireball')) epf += s.ench.fire_protection * 2;
       if (s.ench.blast_protection && type === 'explosion') epf += s.ench.blast_protection * 2;
-      if (s.ench.projectile_protection && type === 'arrow') epf += s.ench.projectile_protection * 2;
+      if (s.ench.projectile_protection && (type === 'arrow' || type === 'fireball')) epf += s.ench.projectile_protection * 2;
       if (s.ench.feather_falling && type === 'fall') epf += s.ench.feather_falling * 3;
     }
     return Math.min(20, epf);

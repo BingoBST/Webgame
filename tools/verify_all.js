@@ -1642,6 +1642,107 @@ for (const rel of scriptMatches) {
         throw new Error('Missing World.prototype.propagateLocal lighting optimization');
       }
 
+      // ---- Test 13b: 18 Gameplay, Worldgen, AI & Progression Fixes ----
+      // 1. Weather vs Thunderstorm sleeping & Overworld-only rain
+      await game.switchDimension('overworld', [0.5, 82, 0.5]);
+      game.worldTime = 6000; // noon
+      game.weather = 1.0;
+      game.thunder = 0.0;
+      game.world.setBlock(2, 81, 2, 1, 0);
+      game.world.setBlock(3, 81, 2, 1, 0);
+      game.world.setBlock(2, 82, 2, 179, 0);
+      game.world.setBlock(3, 82, 2, 179, 4);
+      game.player.pos = [2.5, 82, 2.5];
+      game.trySleep(2, 82, 2);
+      if (game.sleeping) throw new Error('Should NOT be able to sleep during daytime ordinary rain (thunder=0)');
+      game.thunder = 1.0;
+      game.trySleep(2, 82, 2);
+      if (!game.sleeping) throw new Error('Should be able to sleep during daytime thunderstorm (thunder=1)');
+      game.sleeping = null;
+      game.thunder = 0; game.weather = 0;
+
+      // 2. Carrots (544) & Potatoes (545) planting on farmland, bone meal growth, smelting potato -> baked_potato
+      game.world.setBlock(5, 81, 5, 63, 7);
+      game.world.setBlock(6, 81, 5, 63, 7);
+      game.player.food = 10; // Hungry player should still plant carrot/potato when clicking farmland!
+      game.player.inv.slots[0] = makeStack('carrot', 4);
+      game.player.inv.sel = 0;
+      game.target = { pos: [5, 81, 5], face: 3, id: 63, point: [5.5, 81.9, 5.5] };
+      game.targetEntity = null;
+      game.use();
+      if (game.world.getBlock(5, 82, 5) !== 544) throw new Error('Right-clicking farmland with carrot should plant carrots (544)');
+      game.player.inv.slots[0] = makeStack('potato', 4);
+      game.target = { pos: [6, 81, 5], face: 3, id: 63, point: [6.5, 81.9, 5.5] };
+      game.use();
+      if (game.world.getBlock(6, 82, 5) !== 545) throw new Error('Right-clicking farmland with potato should plant potatoes (545)');
+      if (!SMELTING[item('potato')] || SMELTING[item('potato')].result !== item('baked_potato')) {
+        throw new Error('Smelting potato should produce baked_potato');
+      }
+
+      // 5. BlazeFireball zero knockback
+      const bfbTarget = new Mob(game, 'zombie', 10.5, 82, 10.5);
+      bfbTarget.vel = [0, 0, 0];
+      game.entities.push(bfbTarget);
+      const bfb = new BlazeFireball(game, 10.5, 82.5, 10.4, [0, 0, 0.1], null);
+      bfb.tick();
+      if (Math.hypot(bfbTarget.vel[0], bfbTarget.vel[2]) > 0.001) {
+        throw new Error('BlazeFireball should apply zero horizontal knockback');
+      }
+      bfbTarget.dead = true;
+
+      // 6. Ghast warning sound before shooting fireball
+      const prevWarn = Sound.ghastWarnCount || 0;
+      Sound.ghastWarn([0, 80, 0]);
+      if ((Sound.ghastWarnCount || 0) <= prevWarn) throw new Error('Sound.ghastWarn should increment ghastWarnCount');
+
+      // 7. Enderman stare sensitivity: looking at torso/legs should NOT aggro
+      const eman = new Mob(game, 'enderman', 0.5, 82, -10.5);
+      game.player.pos = [0.5, 82, 0.5];
+      game.player.yaw = 0;
+      game.player.pitch = -0.15; // looking down at feet/torso, not head (y+2.55)
+      eman.age = 5;
+      eman.tick();
+      eman.age = 10;
+      eman.tick();
+      if (eman.target === game.player) throw new Error('Enderman should NOT aggro when player looks at its legs/torso');
+
+      // 8. Infinity & all 19 enchantments rollable on Enchanting Table
+      const rolledEnchs = new Set();
+      const testItems = ['diamond_sword', 'diamond_pickaxe', 'bow', 'diamond_helmet', 'diamond_chestplate', 'diamond_boots'];
+      for (const ik of testItems) {
+        const st = makeStack(ik, 1);
+        for (let seed = 1; seed <= 80; seed++) {
+          game.player.enchantSeed = seed * 9973;
+          const opts = Enchant.getTableOptions(game.player, st, 15);
+          for (const o of opts) {
+            if (o && o.ench) for (const k of Object.keys(o.ench)) rolledEnchs.add(k);
+          }
+        }
+      }
+      if (!rolledEnchs.has('infinity')) throw new Error('Bow must be able to roll infinity on Enchanting Table');
+      if (rolledEnchs.size < 19) throw new Error('All 19 enchantments must be rollable on Enchanting Table, got: ' + rolledEnchs.size);
+
+      // 13. Villager stops and faces player while TradingScreen is open
+      farmer.pos = [4.5, 82, 4.5];
+      game.player.pos = [4.5, 82, 7.5];
+      farmer.wander = [20, 82, 20];
+      game.ui.open(new TradingScreen(game, farmer));
+      farmer.tick();
+      if (farmer.wander !== null) throw new Error('Villager should clear wander while TradingScreen is open');
+      game.ui.close();
+
+      // 17. Golden Apple grants Regeneration II and Absorption I (+4 absorption HP)
+      game.player.clearEffects();
+      game.player.food = 20;
+      const gaStack = makeStack('golden_apple', 2);
+      game.player.inv.slots[0] = gaStack;
+      game.player.inv.sel = 0;
+      game.finishEating(gaStack);
+      if (!game.player.hasEffect('regeneration') || !game.player.hasEffect('absorption') || (game.player.absorption || 0) < 4) {
+        throw new Error('Eating golden_apple must grant regeneration, absorption, and >=4 absorption hearts');
+      }
+      game.player.clearEffects();
+
       // ---- Test 13: Worker Fallback to Main Thread ----
       game.worker._enterFallback('manual test fallback');
       if (game.worker.isReady()) throw new Error('Worker should report not ready in fallback mode');

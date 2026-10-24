@@ -320,26 +320,36 @@ class World {
     }
 
     // 3. Nether Ores: Nether Quartz Ore (531), Nether Gold Ore (532), Magma Block (103)
-    const netherVein = (oreId, count, ymin, ymax, size) => {
+    const netherVein = (oreId, count, ymin, ymax, size, blob = false) => {
       for (let n = 0; n < count; n++) {
-        let vx = rng() * 16, vy = ymin + rng() * (ymax - ymin), vz = rng() * 16;
-        const s = size * (0.65 + rng() * 0.55);
+        let vx = 1 + rng() * 14, vy = ymin + rng() * (ymax - ymin), vz = 1 + rng() * 14;
+        const s = size * (0.75 + rng() * 0.5);
         for (let k = 0; k < s; k++) {
           const ix = vx | 0, iy = vy | 0, iz = vz | 0;
           if (ix >= 0 && ix < 16 && iz >= 0 && iz < 16 && iy >= 5 && iy <= 122) {
             const idx = (iy << 8) | (iz << 4) | ix;
             if (B[idx] === 529) B[idx] = oreId;
+            if (blob) {
+              for (const [ox, oy, oz] of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1]]) {
+                const bx = ix + ox, by = iy + oy, bz = iz + oz;
+                if (bx < 16 && bz < 16 && by <= 122 && rng() < 0.55) {
+                  const bIdx = (by << 8) | (bz << 4) | bx;
+                  if (B[bIdx] === 529) B[bIdx] = oreId;
+                }
+              }
+            }
           }
-          vx += rng() * 2 - 1; vy += rng() * 2 - 1; vz += rng() * 2 - 1;
+          vx += (rng() - 0.5) * 2.4; vy += (rng() - 0.5) * 1.8; vz += (rng() - 0.5) * 2.4;
         }
       }
     };
-    netherVein(531, 16, 10, 117, 9); // nether_quartz_ore
-    netherVein(532, 12, 10, 117, 8); // nether_gold_ore
-    netherVein(103, 5, 26, 36, 10);  // magma_block near lava sea
+    netherVein(531, 18, 10, 117, 14, true); // nether_quartz_ore (larger 8-14 block vanilla-sized veins)
+    netherVein(532, 12, 10, 117, 9, false); // nether_gold_ore
+    netherVein(103, 5, 26, 36, 10, false);  // magma_block near lava sea
 
-    // 4. Hanging Glowstone (27) clusters under Netherrack ceilings
-    for (let attempt = 0; attempt < 14; attempt++) {
+    // 4. Hanging Glowstone (27) clusters under Netherrack ceilings (sparser vanilla-like density)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (rng() > 0.55) continue;
       const gx = 2 + rng.int(12), gz = 2 + rng.int(12);
       let cy = -1;
       const startY = 121 - rng.int(55);
@@ -349,7 +359,7 @@ class World {
       }
       if (cy > 0) {
         B[(cy << 8) | (gz << 4) | gx] = 27;
-        for (let k = 0; k < 24; k++) {
+        for (let k = 0; k < 12; k++) {
           const ox = gx + rng.int(3) - 1, oy = cy - rng.int(4), oz = gz + rng.int(3) - 1;
           if (ox < 1 || ox > 14 || oz < 1 || oz > 14 || oy < 35) continue;
           const idx = (oy << 8) | (oz << 4) | ox;
@@ -650,7 +660,8 @@ class World {
     };
     vein(74, 74, 6, 0, 90, 30); vein(73, 73, 5, 0, 90, 30); vein(72, 72, 6, 0, 90, 30);
     vein(3, 0, 6, 10, 100, 24); vein(10, 0, 5, 5, 100, 24);
-    vein(13, 76, 22, 5, 130, 12);
+    vein(13, 76, 32, 5, 128, 18);
+    vein(13, 76, 20, 16, 76, 16);
     vein(12, 77, 16, 1, 72, 9);
     vein(11, 78, 3, 1, 32, 8);
     vein(80, 158, 6, 1, 16, 7);

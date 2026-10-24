@@ -217,6 +217,13 @@ class UI {
       else if (d.potion === 'night_vision') lines.push({ text: '夜视 (3:00) - 黑暗与水下视野增强', color: '#5588FF' });
     }
     if (d.food) lines.push({ text: `食物: +${d.food[0]} 饥饿值`, color: '#AAAAAA' });
+    if (d.effects) {
+      for (const ef of d.effects) {
+        const sec = Math.round((ef.duration || 0) / 20);
+        const mm = Math.floor(sec / 60), ss = String(sec % 60).padStart(2, '0');
+        lines.push({ text: `${ef.cn} (${mm}:${ss})`, color: '#5588FF' });
+      }
+    }
     const sharpBonus = (stack.ench && stack.ench.sharpness) ? (0.5 * stack.ench.sharpness + 0.5) : 0;
     if (d.tool) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
     else if (d.attack) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
@@ -303,11 +310,24 @@ class UI {
         if (hpv >= 2) this.sprite(fullSprite, x, y);
         else if (hpv >= 1) this.sprite(halfSprite, x, y);
       }
+      // absorption golden hearts (Golden Apple)
+      const absHp = Math.ceil(p.absorption || 0);
+      if (absHp > 0) {
+        const absHearts = Math.min(10, Math.ceil(absHp / 2));
+        for (let i = 0; i < absHearts; i++) {
+          const x = hx + i * 8, y = hy2 - 10;
+          this.sprite(blink ? 'heart_container_blink' : 'heart_container', x, y);
+          const av = absHp - i * 2;
+          if (av >= 2) this.sprite(this.img.heart_absorbing_full ? 'heart_absorbing_full' : 'heart_full', x, y);
+          else if (av >= 1) this.sprite(this.img.heart_absorbing_half ? 'heart_absorbing_half' : 'heart_half', x, y);
+        }
+      }
       // armor
       const ap = p.inv.armorPoints();
+      const armorY = absHp > 0 ? hy2 - 20 : hy2 - 10;
       if (ap > 0) for (let i = 0; i < 10; i++) {
         const v = ap - i * 2;
-        this.sprite(v >= 2 ? 'armor_full' : v >= 1 ? 'armor_half' : 'armor_empty', hx + i * 8, hy2 - 10);
+        this.sprite(v >= 2 ? 'armor_full' : v >= 1 ? 'armor_half' : 'armor_empty', hx + i * 8, armorY);
       }
       // food
       for (let i = 0; i < 10; i++) {
@@ -437,7 +457,8 @@ class UI {
       const mm = Math.floor(sec / 60);
       const ss = String(sec % 60).padStart(2, '0');
       const timeStr = `${mm}:${ss}`;
-      const label = `${def.cn} ${timeStr}`;
+      const ampStr = st.amp > 0 ? (' ' + (['I', 'II', 'III', 'IV'][st.amp] || (st.amp + 1))) : '';
+      const label = `${def.cn}${ampStr} ${timeStr}`;
       const bx = W - 28;
       // Background box (24x24)
       if (this.img.effect_bg) {

@@ -71,7 +71,7 @@ class WorldWorker {
       item, itemDef, makeStack, maxStack, logTex, stairBoxes, doorBoxes,
       ladderBoxes, buttonBoxes, leverBoxes, repeaterModel, comparatorModel,
       observerTex, pistonBoxes, pistonModel, pistonHeadBoxes, pistonHeadModel,
-      pinkPetalsModel, brewingStandModel, netherPortalBoxes, netherWartTex, endPortalFrameBoxes, endPortalFrameModel, dragonEggModel, ironBarsBoxes, ironBarsModel,
+      pinkPetalsModel, brewingStandModel, netherPortalBoxes, netherWartTex, carrotTex, potatoTex, endPortalFrameBoxes, endPortalFrameModel, dragonEggModel, ironBarsBoxes, ironBarsModel,
       fenceBoxes, railModel, anvilModel, bellModel, hopperModel, hopperBoxes, initAnimTable
     ];
 
@@ -87,6 +87,8 @@ class WorldWorker {
       `const SLAB_BOXES = ${JSON.stringify(SLAB_BOXES)};`,
       `const FLOWER_IDS = ${JSON.stringify(FLOWER_IDS)};`,
       `const WHEAT_TEX = ${JSON.stringify(WHEAT_TEX)};`,
+      `const CARROT_TEX = ${JSON.stringify(CARROT_TEX)};`,
+      `const POTATO_TEX = ${JSON.stringify(POTATO_TEX)};`,
       `const NETHER_WART_TEX = ${JSON.stringify(NETHER_WART_TEX)};`,
       `const BIOMES = ${JSON.stringify(BIOMES)};`,
       `const BI = ${JSON.stringify(BI)};`,
@@ -174,6 +176,10 @@ class WorldWorker {
             b.texFn = function(face, meta) { return face === 3 ? (meta ? T('farmland_moist') : T('farmland')) : this.tex[face]; };
           } else if (b.key === 'wheat') {
             b.texFn = function(face, meta) { return T(WHEAT_TEX[meta & 7]); };
+          } else if (b.key === 'carrots') {
+            b.texFn = carrotTex;
+          } else if (b.key === 'potatoes') {
+            b.texFn = potatoTex;
           } else if (b.key === 'nether_wart_crop') {
             b.texFn = netherWartTex;
           } else if (b.key === 'oak_door') {

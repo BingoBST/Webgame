@@ -952,6 +952,20 @@ defBlock(542, 'iron_bars', '铁栏杆', {
 defBlock(543, 'end_stone_bricks', '末地石砖', {
   tex: 'end_stone_bricks', hardness: 3, tool: 'pickaxe', level: 0, needsTool: true, sound: 'stone'
 });
+const CARROT_TEX = ['carrots_stage0', 'carrots_stage0', 'carrots_stage1', 'carrots_stage1', 'carrots_stage2', 'carrots_stage2', 'carrots_stage2', 'carrots_stage3'];
+const POTATO_TEX = ['potatoes_stage0', 'potatoes_stage0', 'potatoes_stage1', 'potatoes_stage1', 'potatoes_stage2', 'potatoes_stage2', 'potatoes_stage2', 'potatoes_stage3'];
+function carrotTex(face, meta) { return T(CARROT_TEX[meta & 7]); }
+function potatoTex(face, meta) { return T(POTATO_TEX[meta & 7]); }
+defBlock(544, 'carrots', '胡萝卜作物', {
+  shape: SH_CROP, tex: 'carrots_stage0', texFn: carrotTex,
+  solid: false, hardness: 0, sound: 'grass', needsSupport: true, noItem: true,
+  drops: (m, r) => [['carrot', (m & 7) >= 7 ? 2 + ((r() * 3) | 0) : 1]]
+});
+defBlock(545, 'potatoes', '马铃薯作物', {
+  shape: SH_CROP, tex: 'potatoes_stage0', texFn: potatoTex,
+  solid: false, hardness: 0, sound: 'grass', needsSupport: true, noItem: true,
+  drops: (m, r) => [['potato', (m & 7) >= 7 ? 2 + ((r() * 3) | 0) : 1]]
+});
 
 // ---------------------------------------------------------------------------
 // Items
@@ -998,9 +1012,16 @@ defItem('rotten_flesh', '腐肉', { food: [4, 0.8] });
 defItem('melon_slice', '西瓜片', { food: [2, 1.2] });
 defItem('cookie', '曲奇', { food: [2, 0.4] });
 defItem('pumpkin_pie', '南瓜派', { food: [8, 4.8] });
-defItem('golden_apple', '金苹果', { food: [4, 9.6], heal: 4 });
+defItem('golden_apple', '金苹果', {
+  food: [4, 9.6], alwaysEdible: true,
+  effects: [
+    { id: 'regeneration', cn: '生命恢复 II', duration: 100, amp: 1 },
+    { id: 'absorption', cn: '伤害吸收', duration: 2400, amp: 0 }
+  ]
+});
+defItem('potato', '马铃薯', { food: [1, 0.6], places: 'potatoes' });
 defItem('baked_potato', '烤马铃薯', { food: [5, 6] });
-defItem('carrot', '胡萝卜', { food: [3, 3.6] });
+defItem('carrot', '胡萝卜', { food: [3, 3.6], places: 'carrots' });
 defItem('bone', '骨头');
 defItem('bone_meal', '骨粉');
 defItem('arrow', '箭');
@@ -1093,6 +1114,8 @@ ITEM_KEY.night_vision_potion = ITEM_KEY.potion_night_vision;
 
 const STATUS_EFFECTS = {
   instant_health: { id: 'instant_health', cn: '瞬间治疗', icon: 'eff_instant_health', color: '#F82423', instant: true },
+  regeneration: { id: 'regeneration', cn: '生命恢复', icon: 'eff_regeneration', color: '#CD5CAB' },
+  absorption: { id: 'absorption', cn: '伤害吸收', icon: 'eff_absorption', color: '#2552A5' },
   fire_resistance: { id: 'fire_resistance', cn: '抗火', icon: 'eff_fire_resistance', color: '#E49A3A' },
   speed: { id: 'speed', cn: '迅捷', icon: 'eff_speed', color: '#7CAFC6' },
   night_vision: { id: 'night_vision', cn: '夜视', icon: 'eff_night_vision', color: '#3F5FFF' },
@@ -1343,7 +1366,7 @@ smelt('cobblestone', 'stone'); smelt('stone', 'smooth_stone'); smelt('clay_ball'
 smelt('oak_log', 'charcoal', 0.15); smelt('birch_log', 'charcoal', 0.15); smelt('spruce_log', 'charcoal', 0.15); smelt('cherry_log', 'charcoal', 0.15);
 smelt('porkchop', 'cooked_porkchop', 0.35); smelt('beef', 'cooked_beef', 0.35); smelt('mutton', 'cooked_mutton', 0.35); smelt('chicken', 'cooked_chicken', 0.35);
 smelt('stone_bricks', 'cracked_stone_bricks'); smelt('cactus', 'green_concrete' in ITEM_KEY ? 'green_concrete' : 'lime_concrete');
-smelt('carrot', 'baked_potato', 0.35);
+smelt('potato', 'baked_potato', 0.35);
 smelt('sandstone', 'smooth_sandstone', 0.1);
 smelt('netherrack', 'nether_brick', 0.1);
 smelt('nether_quartz_ore', 'quartz', 0.2);
@@ -1382,6 +1405,6 @@ for (const m of ['wooden', 'stone', 'iron', 'golden', 'diamond']) for (const t o
 CREATIVE_TABS[3].items.push('shield', 'bow', 'arrow', 'shears', 'flint_and_steel', 'bucket', 'water_bucket', 'lava_bucket');
 for (const m of ['leather', 'iron', 'diamond']) for (const p of ['helmet', 'chestplate', 'leggings', 'boots']) CREATIVE_TABS[3].items.push(m + '_' + p);
 CREATIVE_TABS[3].items.push('potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
-CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'golden_carrot', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'baked_potato', 'carrot',
+CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'golden_carrot', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'potato', 'baked_potato', 'carrot',
   'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book', 'enchanted_book',
   'quartz', 'gold_nugget', 'nether_brick', 'ghast_tear', 'ender_pearl', 'eye_of_ender', 'end_crystal', 'dragon_breath', 'fire_charge', 'glass_bottle', 'water_bottle', 'awkward_potion', 'blaze_rod', 'blaze_powder', 'nether_wart', 'glistering_melon_slice', 'magma_cream', 'potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');

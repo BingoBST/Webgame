@@ -161,6 +161,9 @@ class Living extends Entity {
     const maxTicks = Math.max(cur ? (cur.maxTicks || 0) : 0, duration);
     this.effects[id] = { id, ticks, maxTicks, amp: Math.max(cur ? (cur.amp || 0) : 0, amp) };
     if (id === 'fire_resistance') this.fire = 0;
+    if (id === 'absorption') {
+      this.absorption = Math.max(this.absorption || 0, 4 * ((amp || 0) + 1));
+    }
   }
   hasEffect(id) {
     return !!(this.effects && this.effects[id] && this.effects[id].ticks > 0);
@@ -170,6 +173,7 @@ class Living extends Entity {
   }
   clearEffects() {
     this.effects = {};
+    this.absorption = 0;
   }
   tickEffects() {
     if (!this.effects) return;
@@ -177,15 +181,24 @@ class Living extends Entity {
     for (const k of keys) {
       const eff = this.effects[k];
       if (!eff || eff.ticks <= 0) {
+        if (k === 'absorption') this.absorption = 0;
         delete this.effects[k];
         continue;
       }
       if (k === 'wither') {
         const interval = Math.max(10, 40 >> (eff.amp || 0));
         if (eff.ticks % interval === 0) this.hurt(1, { type: 'wither' });
+      } else if (k === 'regeneration') {
+        const interval = Math.max(12, 50 >> (eff.amp || 0));
+        if (eff.ticks % interval === 0 && this.health < (this.maxHealth || 20)) {
+          this.health = Math.min(this.maxHealth || 20, this.health + 1);
+        }
       }
       eff.ticks--;
-      if (eff.ticks <= 0) delete this.effects[k];
+      if (eff.ticks <= 0) {
+        if (k === 'absorption') this.absorption = 0;
+        delete this.effects[k];
+      }
     }
     if (keys.length && this.age % 8 === 0 && this.game && this.game.particles) {
       const firstKey = Object.keys(this.effects)[0];
@@ -207,12 +220,22 @@ class Living extends Entity {
     const reduced = this.reduceDamage ? this.reduceDamage(actual, source) : actual;
     if (reduced <= 0) return false;
     this.lastDamage = amount; this.invuln = 20; this.hurtTime = 10;
-    this.health -= reduced;
-    if (source && source.knockFrom) {
+    let rem = reduced;
+    if ((this.absorption || 0) > 0) {
+      const abs = Math.min(this.absorption, rem);
+      this.absorption -= abs;
+      rem -= abs;
+      if (this.absorption <= 0) {
+        this.absorption = 0;
+        if (this.effects && this.effects.absorption) delete this.effects.absorption;
+      }
+    }
+    this.health -= rem;
+    if (source && source.knockFrom && (source.knock ?? 0.4) > 0) {
       const dx = this.pos[0] - source.knockFrom[0], dz = this.pos[2] - source.knockFrom[2];
       const d = Math.hypot(dx, dz) || 1, k = source.knock ?? 0.4;
       this.vel[0] = this.vel[0] / 2 + dx / d * k; this.vel[2] = this.vel[2] / 2 + dz / d * k;
-      if (this.onGround) this.vel[1] = Math.min(0.4, this.vel[1] / 2 + 0.36);
+      if (this.onGround) this.vel[1] = Math.min(0.4, this.vel[1] / 2 + 0.36 * Math.min(1, k / 0.4));
     }
     this.onHurt(source);
     if (this.health <= 0) { this.health = 0; this.die(source); }
@@ -279,7 +302,7 @@ class Living extends Entity {
     if (this.inWater || this.inLava) {
       const isSwim = !!(this.swimming && this.inWater);
       const isFastSwim = !!(isSwim && this.sprinting);
-      const drag = this.inWater ? (isFastSwim ? 0.88 : isSwim ? 0.83 : 0.8) : 0.5;
+      const drag = this.inWater ? (isFastSwim ? 0.88 : isSwim ? 0.83 : 0.72) : 0.5;
       if (isSwim) {
         const swimAccel = (isFastSwim ? 0.042 : 0.022) * (this.waterSpeed || 1);
         const cp = Math.cos(this.pitch || 0), sp = Math.sin(this.pitch || 0);
@@ -296,8 +319,9 @@ class Living extends Entity {
           if (this.sneaking) v[1] -= 0.035;
         }
       } else {
-        this.accel(fwd, strafe, 0.02 * (this.waterSpeed || 1));
-        if (jump) v[1] += 0.04;
+        const baseWater = (this instanceof Mob) ? Math.min(0.011, Math.max(0.006, (speed || 0.04) * 0.18)) : 0.013;
+        this.accel(fwd, strafe, baseWater * (this.waterSpeed || 1));
+        if (jump) v[1] += 0.035;
       }
       const inWeb = this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + 0.1), Math.floor(this.pos[2])) === 177 ||
                   this.world.getBlock(Math.floor(this.pos[0]), Math.floor(this.pos[1] + this.h * 0.6), Math.floor(this.pos[2])) === 177;
@@ -844,6 +868,13 @@ class Mob extends Living {
         this.game.dropItem(this.pos[0], this.pos[1] + 0.5, this.pos[2], makeStack('stone_sword', 1));
       }
     }
+    // Zombie rare drops: carrot, potato, or iron_ingot (per vanilla Minecraft)
+    if (this.type === 'zombie' && byPlayer) {
+      if (r() < 0.085 + looting * 0.03 || (src && src.forceRareDrop)) {
+        const rarePick = ['carrot', 'potato', 'iron_ingot'][(r() * 3) | 0];
+        this.game.dropItem(this.pos[0], this.pos[1] + 0.5, this.pos[2], makeStack(rarePick, 1));
+      }
+    }
     // Zombified Piglin rare drops: gold_ingot (2.5%) & golden_sword (8.5%)
     if (this.type === 'zombified_piglin' && byPlayer) {
       if (r() < 0.025 + looting * 0.01) this.game.dropItem(this.pos[0], this.pos[1] + 0.5, this.pos[2], makeStack('gold_ingot', 1));
@@ -878,12 +909,12 @@ class Mob extends Living {
     const day = g.isDay();
     // despawn hostiles far away
     if (!this.persistent && (dP > 100 || (dP > 40 && this.age > 600 && Math.random() < 0.001))) { this.dead = true; return; }
-    // burn in daylight
-    if (T.burns && day && !this.inWater && this.age % 20 === 0) {
+    // burn in daylight (Overworld only)
+    if (T.burns && day && (!this.world.dimension || this.world.dimension === 'overworld') && !this.inWater && this.age % 20 === 0) {
       const sky = this.world.skyAt(Math.floor(this.pos[0]), Math.floor(this.pos[1] + this.h), Math.floor(this.pos[2]));
       if (sky >= 15 && g.weather < 0.5) this.fire = Math.max(this.fire, 160);
     }
-    if (--this.idleSound < 0) { this.idleSound = 200 + Math.random() * 400; if (dP < 20) Sound.mob(this.type, 'idle', this.pos); }
+    if (--this.idleSound < 0) { this.idleSound = 200 + Math.random() * 400; if (dP < (this.type === 'ghast' ? 64 : 20)) Sound.mob(this.type, 'idle', this.pos); }
     if (this.attackCd > 0) this.attackCd--;
     // Ambient particles & water allergy for Blaze / Enderman
     if (this.type === 'blaze') {
@@ -910,15 +941,26 @@ class Mob extends Living {
       this.angerTicks--;
       if (this.angerTicks <= 0 && T.neutral) this.target = null;
     }
-    if (this.type === 'enderman' && !this.target && playerOk && dP < 32 && this.age % 5 === 0) {
-      // Check if player is staring directly at the Enderman's head
-      const ld = g.lookDir ? g.lookDir() : [0, 0, -1];
-      const vx = this.pos[0] - p.pos[0], vy = (this.pos[1] + 2.5) - (p.pos[1] + p.eye()), vz = this.pos[2] - p.pos[2];
-      const vl = Math.hypot(vx, vy, vz) || 1;
-      const dot = (vx * ld[0] + vy * ld[1] + vz * ld[2]) / vl;
-      if (dot > 0.992 && this.canSee(p)) {
-        this.target = p;
-        this.angerTicks = 600;
+    if (this.type === 'enderman' && !this.target && playerOk && dP < 64 && this.age % 5 === 0) {
+      // Vanilla EnderMan.isLookingAtMe: crosshair ray must hit the Enderman's head/eyes (perpDist < 0.22, dot > 1 - 0.022 / vl)
+      const headArmor = p.inv && p.inv.slots && p.inv.slots[36];
+      const wearingPumpkin = !!(headArmor && ITEMS[headArmor.id] && ITEMS[headArmor.id].key === 'pumpkin');
+      if (!wearingPumpkin) {
+        const ld = g.lookDir ? g.lookDir() : [0, 0, -1];
+        const vx = this.pos[0] - p.pos[0], vy = (this.pos[1] + 2.55) - (p.pos[1] + p.eye()), vz = this.pos[2] - p.pos[2];
+        const vl = Math.hypot(vx, vy, vz) || 1;
+        const dot = (vx * ld[0] + vy * ld[1] + vz * ld[2]) / vl;
+        const perpDist = vl * Math.sqrt(Math.max(0, 1 - dot * dot));
+        if (dot > 1.0 - 0.022 / vl && perpDist < 0.22 && this.canSee(p)) {
+          this.stareCount = (this.stareCount || 0) + 1;
+          if (this.stareCount >= 2) {
+            this.target = p;
+            this.angerTicks = 600;
+            this.stareCount = 0;
+          }
+        } else {
+          this.stareCount = 0;
+        }
       }
     }
     if (T.hostile) {
@@ -1028,7 +1070,7 @@ class Mob extends Living {
         this.bodyYaw = this.yaw;
         if (playerOk && this.distTo(p) < 3.8 && this.attackCd <= 0) {
           this.attackCd = 25;
-          p.hurt(this.T.attack, { type: 'mob', attacker: this, knockFrom: this.pos, knock: 1.1 });
+          p.hurt(this.T.attack, { type: 'mob', attacker: this, knockFrom: this.pos, knock: 0.5 });
         }
         if (dist < 2.0 || this.phaseTicks >= 80) {
           this.chargeTarget = null;
@@ -1104,8 +1146,12 @@ class Mob extends Living {
         const dx = t.pos[0] - this.pos[0], dz = t.pos[2] - this.pos[2];
         this.turnTo(Math.atan2(-dx, -dz), 0.25);
         if (this.attackCd <= 0) this.attackCd = 60;
+        if (this.attackCd === 20 && typeof Sound !== 'undefined' && Sound.ghastWarn) {
+          Sound.ghastWarn(this.pos);
+        }
         this.charging = this.attackCd <= 20;
         if (this.attackCd === 1) {
+          if (typeof Sound !== 'undefined' && Sound.ghastShoot) Sound.ghastShoot(this.pos);
           this.shootGhastFireball(t);
           this.attackCd = 65;
           this.charging = false;
@@ -1171,16 +1217,28 @@ class Mob extends Living {
       mod = 1.6;
       if (!this.wander || this.wanderT <= 0 || this.age % 20 === 0) this.pickWander(6);
     } else {
-      // follow player holding food
+      // follow player holding food (pigs also follow potato)
       const held = p.inv.held;
-      if (T.passive && held && T.food && held.id === item(T.food) && dP < 8 && dP > 2) {
+      const likesHeld = held && T.food && (held.id === item(T.food) || (this.type === 'pig' && ITEM_KEY.potato && held.id === item('potato')));
+      if (T.passive && likesHeld && dP < 8 && dP > 2) {
         lookAt = p;
         this.turnTo(Math.atan2(-(p.pos[0] - this.pos[0]), -(p.pos[2] - this.pos[2])), 0.3);
         fwd = 1;
       } else if (dP < 8 && Math.random() < 0.02) lookAt = p;
     }
+    const isTradingWithPlayer = this.type === 'villager' && g.ui && g.ui.screen && g.ui.screen.villager === this;
+    if (isTradingWithPlayer) {
+      this.wander = null;
+      this.target = null;
+      fwd = 0;
+      jump = false;
+      lookAt = p;
+      const wantYaw = Math.atan2(-(p.pos[0] - this.pos[0]), -(p.pos[2] - this.pos[2]));
+      this.turnTo(wantYaw, 0.35);
+      this.bodyYaw = this.yaw;
+    }
     if (this.creeperTick()) return;
-    if (!this.target && fwd === 0) {
+    if (!this.target && fwd === 0 && !isTradingWithPlayer) {
       if (this.wander) {
         this.wanderT--;
         const dx = this.wander[0] - this.pos[0], dz = this.wander[2] - this.pos[2];
@@ -1203,7 +1261,7 @@ class Mob extends Living {
     // stuck detection
     if (fwd > 0 && Math.hypot(this.pos[0] - this.prev[0], this.pos[2] - this.prev[2]) < 0.01) { if (++this.stuck > 30) { this.yaw += (Math.random() - 0.5) * 2; this.stuck = 0; this.wander = null; } }
     else this.stuck = 0;
-    if (jump && this.onGround) this.vel[1] = 0.42;
+    if (jump && this.onGround && !this.inWater && !this.inLava) this.vel[1] = 0.42;
     const speed = T.speed * T.speed * mod * (this.fuse >= 0 ? 0.4 : 1);
     this.travel(fwd, 0, speed, jump);
     // body/head rotation
@@ -1680,7 +1738,7 @@ class BlazeFireball extends Entity {
       if (!e || e === this.shooter || !(e instanceof Living) || e.dead || e.deathTime > 0) continue;
       const b = e.box();
       if (nx > b[0] - 0.2 && nx < b[3] + 0.2 && ny + 0.2 > b[1] && ny + 0.2 < b[4] && nz > b[2] - 0.2 && nz < b[5] + 0.2) {
-        const hit = e.hurt(5, { type: 'fireball', attacker: this.shooter, sourcePos: [...this.pos], knockFrom: this.pos });
+        const hit = e.hurt(5, { type: 'fireball', attacker: this.shooter, sourcePos: [...this.pos], knockFrom: null, knock: 0 });
         if (hit && !(e.hasEffect && e.hasEffect('fire_resistance'))) e.fire = Math.max(e.fire || 0, 100);
         this.dead = true;
         return;
@@ -1920,7 +1978,7 @@ class DragonFireball extends Entity {
     const nx = this.pos[0] + v[0], ny = this.pos[1] + v[1], nz = this.pos[2] + v[2];
     const p = this.game && this.game.player;
     if (p && p.deathTime === 0 && Math.hypot(nx - p.pos[0], ny - (p.pos[1] + 0.9), nz - p.pos[2]) < 1.2) {
-      p.hurt(6, { type: 'dragon_breath', attacker: this.shooter, knockFrom: this.pos });
+      p.hurt(6, { type: 'dragon_breath', attacker: this.shooter, knockFrom: this.pos, knock: 0.12 });
       this.detonate();
       return;
     }

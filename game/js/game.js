@@ -1158,16 +1158,21 @@ class Game {
       });
     }
     const r = RNG(hashStr('animals' + this.world.seed + ch.cx + ':' + ch.cz));
-    if (r() > 0.1) return;
+    if (r() > 0.24) return;
     const types = ['pig', 'cow', 'sheep', 'sheep', 'chicken'];
     const t = types[r.int(types.length)];
     const n = 2 + r.int(3);
+    const isCanopy = (id) => id === 14 || id === 15 || id === 46 || id === 47 || id === 49 || id === 50 || id === 519 || id === 520;
     for (let i = 0; i < n; i++) {
       const x = ch.cx * 16 + r.int(16), z = ch.cz * 16 + r.int(16);
       for (let y = HEIGHT - 2; y > SEA; y--) {
         const id = ch.blocks[(y << 8) | ((z & 15) << 4) | (x & 15)];
-        if (id === 0 || !BLOCKS[id].solid) continue;
-        if (id === 2) this.entities.push(new Mob(this, t, x + 0.5, y + 1, z + 0.5));
+        if (id === 0 || !BLOCKS[id].solid || isCanopy(id)) continue;
+        const above1 = ch.blocks[((y + 1) << 8) | ((z & 15) << 4) | (x & 15)];
+        const above2 = ch.blocks[((y + 2) << 8) | ((z & 15) << 4) | (x & 15)];
+        if (id === 2 && !BLOCKS[above1].solid && !BLOCKS[above2].solid) {
+          this.entities.push(new Mob(this, t, x + 0.5, y + 1, z + 0.5));
+        }
         break;
       }
     }
@@ -1220,9 +1225,15 @@ class Game {
     this.world.time++;
     this.worldTime++;
     const p = this.player;
-    // weather
-    if (--this.weatherTimer < 0) { this.rainTarget = this.rainTarget ? 0 : 1; this.weatherTimer = this.rainTarget ? 6000 + Math.random() * 12000 : 12000 + Math.random() * 36000; }
+    // weather & thunderstorm (Overworld only)
+    if (--this.weatherTimer < 0) {
+      this.rainTarget = this.rainTarget ? 0 : 1;
+      this.thunderTarget = (this.rainTarget && Math.random() < 0.3) ? 1 : 0;
+      this.weatherTimer = this.rainTarget ? 6000 + Math.random() * 12000 : 12000 + Math.random() * 36000;
+    }
+    if (!this.rainTarget) this.thunderTarget = 0;
     this.weather += clamp(this.rainTarget - this.weather, -0.01, 0.01);
+    this.thunder = (this.thunder || 0) + clamp((this.thunderTarget || 0) - (this.thunder || 0), -0.01, 0.01);
     const input = this.ui.screen ? { fwd: 0, strafe: 0, jump: false, sneak: false, sprint: false } : this.readInput();
     if (this.tickSleep()) { }
     else if (!p.loadedHere()) { p.savePrev(); }
@@ -1253,8 +1264,8 @@ class Game {
     if (this.tickCount % 20 === 0 && !this.adv.armor && p.inv.slots.slice(36).some(s => s && ITEMS[s.id].key.startsWith('iron_'))) this.grant('armor');
     // first night advancement
     if (!this.adv.night && this.mode === 'survival' && this.dayTime() > 23500 && this.worldTime > 20000) this.grant('night');
-    // rain splashes
-    if (this.weather > 0.2 && this.tickCount % 2 === 0) this.rainParticles();
+    // rain splashes (Overworld only)
+    if (this.world.dimension === 'overworld' && this.weather > 0.2 && this.tickCount % 2 === 0) this.rainParticles();
     // eye in fluid
     const eyeY = p.pos[1] + p.eye();
     const eb = this.world.getBlock(Math.floor(p.pos[0]), Math.floor(eyeY), Math.floor(p.pos[2]));
@@ -1367,7 +1378,7 @@ class Game {
   }
 
   tickSpawners() {
-    if (this.tickCount % 80 !== 0) return; // check every 4 seconds
+    if (this.tickCount % 260 !== 0) return; // check every 13 seconds (vanilla-like spawner delay)
     const list = this.nearbySpawners;
     if (!list || !list.length) return;
     const w = this.world;
@@ -1377,9 +1388,9 @@ class Game {
       const sType = isBlaze ? 'blaze' : 'spider';
       let nearby = 0;
       for (const e of this.entities) {
-        if (!e.dead && e instanceof Mob && e.type === sType && Math.hypot(e.pos[0] - (sx + 0.5), e.pos[1] - sy, e.pos[2] - (sz + 0.5)) < 9) nearby++;
+        if (!e.dead && e instanceof Mob && e.type === sType && Math.hypot(e.pos[0] - (sx + 0.5), e.pos[1] - sy, e.pos[2] - (sz + 0.5)) < 10) nearby++;
       }
-      if (nearby >= 4) continue;
+      if (nearby >= 3) continue;
       const toSpawn = 1 + (Math.random() < 0.4 ? 1 : 0);
       let spawned = 0;
       for (let attempt = 0; attempt < 12 && spawned < toSpawn; attempt++) {
@@ -1549,7 +1560,7 @@ class Game {
       case 'redstone_wire': case 'stone_pressure_plate': case 'oak_pressure_plate': case 'repeater': case 'lit_repeater': case 'comparator':
         return solidBelow;
       case 'ladder': return !!SOLIDCUBE[w.getBlock(x + DIRS[meta][0], y, z + DIRS[meta][2])];
-      case 'wheat': return below === 63;
+      case 'wheat': case 'carrots': case 'potatoes': return below === 63;
       case 'nether_wart_crop': return below === 530;
       case 'sugar_cane': return below === 38 || below === 2 || below === 3 || below === 9 || below === 97;
       case 'cactus': return below === 37 || below === 9 || below === 97;
@@ -1579,7 +1590,7 @@ class Game {
         }
         break;
       }
-      case 64: {
+      case 64: case 544: case 545: {
         const m = w.getMeta(x, y, z);
         if (m < 7 && Math.max(w.skyAt(x, y, z) * this.daylight(), w.blockLightAt(x, y, z)) >= 9 && Math.random() < (w.getMeta(x, y - 1, z) ? 0.5 : 0.25)) w.setMeta(x, y, z, m + 1);
         break;
@@ -1601,7 +1612,7 @@ class Game {
         for (let dx = -4; dx <= 4 && !wet; dx++) for (let dz = -4; dz <= 4 && !wet; dz++) for (let dy = 0; dy <= 1; dy++) if (w.getBlock(x + dx, y + dy, z + dz) === WATER) { wet = true; break; }
         const m = w.getMeta(x, y, z);
         if (wet && !m) w.setMeta(x, y, z, 1);
-        else if (!wet) { if (m) w.setMeta(x, y, z, 0); else if (w.getBlock(x, y + 1, z) !== 64 && Math.random() < 0.3) w.setBlock(x, y, z, 3, 0); }
+        else if (!wet) { const ab = w.getBlock(x, y + 1, z); if (m) w.setMeta(x, y, z, 0); else if (ab !== 64 && ab !== 544 && ab !== 545 && Math.random() < 0.3) w.setBlock(x, y, z, 3, 0); }
         break;
       }
       case 38: case 37: {
@@ -1657,8 +1668,8 @@ class Game {
       // Nether Fortress: Blaze (35%), Wither Skeleton (35%), Zombified Piglin (20%), Skeleton (10%)
       return r < 0.35 ? 'blaze' : r < 0.70 ? 'wither_skeleton' : r < 0.90 ? 'zombified_piglin' : 'skeleton';
     }
-    // Nether Wastes: Zombified Piglin (55%), Ghast (25%), Enderman (14% small amount), Skeleton (6% very small amount)
-    return r < 0.55 ? 'zombified_piglin' : r < 0.80 ? 'ghast' : r < 0.94 ? 'enderman' : 'skeleton';
+    // Nether Wastes: Zombified Piglin (64%), Ghast (8%), Enderman (18%), Skeleton (10%)
+    return r < 0.64 ? 'zombified_piglin' : r < 0.72 ? 'ghast' : r < 0.90 ? 'enderman' : 'skeleton';
   }
   spawnMobs() {
     if (this.mode === 'creative' && !this.settings.creativeMobs) { }
@@ -1681,7 +1692,7 @@ class Game {
     }
     if (w.dimension === 'nether') {
       const netherCount = this.entities.filter(e => e instanceof Mob && !e.dead).length;
-      const ghastCount = this.entities.filter(e => e instanceof Mob && !e.dead && e.type === 'ghast').length;
+      let ghastCount = this.entities.filter(e => e instanceof Mob && !e.dead && e.type === 'ghast').length;
       if (netherCount >= 26) return;
       for (let attempt = 0; attempt < 4; attempt++) {
         const a = Math.random() * Math.PI * 2, d = 20 + Math.random() * 38;
@@ -1695,39 +1706,61 @@ class Game {
         }
         if (w.getBlock(x, y, z) !== 0 || w.getBlock(x, y + 1, z) !== 0 || !SOLIDCUBE[w.getBlock(x, y - 1, z)]) continue;
         let type = this.pickNetherMobType(x, y, z, Math.random());
-        if (type === 'ghast' && ghastCount >= 4) type = 'zombified_piglin';
+        if (type === 'ghast' && ghastCount >= 2) type = 'zombified_piglin';
         const sy = type === 'ghast' ? Math.min(104, y + 6) : y;
         const m = new Mob(this, type, x + 0.5, sy, z + 0.5);
         m.persistent = false;
-        if (!m.collides(m.box())) this.entities.push(m);
+        if (!m.collides(m.box())) {
+          this.entities.push(m);
+          if (type === 'ghast') ghastCount++;
+        }
       }
       return;
     }
-    const hostiles = this.entities.filter(e => e instanceof Mob && e.T.hostile).length;
-    const passives = this.entities.filter(e => e instanceof Mob && e.T.passive && e.distTo(p) < 96).length;
+    let hostiles = this.entities.filter(e => e instanceof Mob && !e.dead && e.T.hostile).length;
+    const passives = this.entities.filter(e => e instanceof Mob && !e.dead && e.T.passive && e.distTo(p) < 96).length;
     const day = this.daylight();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const a = Math.random() * Math.PI * 2, d = 24 + Math.random() * 40;
+    const isCanopy = (id) => id === 14 || id === 15 || id === 46 || id === 47 || id === 49 || id === 50 || id === 519 || id === 520;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const a = Math.random() * Math.PI * 2, d = 16 + Math.random() * 38;
       const x = Math.floor(p.pos[0] + Math.sin(a) * d), z = Math.floor(p.pos[2] + Math.cos(a) * d);
       if (!w.isLoaded(x, z)) continue;
-      const surface = w.surfaceY(x, z);
-      // choose y: surface or random cave spot
+      // Find ground surface skipping tree canopy
+      let surface = w.surfaceY(x, z);
+      while (surface > SEA && isCanopy(w.getBlock(x, surface, z))) {
+        surface--;
+        while (surface > SEA && !BLOCKS[w.getBlock(x, surface, z)].solid) surface--;
+      }
       let y = surface + 1;
-      if (Math.random() < 0.5) {
-        const ty = 8 + Math.floor(Math.random() * Math.max(1, surface - 10));
-        if (w.getBlock(x, ty, z) === 0 && w.getBlock(x, ty + 1, z) === 0 && BLOCKS[w.getBlock(x, ty - 1, z)].solid) y = ty;
+      // Prefer underground caves during daytime or 65% of the time at night
+      const tryCave = (day > 0.55) || (Math.random() < 0.65);
+      if (tryCave && surface > 14) {
+        const startY = 8 + Math.floor(Math.random() * Math.max(1, surface - 10));
+        for (let cy = startY; cy >= 6 && cy > startY - 22; cy--) {
+          if (w.getBlock(x, cy, z) === 0 && w.getBlock(x, cy + 1, z) === 0 && SOLIDCUBE[w.getBlock(x, cy - 1, z)]) {
+            y = cy;
+            break;
+          }
+        }
       }
       if (w.getBlock(x, y, z) !== 0 || w.getBlock(x, y + 1, z) !== 0 || !SOLIDCUBE[w.getBlock(x, y - 1, z)]) continue;
       const l = w.getLight(x, y, z), sky = (l >> 4) * day, blk = l & 15;
-      if (blk === 0 && sky <= 7 && hostiles < 22 && Math.random() < 0.6 && Math.hypot(x - p.pos[0], z - p.pos[2]) > 24) {
+      const dist3D = Math.hypot(x + 0.5 - p.pos[0], y - p.pos[1], z + 0.5 - p.pos[2]);
+      if (blk === 0 && sky <= 7 && hostiles < 26 && dist3D >= 16) {
         const r = Math.random();
         const type = r < 0.35 ? 'zombie' : r < 0.6 ? 'skeleton' : r < 0.85 ? 'creeper' : 'spider';
         const m = new Mob(this, type, x + 0.5, y, z + 0.5);
         m.persistent = false;
-        if (!m.collides(m.box())) this.entities.push(m);
-      } else if (passives < 12 && day > 0.8 && w.getBlock(x, y - 1, z) === 2 && sky >= 9 && Math.random() < 0.02) {
+        if (!m.collides(m.box())) {
+          this.entities.push(m);
+          hostiles++;
+        }
+      } else if (passives < 16 && day > 0.7 && w.getBlock(x, y - 1, z) === 2 && (l >> 4) >= 8 && Math.random() < 0.04) {
         const t = ['pig', 'cow', 'sheep', 'chicken'][(Math.random() * 4) | 0];
-        for (let i = 0; i < 2 + Math.random() * 2; i++) this.entities.push(new Mob(this, t, x + 0.5 + Math.random(), y, z + 0.5 + Math.random()));
+        for (let i = 0; i < 2 + ((Math.random() * 2) | 0); i++) {
+          const m = new Mob(this, t, x + 0.5 + (Math.random() - 0.5), y, z + 0.5 + (Math.random() - 0.5));
+          if (!m.collides(m.box())) this.entities.push(m);
+        }
       }
     }
   }
@@ -1858,7 +1891,7 @@ class Game {
     }
     p.spawn = [hx, y + 1, hz];
     const t = this.dayTime();
-    if (t > 1000 && t < 12542 && this.weather < 0.8) { this.ui.actionBar = { text: '你只能在夜间或雷暴中入睡（已设置重生点）', t: performance.now() }; return; }
+    if (t > 1000 && t < 12542 && (this.thunder || 0) < 0.8) { this.ui.actionBar = { text: '你只能在夜间或雷暴中入睡（已设置重生点）', t: performance.now() }; return; }
     if (Math.hypot(p.pos[0] - hx - 0.5, p.pos[2] - hz - 0.5) > 3) { this.ui.actionBar = { text: '你离床太远了', t: performance.now() }; return; }
     const danger = this.entities.some(e => e instanceof Mob && e.T.hostile && e.deathTime === 0 && Math.abs(e.pos[0] - hx) < 8 && Math.abs(e.pos[1] - y) < 5 && Math.abs(e.pos[2] - hz) < 8);
     if (danger) { this.ui.actionBar = { text: '你现在不能休息，周围有怪物在游荡', t: performance.now(), color: '#FF5555' }; return; }
@@ -1875,7 +1908,7 @@ class Game {
     const wake = this.keys.ShiftLeft || this.keys.ShiftRight || p.hurtTime > 0;
     if (s.t >= 100) {
       this.worldTime = (Math.floor(this.worldTime / 24000) + 1) * 24000;
-      if (this.rainTarget) { this.rainTarget = 0; this.weather = 0; }
+      if (this.rainTarget || this.thunderTarget) { this.rainTarget = 0; this.weather = 0; this.thunderTarget = 0; this.thunder = 0; }
       this.ui.message('早上好！', '#FFFF55'); this.grant('sleep');
     }
     if (s.t >= 100 || wake) {
@@ -1895,17 +1928,17 @@ class Game {
        ['iron_pickaxe', 1, 1, 0.08], ['apple', 1, 3, 0.3], ['redstone', 2, 6, 0.25], ['emerald', 1, 2, 0.12], ['wheat_seeds', 2, 5, 0.3], ['iron_chestplate', 1, 1, 0.06], ['bow', 1, 1, 0.1], ['arrow', 4, 12, 0.25]],
       // 1: Desert Pyramid (Minecraft Wiki desert_pyramid table)
       [['bone', 4, 6, 0.7], ['rotten_flesh', 3, 7, 0.7], ['gunpowder', 2, 6, 0.6], ['sand', 2, 8, 0.55], ['string', 2, 6, 0.55],
-       ['gold_ingot', 2, 7, 0.45], ['iron_ingot', 1, 5, 0.4], ['emerald', 1, 3, 0.35], ['diamond', 1, 3, 0.25], ['golden_apple', 1, 1, 0.25],
+       ['gold_ingot', 2, 7, 0.45], ['iron_ingot', 1, 5, 0.4], ['emerald', 1, 3, 0.32], ['diamond', 1, 2, 0.12], ['golden_apple', 1, 1, 0.22],
        ['leather', 1, 5, 0.3], ['tnt', 1, 2, 0.2], ['book', 1, 2, 0.25]],
       // 2: Mineshaft (Minecraft Wiki mineshaft table)
       [['rail', 4, 8, 0.78], ['torch', 4, 16, 0.66], ['coal', 3, 8, 0.5], ['iron_ingot', 1, 5, 0.45], ['gold_ingot', 1, 3, 0.28],
        ['redstone', 4, 9, 0.35], ['lapis_lazuli', 4, 9, 0.35], ['bread', 1, 3, 0.45], ['golden_apple', 1, 1, 0.28],
-       ['iron_pickaxe', 1, 1, 0.22], ['diamond', 1, 2, 0.18], ['wheat_seeds', 2, 4, 0.35]],
+       ['iron_pickaxe', 1, 1, 0.22], ['diamond', 1, 2, 0.14], ['wheat_seeds', 2, 4, 0.35]],
       // 3: Village Blacksmith / House (Minecraft Wiki village_weaponsmith & house tables)
       [['bread', 1, 4, 0.65], ['apple', 1, 5, 0.55], ['iron_ingot', 1, 5, 0.6], ['gold_ingot', 1, 3, 0.3],
        ['iron_pickaxe', 1, 1, 0.35], ['iron_sword', 1, 1, 0.35], ['iron_helmet', 1, 1, 0.25], ['iron_chestplate', 1, 1, 0.25],
        ['iron_leggings', 1, 1, 0.25], ['iron_boots', 1, 1, 0.25], ['obsidian', 3, 7, 0.25], ['oak_sapling', 3, 7, 0.3],
-       ['emerald', 1, 4, 0.35], ['diamond', 1, 3, 0.22], ['baked_potato', 1, 4, 0.35], ['carrot', 1, 4, 0.35]],
+       ['emerald', 1, 4, 0.32], ['diamond', 1, 2, 0.10], ['potato', 1, 4, 0.45], ['baked_potato', 1, 3, 0.25], ['carrot', 1, 4, 0.45]],
       // 4: Nether Fortress (Minecraft Wiki nether_bridge table)
       [['diamond', 1, 3, 0.35], ['iron_ingot', 1, 5, 0.45], ['gold_ingot', 1, 3, 0.65], ['golden_sword', 1, 1, 0.35],
        ['flint_and_steel', 1, 1, 0.45], ['nether_wart', 3, 7, 0.55], ['obsidian', 2, 4, 0.3], ['golden_apple', 1, 1, 0.28],
@@ -1935,7 +1968,7 @@ class Game {
     const id = st.id;
     if (id === item('iron_ingot')) this.grant('iron');
     if (['cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken'].some(k => item(k) === id)) this.grant('cook');
-    if (be.xp) { this.addXp(Math.floor(be.xp + Math.random())); be.xp = 0; }
+    if (be.xp) { this.addXp(Math.max(1, Math.round(be.xp * 1.8 + Math.random()))); be.xp = 0; }
   }
   onCraft(id, count) {
     const k = ITEMS[id].key;
@@ -1954,11 +1987,17 @@ class Game {
     if (k.endsWith('_log')) this.grant('wood');
     if (k === 'diamond') this.grant('diamond');
     if (k === 'redstone') this.grant('redstone');
-    if (k === 'wheat') this.grant('farm');
+    if (k === 'wheat' || k === 'carrot' || k === 'potato') this.grant('farm');
   }
   onMobKilled(m, src) {
     if (src && (src.attacker === this.player || src.player)) {
-      if (m.T.hostile) { this.grant('kill'); this.addXp(5); } else this.addXp(1 + ((Math.random() * 3) | 0));
+      if (m.T.hostile || m.T.neutral) {
+        this.grant('kill');
+        const baseXp = (m.type === 'blaze' || m.type === 'wither_skeleton' || m.type === 'ghast') ? 12 : 8;
+        this.addXp(baseXp + ((Math.random() * 5) | 0));
+      } else {
+        this.addXp(2 + ((Math.random() * 4) | 0));
+      }
     }
   }
   onPlayerHurt(src) { this.hurtTilt = 1; }
@@ -2029,7 +2068,7 @@ class Game {
             const mult = 1 + Math.max(0, Math.floor(Math.random() * (fortune + 2)) - 1);
             return [k, n * mult];
           }
-          if (k === 'redstone' || k === 'wheat_seeds') {
+          if (k === 'redstone' || k === 'wheat_seeds' || (k === 'carrot' && id === 544 && (meta & 7) >= 7) || (k === 'potato' && id === 545 && (meta & 7) >= 7)) {
             return [k, n + Math.floor(Math.random() * (fortune + 1))];
           }
           if (k === 'melon_slice') {
@@ -2124,7 +2163,7 @@ class Game {
   selBoxes(x, y, z, id) {
     const b = BLOCKS[id], m = this.world.getMeta(x, y, z);
     if (b.shape === SH_BOXES || b.shape === SH_MODEL || b.shape === SH_WIRE) return b.boxes(m).map(a => a.map(v => v / 16));
-    if (b.shape === SH_CROSS || b.shape === SH_CROP) return [[0.15, 0, 0.15, 0.85, b.key === 'wheat' ? 0.25 + (m & 7) / 10 : 0.8, 0.85]];
+    if (b.shape === SH_CROSS || b.shape === SH_CROP) return [[0.15, 0, 0.15, 0.85, (b.key === 'wheat' || b.key === 'carrots' || b.key === 'potatoes') ? 0.25 + (m & 7) / 10 : 0.8, 0.85]];
     if (b.shape === SH_TORCH) {
       if (!m) return [[0.4, 0, 0.4, 0.6, 0.6, 0.6]];
       const D = DIRS[m === 6 ? 0 : (m & 7)]; const cx = 0.5 + D[0] * 0.35, cz = 0.5 + D[2] * 0.35;
@@ -2295,7 +2334,7 @@ class Game {
       if (!natural) {
         p.exhaust(0.005);
         if (held && ITEMS[held.id].durability && b.hardness > 0) this.damageHeld(1);
-        const xp = { coal_ore: [0, 2], deepslate_coal_ore: [0, 2], diamond_ore: [3, 7], deepslate_diamond_ore: [3, 7], redstone_ore: [1, 5], deepslate_redstone_ore: [1, 5], lapis_ore: [2, 5], emerald_ore: [3, 7], nether_quartz_ore: [2, 5], nether_gold_ore: [0, 1] }[b.key];
+        const xp = { coal_ore: [1, 3], deepslate_coal_ore: [1, 3], iron_ore: [1, 2], deepslate_iron_ore: [1, 2], gold_ore: [1, 3], deepslate_gold_ore: [1, 3], diamond_ore: [4, 8], deepslate_diamond_ore: [4, 8], redstone_ore: [2, 6], deepslate_redstone_ore: [2, 6], lapis_ore: [3, 6], emerald_ore: [4, 8], nether_quartz_ore: [3, 7], nether_gold_ore: [1, 3] }[b.key];
         if (xp && silk <= 0 && this.canHarvest(id, held)) this.addXp(xp[0] + Math.floor(Math.random() * (xp[1] - xp[0] + 1)));
         this.stats.mined++;
       }
@@ -2392,6 +2431,11 @@ class Game {
     p.food = Math.min(20, p.food + def.food[0]);
     p.saturation = Math.min(p.food, p.saturation + def.food[1]);
     if (def.heal) p.health = Math.min(20, p.health + def.heal);
+    if (def.effects && p.applyEffect) {
+      for (const ef of def.effects) {
+        p.applyEffect(ef.id, ef.duration, ef.amp || 0);
+      }
+    }
     if (def.key === 'rotten_flesh' && Math.random() < 0.8) p.food = Math.max(0, p.food - 1);
     Sound.burp(p.pos);
     if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
@@ -2460,7 +2504,8 @@ class Game {
         Sound.noise(e.pos, { freq: 3000, q: 3, dur: 0.15, vol: 0.4 });
         this.damageHeld(1); p.swingT = 6; return;
       }
-      if (e.T && e.T.food && held.id === item(e.T.food) && !e.loveT && !e.baby) {
+      const isBreedFood = e.T && e.T.food && (held.id === item(e.T.food) || (e.type === 'pig' && ITEM_KEY.potato && held.id === item('potato')));
+      if (isBreedFood && !e.loveT && !e.baby) {
         e.loveT = 600;
         for (let i = 0; i < 6; i++) this.particles.spawn('heart', e.pos[0] + (Math.random() - 0.5), e.pos[1] + e.h + Math.random() * 0.5, e.pos[2] + (Math.random() - 0.5), 0, 0.02, 0);
         if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
@@ -2592,8 +2637,9 @@ class Game {
       if (def.key.startsWith('iron')) this.grant('armor');
       return;
     }
-    // food & potions
-    if (def.food) { if (p.food < 20 || this.mode === 'creative' || def.key === 'golden_apple') { p.usingItem = held.id; p.useT = 0; } else tryOffhandShield(); return; }
+    // food & potions (if item also places a crop block like carrot/potato and player is clicking valid farmland, plant it first!)
+    const canPlantFoodCrop = !!(def.places && t && BID[def.places] && w.getBlock(t.pos[0] + DIRS[t.face][0], t.pos[1] + DIRS[t.face][1], t.pos[2] + DIRS[t.face][2]) === 0 && this.supported(t.pos[0] + DIRS[t.face][0], t.pos[1] + DIRS[t.face][1], t.pos[2] + DIRS[t.face][2], BID[def.places], 0));
+    if (def.food && !canPlantFoodCrop) { if (p.food < 20 || this.mode === 'creative' || def.alwaysEdible || def.key === 'golden_apple') { p.usingItem = held.id; p.useT = 0; } else tryOffhandShield(); return; }
     if (def.potion) { p.usingItem = held.id; p.useT = 0; return; }
     if (def.key === 'glass_bottle') {
       // Check if player is near an active DragonBreathCloud (vanilla Dragon's Breath collection)
@@ -2712,7 +2758,7 @@ class Game {
     }
     if (def.key === 'bone_meal') {
       let ok = false;
-      if (t.id === 64 && w.getMeta(x, y, z) < 7) { w.setMeta(x, y, z, Math.min(7, w.getMeta(x, y, z) + 2 + ((Math.random() * 3) | 0))); ok = true; }
+      if ((t.id === 64 || t.id === 544 || t.id === 545) && w.getMeta(x, y, z) < 7) { w.setMeta(x, y, z, Math.min(7, w.getMeta(x, y, z) + 2 + ((Math.random() * 3) | 0))); ok = true; }
       else if ((t.id >= 65 && t.id <= 67) || t.id === 521) { if (Math.random() < 0.45) this.growTree(x, y, z, t.id); ok = true; }
       else if (t.id === 522) {
         if ((w.getMeta(x, y, z) & 3) < 3) w.setMeta(x, y, z, w.getMeta(x, y, z) + 1);
@@ -2873,7 +2919,7 @@ class Game {
   pickBlock() {
     const t = this.target; if (!t) return;
     let id = t.id;
-    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 69: 'oak_door', 525: 'cherry_door', 38: 'sugar_cane', 63: 3, 119: 'redstone', 121: 120, 126: 125, 127: 'repeater', 156: 'repeater', 158: 80, 518: 516 };
+    const map = { 2: 2, 117: 20, 64: 'wheat_seeds', 544: 'carrot', 545: 'potato', 69: 'oak_door', 525: 'cherry_door', 38: 'sugar_cane', 63: 3, 119: 'redstone', 121: 120, 126: 125, 127: 'repeater', 156: 'repeater', 158: 80, 518: 516 };
     if (map[id] !== undefined) id = typeof map[id] === 'string' ? item(map[id]) : map[id];
     if (!ITEMS[id]) return;
     const inv = this.player.inv;
@@ -3025,7 +3071,7 @@ class Game {
     r.drawTranslucent(env);
     r.drawClouds(env, camPos[0], camPos[2]);
     if (this.state === 'play') {
-      this.drawWeather(env, a);
+      if (this.world.dimension === 'overworld') this.drawWeather(env, a);
       if (this.perspective === 0 && p.deathTime === 0) this.drawHand(a, env);
     }
     this.ui.draw();
@@ -3239,12 +3285,13 @@ class Game {
       M4.translate(am, 0, -9 / 16, -1 / 16);
       if (flat) {
         if (def.key === 'bow') {
-          // Vanilla bow.json thirdperson_righthand: wooden limb curves forward (-Z) away from arm, string at hand
-          M4.translate(am, 0, -1 / 16, -2 / 16);
-          M4.rotY(am, -Math.PI / 2);
-          M4.rotZ(am, -0.75);
-          M4.scale(am, 0.85, 0.85, 0.85);
-          M4.translate(am, -0.45, -0.45, 0);
+          // Vanilla bow.json thirdperson_righthand: palm rests against wooden bow stave (y=-0.66, z=0), bowstring faces inward toward elbow (y=-0.36)
+          M4.translate(am, 1 / 16, 3.2 / 16, 1 / 16);
+          M4.rotY(am, Math.PI / 2 + 0.25);
+          M4.rotX(am, -0.15);
+          M4.rotZ(am, 2.30);
+          M4.scale(am, 0.9, 0.9, 0.9);
+          M4.translate(am, -0.5, -0.5, 0);
         } else {
           M4.rotY(am, Math.PI / 2);
           if (def.tool || def.key === 'stick') { M4.scale(am, 0.8, 0.8, 0.8); M4.translate(am, -0.3, -0.3, 0); }
@@ -3519,12 +3566,12 @@ class Game {
       const sp = cold ? 0.02 : 0.12;
       const off = (t * sp + (hash3(x, 0, z, 3) * 4)) % 4;
       const u0 = hash3(x, 1, z, 3) * 4;
-      data.push([cx - nx, y0, cz - nz, u0, (y1 + off) / 4, cx + nx, y0, cz + nz, u0 + 0.25, (y1 + off) / 4, cx + nx, y1, cz + nz, u0 + 0.25, (y0 + off) / 4, cx - nx, y1, cz - nz, u0, (y0 + off) / 4, cold]);
+      data.push([cx - nx, y0, cz - nz, u0, (y0 + off) / 4, cx + nx, y0, cz + nz, u0 + 0.25, (y0 + off) / 4, cx + nx, y1, cz + nz, u0 + 0.25, (y1 + off) / 4, cx - nx, y1, cz - nz, u0, (y1 + off) / 4, cold]);
     }
     for (const cold of [false, true]) {
       const arr = [];
       for (const d of data) if (d[20] === cold) {
-        arr.push(d[0], d[1], d[2], d[3], cold ? d[4] * 0.3 : -d[4], d[5], d[6], d[7], d[8], cold ? d[9] * 0.3 : -d[9], d[10], d[11], d[12], d[13], cold ? d[14] * 0.3 : -d[14], d[15], d[16], d[17], d[18], cold ? d[19] * 0.3 : -d[19]);
+        arr.push(d[0], d[1], d[2], d[3], cold ? d[4] * 0.3 : d[4], d[5], d[6], d[7], d[8], cold ? d[9] * 0.3 : d[9], d[10], d[11], d[12], d[13], cold ? d[14] * 0.3 : d[14], d[15], d[16], d[17], d[18], cold ? d[19] * 0.3 : d[19]);
       }
       if (!arr.length) continue;
       if (!this.weatherVao) {
