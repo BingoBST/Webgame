@@ -1,13 +1,15 @@
 # OpusMC — Browser WebGL2 Minecraft Replica
 
-一个零依赖、无需构建、打开浏览器即可运行的单人 **Minecraft** WebGL2 复刻项目。全项目采用原生 JavaScript + WebGL2 + WebAudio 从零实现，贴图与 GUI 资源由 `tools/build_from_pack.py` 从 `Pixel Perfection Legacy 13.21.2.zip` 资源包自动构建生成（缺失部分自动回退至原版资源）。
+> **项目来源说明**：本项目由 **BingoBST** fork 自原作者 **X1aoZhe** 的开源仓库 [OpusMC](https://github.com/X1aoZhe/OpusMC)，并在此基础上进行了多项核心系统扩展、维度实装与材质包 100% 零原版合规化二次开发。
+
+一个零依赖、无需构建、打开浏览器即可运行的单人 **Minecraft** WebGL2 复刻项目。全项目采用原生 JavaScript + WebGL2 + WebAudio 从零实现。贴图与 GUI 资源由 `tools/build_from_pack.py` 从第三方开源材质包 `Pixel Perfection Legacy 25.4-75.1.zip` 自动化构建生成，已实现 **100% 零 Mojang 原版资产依赖**。
 
 ---
 
 ## 1. 快速开始
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/BingoBST/OpusMC.git
 cd OpusMC
 ```
 
@@ -20,7 +22,7 @@ cd OpusMC
 3. **重新生成材质包资产**（可选，需 Python 3 + Pillow）：
    ```bash
    pip install pillow
-   python3 tools/build_from_pack.py "/path/to/Pixel Perfection Legacy 13.21.2.zip"
+   python3 tools/build_from_pack.py "Pixel Perfection Legacy 25.4-75.1.zip"
    ```
 
 ---
@@ -117,5 +119,16 @@ OpusMC/
 
 ## 5. 开源许可与声明
 
-- 本仓库的**源代码**（`game/js/` 下除 `assets.js` 以外的源码、`game/index.html`、`tools/`）基于 [MIT License](LICENSE) 开源。
-- `game/js/assets.js` 中打包的贴图与 GUI 素材源自 `Pixel Perfection Legacy` 资源包及 Minecraft 官方素材，版权归原作者及 **Mojang Studios / Microsoft** 所有，仅供学习与技术演示使用。
+### 5.1 代码开源协议
+- 本项目源代码继承自原项目 [X1aoZhe/OpusMC](https://github.com/X1aoZhe/OpusMC)（原作者：**X1aoZhe**），遵循 [MIT License](LICENSE) 开源。
+- 二次开发、地狱/末地维度系统、自动化管线构建与模型修复由 **BingoBST** 完成。
+
+### 5.2 材质包美术资产署名（CC-BY-SA 4.0）
+- 本项目所使用的方块、物品、实体模型、粒子与 GUI 贴图资产 **100% 来源于第三方开源材质包 [Pixel Perfection Legacy](https://www.curseforge.com/minecraft/texture-packs/pixel-perfection-legacy)**，彻底避免侵权使用任何 Mojang Studios 官方受版权保护的原始资源。
+- **材质包原作者**：**XSSheep**
+- **材质包续写与维护者**：**Nova Wostra**
+- **授权协议**：知识共享 署名-相同方式共享 4.0 国际许可协议（[Creative Commons Attribution-ShareAlike 4.0 International, CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)）。
+- 本项目严格保留并声明原作者 XSSheep 与维护者 Nova Wostra 的 CC-BY-SA 署名与权利。
+
+### 5.3 商标声明
+- Minecraft 是 Mojang Synergies AB / Microsoft 的注册商标。本项目为 WebGL2 技术实验与非官方复刻项目，与 Mojang Studios 或 Microsoft 无关联。

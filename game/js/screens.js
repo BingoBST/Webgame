@@ -41,9 +41,19 @@ class TitleScreen extends MenuScreen {
     c.scale(s * 100 / (sw + 32) , s * 100 / (sw + 32));
     Font.center(c, this.splash, 0, -8, '#FFFF00');
     c.restore();
-    Font.draw(c, 'Minecraft JS 复刻 (使用 26.2 官方材质)', 2, ui.h - 10, '#FFFFFF');
-    const t = '非官方作品 · 仅供比赛展示';
-    Font.draw(c, t, ui.w - Font.width(t) - 2, ui.h - 10, '#FFFFFF');
+    Font.draw(c, 'Pixel Perfection Legacy 材质包', 2, ui.h - 10, '#FFFFFF');
+    const t = '原作者: X1aoZhe · fork 自 OpusMC';
+    const tw = Font.width(t);
+    const isHover = ui.mouse && ui.mouse.x >= ui.w - tw - 6 && ui.mouse.y >= ui.h - 14;
+    Font.draw(c, t, ui.w - tw - 2, ui.h - 10, isHover ? '#FFFF80' : '#FFFFFF');
+  }
+  mouseDown(ui, mx, my, button) {
+    super.mouseDown(ui, mx, my, button);
+    const t = '原作者: X1aoZhe · fork 自 OpusMC';
+    const tw = Font.width(t);
+    if (mx >= ui.w - tw - 6 && my >= ui.h - 14) {
+      window.open('https://github.com/X1aoZhe/OpusMC', '_blank');
+    }
   }
 }
 
@@ -297,6 +307,7 @@ const HELP_PAGES = [
   { title: '玩法机制', lines: ['• 平滑光照与环境光遮蔽，火把/荧石/熔岩发光', '• 真实的水与熔岩流动，水遇熔岩生成黑曜石/圆石', '• 沙子与沙砾会受重力下落', '• 完整红石核心套件：红石线(15格信号衰减与爬坡)、红石火把(非门反相)、中继器(4档延迟与信号放大)、拉杆/按钮/压力板/标靶，可驱动红石灯、TNT、门、活板门与音符盒',
   '• TNT 与苦力怕爆炸可以破坏地形并连锁引爆', '• 用锄头耕地、种小麦，骨粉催熟；树苗可以长成树', '• 用剪刀剪羊毛，用小麦/种子/胡萝卜引诱并繁殖动物', '• 熔炉冶炼矿石与烹饪食物；漏斗可自动拉取/推送容器与熔炉物品', '• 村庄生成农民/图书管理员/铁匠村民，右键打开绿宝石交易界面', '• 昼夜循环、月相、星空、云层、雨雪天气；床可跳过夜晚', '• 多种生物群系：平原、森林、桦木林、针叶林、', '  雪原、沙漠、山地、海洋、河流、沙滩', '• 世界自动保存，可在主菜单管理多个存档'] },
   { title: '命令 (按 T 或 /)', lines: ['/gamemode creative|survival|切换游戏模式', '/time set day|night|noon|<数值>|设置时间', '/weather clear|rain|设置天气', '/give <物品英文名> [数量]|给予物品，如 /give diamond 64', '/tp <x> <y> <z>|传送', '/summon <生物>|生成 pig cow sheep chicken zombie ...', '/kill|自杀', '/spawnpoint|设置重生点为当前位置', '/seed|显示世界种子', '/clear|清空物品栏', '/xp <数量>|获得经验', '/enchant <附魔名> [等级]|为手持物品或书附加附魔（如 sharpness 5）'] },
+  { title: '鸣谢与开源声明', lines: ['原项目仓库|github.com/X1aoZhe/OpusMC', '原项目作者|X1aoZhe (基于 MIT License)', '二次开发作者|BingoBST', '', '材质包名称|Pixel Perfection Legacy', '材质包原作者|XSSheep (CC-BY-SA 4.0)', '材质包维护者|Nova Wostra (CC-BY-SA 4.0)', '', '注：全项目资源已100%迁移至第三方开源材质包，', '未包含任何 Mojang 官方原始素材文件。'] },
 ];
 
 class ChatScreen extends MenuScreen {

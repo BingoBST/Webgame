@@ -476,7 +476,7 @@ class UI {
     const t = g.dayTime();
     const wk = g.worker ? (g.worker.isReady() ? `Worker (队列 ${g.worker.queue.length})` : `主线程回退`) : '关闭';
     const L = [
-      `Minecraft JS 复刻版 (26.2 官方材质)`,
+      `Minecraft JS (Pixel Perfection Legacy 材质包)`,
       `${g.fps} fps  区段: ${g.renderer.stats ? g.renderer.stats.sections : 0}  三角形: ${g.renderer.stats ? g.renderer.stats.tris : 0}  计算: ${wk}`,
       `区块: 已加载 ${g.world.chunks.size}  待生成 ${g.genQueueLen || 0}  实体: ${g.entities.length}  粒子: ${g.particles.list.length}`,
       ``,
