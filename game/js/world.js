@@ -48,13 +48,13 @@ class Chunk {
   }
 }
 
-const BIOMES = ['海洋', '沙滩', '平原', '森林', '桦木森林', '针叶林', '雪原', '沙漠', '山地', '河流', '雪山', '冻洋', '樱花树林'];
-const BI = { OCEAN: 0, BEACH: 1, PLAINS: 2, FOREST: 3, BIRCH: 4, TAIGA: 5, SNOWY: 6, DESERT: 7, MOUNTAIN: 8, RIVER: 9, SNOWPEAK: 10, FROZEN_OCEAN: 11, CHERRY_GROVE: 12 };
+const BIOMES = ['海洋', '沙滩', '平原', '森林', '桦木森林', '针叶林', '雪原', '沙漠', '山地', '河流', '雪山', '冻洋', '樱花树林', '下界荒地', '末地'];
+const BI = { OCEAN: 0, BEACH: 1, PLAINS: 2, FOREST: 3, BIRCH: 4, TAIGA: 5, SNOWY: 6, DESERT: 7, MOUNTAIN: 8, RIVER: 9, SNOWPEAK: 10, FROZEN_OCEAN: 11, CHERRY_GROVE: 12, NETHER_WASTES: 13, THE_END: 14 };
 
 class World {
-  constructor(seed) {
+  constructor(seed, dimension = 'overworld') {
     this.seed = seed | 0;
-    this.dimension = 'overworld';
+    this.dimension = dimension || 'overworld';
     this.chunks = new Map();
     this.nCont = new Noise(seed);
     this.nErosion = new Noise(seed + 1);
@@ -137,6 +137,15 @@ class World {
   skyAt(x, y, z) { return this.getLight(x, y, z) >> 4; }
   blockLightAt(x, y, z) { return this.getLight(x, y, z) & 15; }
   surfaceY(x, z) {
+    if (this.dimension === 'nether') {
+      for (let y = 114; y >= 31; y--) {
+        const b = this.getBlock(x, y, z);
+        if (b && b !== 6 && BLOCKS[b] && BLOCKS[b].solid && this.getBlock(x, y + 1, z) === 0 && this.getBlock(x, y + 2, z) === 0) {
+          return y;
+        }
+      }
+      return 64;
+    }
     for (let y = HEIGHT - 1; y > 0; y--) { const b = this.getBlock(x, y, z); if (b && BLOCKS[b].solid) return y; }
     return 0;
   }
@@ -206,7 +215,320 @@ class World {
     ch.recount();
     return ch;
   }
+  netherBiomeAt(x, z) {
+    return BI.NETHER_WASTES;
+  }
+
+  generateNether(cx, cz) {
+    const ch = new Chunk(cx, cz);
+    const B = ch.blocks, M = ch.meta;
+    const x0 = cx * 16, z0 = cz * 16;
+    const seed = this.seed;
+    const NETHER_TOP = 127, NETHER_SEA = 31;
+
+    for (let i = 0; i < 256; i++) {
+      ch.biome[i] = BI.NETHER_WASTES;
+      const ti = i * 3;
+      ch.grass[ti] = 191; ch.grass[ti + 1] = 183; ch.grass[ti + 2] = 85;
+      ch.foliage[ti] = 174; ch.foliage[ti + 1] = 164; ch.foliage[ti + 2] = 42;
+    }
+
+    // Coarse 3D grid (5x17x5: step 4 horizontally, step 8 vertically for Y=0..128)
+    const GX = 5, GY = 17, GZ = 5;
+    const gDensity = new Float32Array(GX * GY * GZ);
+    for (let ix = 0; ix < GX; ix++) {
+      for (let iz = 0; iz < GZ; iz++) {
+        const wx = x0 + ix * 4, wz = z0 + iz * 4;
+        const colN = this.nCont.n2(wx / 96, wz / 96);
+        for (let iy = 0; iy < GY; iy++) {
+          const wy = iy * 8;
+          const n1 = this.nCave1.n3(wx / 44, wy / 28, wz / 44);
+          const n2 = this.nCave2.n3(wx / 22, wy / 16, wz / 22) * 0.5;
+          const n3 = this.nCave3.n3(wx / 80, wy / 36, wz / 80) * 0.65;
+          let d = n1 + n2 + n3 + colN * 0.25;
+          // Strong solid floor envelope (Y <= 24) and ceiling envelope (Y >= 108)
+          if (wy <= 24) d += (24 - wy) / 14;
+          else if (wy >= 104) d += (wy - 104) / 12;
+          // Open main cavern strata around Y=36..58 and upper gallery Y=74..94, with mid-level bridges around Y=64
+          if (wy >= 34 && wy <= 58) d -= 0.42;
+          else if (wy >= 72 && wy <= 94) d -= 0.34;
+          gDensity[(ix * GZ + iz) * GY + iy] = d;
+        }
+      }
+    }
+
+    const sampleD = (x, y, z) => {
+      const fx = x / 4, fy = y / 8, fz = z / 4;
+      const ix = Math.min(fx | 0, GX - 2), iy = Math.min(fy | 0, GY - 2), iz = Math.min(fz | 0, GZ - 2);
+      const tx = fx - ix, ty = fy - iy, tz = fz - iz;
+      const i000 = (ix * GZ + iz) * GY + iy, i100 = ((ix + 1) * GZ + iz) * GY + iy;
+      const i010 = i000 + 1, i110 = i100 + 1, i001 = i000 + GY, i101 = i100 + GY, i011 = i001 + 1, i111 = i101 + 1;
+      const a = lerp(lerp(gDensity[i000], gDensity[i100], tx), lerp(gDensity[i001], gDensity[i101], tx), tz);
+      const b = lerp(lerp(gDensity[i010], gDensity[i110], tx), lerp(gDensity[i011], gDensity[i111], tx), tz);
+      return lerp(a, b, ty);
+    };
+
+    const rng = RNG(hashStr('nether:' + seed + ':' + cx + ':' + cz));
+
+    // 1. Base Bedrock floor/ceiling, Netherrack caverns & Lava sea (Y <= 31)
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        const wx = x0 + x, wz = z0 + z;
+        const soulVal = this.nSurf.n2(wx / 26, wz / 26);
+        const shelfVal = this.nTemp.n2(wx / 34, wz / 34);
+        for (let y = 0; y <= NETHER_TOP; y++) {
+          const i = (y << 8) | (z << 4) | x;
+          if (y === 0 || y === NETHER_TOP) {
+            B[i] = 6; // Bedrock
+            continue;
+          }
+          if (y <= 4 && hash3(wx, y, wz, seed + 11) < (5 - y) * 0.22) {
+            B[i] = 6;
+            continue;
+          }
+          if (y >= NETHER_TOP - 4 && hash3(wx, y, wz, seed + 23) < (y - (NETHER_TOP - 5)) * 0.22) {
+            B[i] = 6;
+            continue;
+          }
+          const d = sampleD(x, y, z);
+          if (d > 0) {
+            B[i] = 529; // netherrack
+          } else if (y <= NETHER_SEA) {
+            B[i] = LAVA; // lava sea
+          } else {
+            B[i] = AIR;
+          }
+        }
+
+        // 2. Soul Sand (530) & Gravel (10) beaches along lava sea (Y=29..36) & cavern ledges
+        for (let y = 29; y <= 76; y++) {
+          const i = (y << 8) | (z << 4) | x;
+          if (B[i] === 529 && B[i + 256] === AIR) {
+            if (y <= 36) {
+              if (soulVal > 0.04) {
+                B[i] = 530; // soul_sand
+                if (B[i - 256] === 529) B[i - 256] = 530;
+              } else if (soulVal < -0.32) {
+                B[i] = 10;  // gravel
+              }
+            } else if (shelfVal > 0.36) {
+              B[i] = 530; // higher cavern soul_sand patch
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Nether Ores: Nether Quartz Ore (531), Nether Gold Ore (532), Magma Block (103)
+    const netherVein = (oreId, count, ymin, ymax, size) => {
+      for (let n = 0; n < count; n++) {
+        let vx = rng() * 16, vy = ymin + rng() * (ymax - ymin), vz = rng() * 16;
+        const s = size * (0.65 + rng() * 0.55);
+        for (let k = 0; k < s; k++) {
+          const ix = vx | 0, iy = vy | 0, iz = vz | 0;
+          if (ix >= 0 && ix < 16 && iz >= 0 && iz < 16 && iy >= 5 && iy <= 122) {
+            const idx = (iy << 8) | (iz << 4) | ix;
+            if (B[idx] === 529) B[idx] = oreId;
+          }
+          vx += rng() * 2 - 1; vy += rng() * 2 - 1; vz += rng() * 2 - 1;
+        }
+      }
+    };
+    netherVein(531, 16, 10, 117, 9); // nether_quartz_ore
+    netherVein(532, 12, 10, 117, 8); // nether_gold_ore
+    netherVein(103, 5, 26, 36, 10);  // magma_block near lava sea
+
+    // 4. Hanging Glowstone (27) clusters under Netherrack ceilings
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const gx = 2 + rng.int(12), gz = 2 + rng.int(12);
+      let cy = -1;
+      const startY = 121 - rng.int(55);
+      for (let y = startY; y >= 42; y--) {
+        const i = (y << 8) | (gz << 4) | gx;
+        if (B[i] === AIR && B[i + 256] === 529) { cy = y; break; }
+      }
+      if (cy > 0) {
+        B[(cy << 8) | (gz << 4) | gx] = 27;
+        for (let k = 0; k < 24; k++) {
+          const ox = gx + rng.int(3) - 1, oy = cy - rng.int(4), oz = gz + rng.int(3) - 1;
+          if (ox < 1 || ox > 14 || oz < 1 || oz > 14 || oy < 35) continue;
+          const idx = (oy << 8) | (oz << 4) | ox;
+          if (B[idx] !== AIR) continue;
+          // Must touch an existing glowstone or ceiling netherrack
+          if (B[idx + 256] === 27 || B[idx + 256] === 529 || B[idx - 1] === 27 || B[idx + 1] === 27 || B[idx - 16] === 27 || B[idx + 16] === 27) {
+            B[idx] = 27;
+          }
+        }
+      }
+    }
+
+    // 5. Scattered eternal Fire (537) & Mushrooms (70/71) on Netherrack floors
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const fx = 1 + rng.int(14), fz = 1 + rng.int(14);
+      const fy = 33 + rng.int(75);
+      const idx = (fy << 8) | (fz << 4) | fx;
+      if (B[idx] === AIR && B[idx - 256] === 529) {
+        B[idx] = rng() < 0.78 ? 537 : (rng() < 0.5 ? 70 : 71);
+      }
+    }
+
+    // 6. Stamp Nether Fortress structure if present in region
+    if (typeof Structures !== 'undefined') Structures.applyToChunk(this, ch);
+    ch.recount();
+    return ch;
+  }
+
+  getEndPillars() {
+    if (this._endPillars) return this._endPillars;
+    const pillars = [];
+    const ringR = 32;
+    for (let k = 0; k < 8; k++) {
+      const ang = (k / 8) * Math.PI * 2;
+      const px = Math.round(Math.cos(ang) * ringR);
+      const pz = Math.round(Math.sin(ang) * ringR);
+      const topY = 72 + (k % 4) * 4 + (k >= 4 ? 2 : 0); // 72..86
+      const rad = (k % 3 === 0) ? 3 : 2;
+      const caged = (k === 1 || k === 5); // 2 pillars have iron_bars protective cages per Minecraft Wiki
+      pillars.push({ idx: k, x: px, z: pz, topY, rad, caged, crystalPos: [px + 0.5, topY + 1, pz + 0.5] });
+    }
+    this._endPillars = pillars;
+    return pillars;
+  }
+
+  generateEnd(cx, cz) {
+    const ch = new Chunk(cx, cz);
+    const B = ch.blocks, M = ch.meta;
+    const x0 = cx * 16, z0 = cz * 16;
+
+    for (let i = 0; i < 256; i++) {
+      ch.biome[i] = BI.THE_END;
+      const ti = i * 3;
+      ch.grass[ti] = 142; ch.grass[ti + 1] = 185; ch.grass[ti + 2] = 113;
+      ch.foliage[ti] = 114; ch.foliage[ti + 1] = 167; ch.foliage[ti + 2] = 85;
+    }
+
+    const END_STONE = 540;
+    const OBSIDIAN = 28;
+    const BEDROCK = 6;
+    const IBARS = 542;
+    const TORCH = 21;
+
+    // 1. Floating Central End Island (radius ~50 around (0, 0), chunks -4..4)
+    if (Math.abs(cx) <= 4 && Math.abs(cz) <= 4) {
+      for (let z = 0; z < 16; z++) {
+        for (let x = 0; x < 16; x++) {
+          const wx = x0 + x, wz = z0 + z;
+          const r = Math.hypot(wx, wz);
+          const edgeR = 48 + this.nCont.n2(wx / 20, wz / 20) * 5.5 + this.nSurf.n2(wx / 8, wz / 8) * 2.0;
+          if (r <= edgeR) {
+            const plateau = clamp((r - 10) / 36, 0, 1);
+            const topY = 58 + Math.round(this.nHills.n2(wx / 26, wz / 26) * 3 * plateau);
+            const frac = clamp(r / Math.max(1, edgeR), 0, 1);
+            const botY = Math.max(16, Math.round(22 + Math.pow(frac, 1.65) * 34 + Math.abs(this.nErosion.n2(wx / 14, wz / 14)) * 5));
+            for (let y = botY; y <= topY; y++) {
+              B[(y << 8) | (z << 4) | x] = END_STONE;
+            }
+          }
+        }
+      }
+    }
+
+    // 2. 5x5 Obsidian Spawn Platform at (42, 49, 0) -> wx in 40..44, wz in -2..2
+    for (let wz = -2; wz <= 2; wz++) {
+      for (let wx = 40; wx <= 44; wx++) {
+        const lx = wx - x0, lz = wz - z0;
+        if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
+        B[(49 << 8) | (lz << 4) | lx] = OBSIDIAN;
+        for (let y = 50; y <= 54; y++) {
+          B[(y << 8) | (lz << 4) | lx] = AIR;
+          M[(y << 8) | (lz << 4) | lx] = 0;
+        }
+      }
+    }
+
+    // 3. 8 Obsidian Pillars (End Spikes) + Bedrock Caps + Iron Bar Cages on 2 Pillars
+    const pillars = this.getEndPillars();
+    for (const p of pillars) {
+      if (x0 + 15 < p.x - p.rad - 2 || x0 > p.x + p.rad + 2 || z0 + 15 < p.z - p.rad - 2 || z0 > p.z + p.rad + 2) continue;
+      for (let dz = -p.rad - 1; dz <= p.rad + 1; dz++) {
+        for (let dx = -p.rad - 1; dx <= p.rad + 1; dx++) {
+          const wx = p.x + dx, wz = p.z + dz;
+          const lx = wx - x0, lz = wz - z0;
+          if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
+          const d2 = dx * dx + dz * dz;
+          if (d2 <= p.rad * p.rad + 0.5) {
+            for (let y = 42; y <= p.topY; y++) {
+              B[(y << 8) | (lz << 4) | lx] = OBSIDIAN;
+              M[(y << 8) | (lz << 4) | lx] = 0;
+            }
+          }
+          // Iron bars cage around top of caged pillars (dx, dz in -2..2, dy in 1..4 above topY)
+          if (p.caged && Math.abs(dx) <= 2 && Math.abs(dz) <= 2) {
+            const onCageWall = Math.abs(dx) === 2 || Math.abs(dz) === 2;
+            for (let dy = 1; dy <= 4; dy++) {
+              const cy = p.topY + dy;
+              const idx = (cy << 8) | (lz << 4) | lx;
+              if (dy === 4 || onCageWall) {
+                B[idx] = IBARS;
+                M[idx] = 0;
+              } else {
+                B[idx] = AIR;
+                M[idx] = 0;
+              }
+            }
+          }
+        }
+      }
+      // Bedrock block at the center of the pillar top
+      const clx = p.x - x0, clz = p.z - z0;
+      if (clx >= 0 && clx <= 15 && clz >= 0 && clz <= 15) {
+        B[(p.topY << 8) | (clz << 4) | clx] = BEDROCK;
+      }
+    }
+
+    // 4. Central Unlit Bedrock Exit Portal Fountain at (0, 58, 0)
+    if (x0 <= 3 && x0 + 15 >= -3 && z0 <= 3 && z0 + 15 >= -3) {
+      for (let dz = -3; dz <= 3; dz++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          const lx = dx - x0, lz = dz - z0;
+          if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
+          const ax = Math.abs(dx), az = Math.abs(dz);
+          if (ax === 3 && az === 3) continue; // octagonal rim
+          // Clear space above fountain
+          for (let y = 59; y <= 66; y++) {
+            B[(y << 8) | (lz << 4) | lx] = AIR;
+            M[(y << 8) | (lz << 4) | lx] = 0;
+          }
+          const onRim = ax === 3 || az === 3 || (ax === 2 && az === 2);
+          // Bedrock floor at y = 58
+          B[(58 << 8) | (lz << 4) | lx] = BEDROCK;
+          if (onRim) {
+            B[(59 << 8) | (lz << 4) | lx] = BEDROCK;
+          } else if (dx === 0 && dz === 0) {
+            // Central Bedrock Pillar (y = 59..62)
+            for (let y = 59; y <= 62; y++) {
+              B[(y << 8) | (lz << 4) | lx] = BEDROCK;
+            }
+          }
+        }
+      }
+      // 4 Wall Torches mounted on the central bedrock pillar at y = 61
+      for (const [tx, tz, tMeta] of [[-1, 0, 1], [1, 0, 6], [0, -1, 5], [0, 1, 4]]) {
+        const lx = tx - x0, lz = tz - z0;
+        if (lx >= 0 && lx <= 15 && lz >= 0 && lz <= 15) {
+          B[(61 << 8) | (lz << 4) | lx] = TORCH;
+          M[(61 << 8) | (lz << 4) | lx] = tMeta;
+        }
+      }
+    }
+
+    ch.recount();
+    return ch;
+  }
+
   generate(cx, cz) {
+    if (this.dimension === 'end') return this.generateEnd(cx, cz);
+    if (this.dimension === 'nether') return this.generateNether(cx, cz);
     if (this.flat) return this.generateFlat(cx, cz);
     const ch = new Chunk(cx, cz);
     const B = ch.blocks, M = ch.meta;
@@ -533,59 +855,153 @@ class World {
   }
 
   // ---- lighting -------------------------------------------------------------
+  propagateLocal(ch, q, shift) {
+    const sky = shift === 4;
+    const B = ch.blocks, L = ch.light;
+    let head = 0;
+    while (head < q.length) {
+      const idx = q[head++];
+      const l = (L[idx] >> shift) & 15;
+      if (l <= 1) continue;
+      const x = idx & 15, z = (idx >> 4) & 15, y = idx >> 8;
+      if (x > 0) {
+        const ni = idx - 1, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+      if (x < 15) {
+        const ni = idx + 1, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+      if (y > 0) {
+        const ni = idx - 256, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = (sky && l === 15 && op === 0) ? 15 : l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+      if (y < HEIGHT - 1) {
+        const ni = idx + 256, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+      if (z > 0) {
+        const ni = idx - 16, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+      if (z < 15) {
+        const ni = idx + 16, op = OPACITY[B[ni]];
+        if (op < 15) {
+          const nl = l - Math.max(1, op);
+          if (nl > ((L[ni] >> shift) & 15)) { L[ni] = sky ? ((L[ni] & 0x0F) | (nl << 4)) : ((L[ni] & 0xF0) | nl); if (nl > 1) q.push(ni); }
+        }
+      }
+    }
+    q.length = 0;
+  }
+
   initLight(ch) {
     const B = ch.blocks, L = ch.light;
     L.fill(0);
+    ch.lit = true;
     const heights = new Int16Array(256);
-    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
-      let l = 15, top = 0;
-      for (let y = HEIGHT - 1; y >= 0; y--) {
-        const i = (y << 8) | (z << 4) | x, op = OPACITY[B[i]];
-        if (op >= 15) l = 0; else if (op > 0 || l < 15) l = Math.max(0, l - Math.max(1, op));
-        if (l === 15) top = y;
-        L[i] = l << 4;
-        if (l === 0) break;
-      }
-      heights[z * 16 + x] = top;
-    }
-    ch.heights = heights;
     const q = this.lightQ; q.length = 0;
     const x0 = ch.cx * 16, z0 = ch.cz * 16;
-    // horizontal sky seeds
-    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
-      const h = heights[z * 16 + x];
-      let mx = h;
-      if (x > 0) mx = Math.max(mx, heights[z * 16 + x - 1]); if (x < 15) mx = Math.max(mx, heights[z * 16 + x + 1]);
-      if (z > 0) mx = Math.max(mx, heights[z * 16 + x - 16]); if (z < 15) mx = Math.max(mx, heights[z * 16 + x + 16]);
-      for (let y = h; y <= mx && y < HEIGHT; y++) if ((L[(y << 8) | (z << 4) | x] >> 4) > 1) q.push(x0 + x, y, z0 + z);
+    let maxSy = -1;
+    for (let sy = SECTIONS - 1; sy >= 0; sy--) {
+      if (ch.sectionCount[sy] > 0) { maxSy = sy; break; }
     }
-    this.propagate(q, 4);
-    // block light
+    const maxY = maxSy >= 0 ? Math.min(HEIGHT - 1, (maxSy + 1) * 16 - 1) : 0;
+    ch.maxY = maxY;
+    if (this.dimension === 'nether' || this.dimension === 'end') {
+      // Nether (level 7) and The End (level 10) provide constant ambient visibility in non-opaque space
+      const amb = (this.dimension === 'end' ? 10 : 7) << 4;
+      for (let i = 0; i < B.length; i++) {
+        if (OPACITY[B[i]] < 15) L[i] = amb;
+      }
+      ch.heights = heights;
+    } else {
+      if (maxY < HEIGHT - 1) {
+        L.fill(0xF0, (maxY + 1) << 8);
+      }
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+        let l = 15, top = maxY + 1;
+        for (let y = maxY; y >= 0; y--) {
+          const i = (y << 8) | (z << 4) | x, op = OPACITY[B[i]];
+          if (op >= 15) l = 0; else if (op > 0 || l < 15) l = Math.max(0, l - Math.max(1, op));
+          if (l === 15) top = y;
+          L[i] = l << 4;
+          if (l === 0) break;
+        }
+        heights[z * 16 + x] = top;
+      }
+      ch.heights = heights;
+      // horizontal sky seeds within chunk
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+        const h = heights[z * 16 + x];
+        let mx = h;
+        if (x > 0) mx = Math.max(mx, heights[z * 16 + x - 1]); if (x < 15) mx = Math.max(mx, heights[z * 16 + x + 1]);
+        if (z > 0) mx = Math.max(mx, heights[z * 16 + x - 16]); if (z < 15) mx = Math.max(mx, heights[z * 16 + x + 16]);
+        for (let y = h; y <= mx && y < HEIGHT; y++) {
+          const idx = (y << 8) | (z << 4) | x;
+          if ((L[idx] >> 4) > 1) q.push(idx);
+        }
+      }
+      this.propagateLocal(ch, q, 4);
+    }
+    // block light (only scan non-empty sections, skipping completely occluded interior emitters)
     q.length = 0;
-    for (let i = 0; i < B.length; i++) {
-      const e = EMIT[B[i]];
-      if (e) { L[i] = (L[i] & 0xF0) | e; q.push(x0 + (i & 15), i >> 8, z0 + ((i >> 4) & 15)); }
+    for (let sy = 0; sy <= maxSy; sy++) {
+      if (!ch.sectionCount[sy]) continue;
+      const i0 = sy << 12, i1 = i0 + 4096;
+      for (let i = i0; i < i1; i++) {
+        const e = EMIT[B[i]];
+        if (e) {
+          L[i] = (L[i] & 0xF0) | e;
+          const x = i & 15, z = (i >> 4) & 15, y = i >> 8;
+          if (x > 0 && x < 15 && z > 0 && z < 15 && y > 0 && y < HEIGHT - 1) {
+            const b0 = B[i - 1], b1 = B[i + 1], b2 = B[i - 16], b3 = B[i + 16], b4 = B[i - 256], b5 = B[i + 256];
+            if ((OPACITY[b0] >= 15 || EMIT[b0] >= e) && (OPACITY[b1] >= 15 || EMIT[b1] >= e) &&
+                (OPACITY[b2] >= 15 || EMIT[b2] >= e) && (OPACITY[b3] >= 15 || EMIT[b3] >= e) &&
+                (OPACITY[b4] >= 15 || EMIT[b4] >= e) && (OPACITY[b5] >= 15 || EMIT[b5] >= e)) continue;
+          }
+          q.push(i);
+        }
+      }
     }
-    this.propagate(q, 0);
-    // exchange with neighbours
+    this.propagateLocal(ch, q, 0);
+    // exchange with already-lit neighbours only along border cells where light gradient > 1
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const n = this.getChunk(ch.cx + dx, ch.cz + dz);
-      if (!n) continue;
+      if (!n || !n.lit) continue;
       const qs = [], qb = [];
-      for (let y = 0; y < HEIGHT; y++) for (let k = 0; k < 16; k++) {
+      const topLimit = Math.min(HEIGHT, Math.max(maxY, n.maxY !== undefined ? n.maxY : HEIGHT) + 16);
+      for (let y = 0; y < topLimit; y++) for (let k = 0; k < 16; k++) {
         let ax, az, bx, bz; // a in ch, b in n (local)
         if (dx === 1) { ax = 15; az = k; bx = 0; bz = k; } else if (dx === -1) { ax = 0; az = k; bx = 15; bz = k; }
         else if (dz === 1) { ax = k; az = 15; bx = k; bz = 0; } else { ax = k; az = 0; bx = k; bz = 15; }
-        const la = ch.light[(y << 8) | (az << 4) | ax], lb = n.light[(y << 8) | (bz << 4) | bx];
-        if ((la >> 4) > 1) qs.push(x0 + ax, y, z0 + az);
-        if ((lb >> 4) > 1) qs.push(n.cx * 16 + bx, y, n.cz * 16 + bz);
-        if ((la & 15) > 1) qb.push(x0 + ax, y, z0 + az);
-        if ((lb & 15) > 1) qb.push(n.cx * 16 + bx, y, n.cz * 16 + bz);
+        const ia = (y << 8) | (az << 4) | ax, ib = (y << 8) | (bz << 4) | bx;
+        const la = ch.light[ia], lb = n.light[ib];
+        const sa = la >> 4, sb = lb >> 4;
+        if (sa > sb + 1 && OPACITY[n.blocks[ib]] < 15) qs.push(x0 + ax, y, z0 + az);
+        else if (sb > sa + 1 && OPACITY[B[ia]] < 15) qs.push(n.cx * 16 + bx, y, n.cz * 16 + bz);
+        const ba = la & 15, bb = lb & 15;
+        if (ba > bb + 1 && OPACITY[n.blocks[ib]] < 15) qb.push(x0 + ax, y, z0 + az);
+        else if (bb > ba + 1 && OPACITY[B[ia]] < 15) qb.push(n.cx * 16 + bx, y, n.cz * 16 + bz);
       }
-      this.propagate(qs, 4);
-      this.propagate(qb, 0);
+      if (qs.length) this.propagate(qs, 4);
+      if (qb.length) this.propagate(qb, 0);
     }
-    ch.lit = true;
   }
 
   markLight(ch, lx, y, lz) {
@@ -610,7 +1026,7 @@ class World {
       const x = q[head++], y = q[head++], z = q[head++];
       const cx = x >> 4, cz = z >> 4;
       if (!cache || cx !== ccx || cz !== ccz) { cache = this.chunks.get(ckey(cx, cz)); ccx = cx; ccz = cz; }
-      if (!cache) continue;
+      if (!cache || !cache.lit) continue;
       const l = (cache.light[(y << 8) | ((z & 15) << 4) | (x & 15)] >> shift) & 15;
       if (l <= 1) continue;
       for (let d = 0; d < 6; d++) {
@@ -618,7 +1034,7 @@ class World {
         const nx = x + D[0], ny = y + D[1], nz = z + D[2];
         if (ny < 0 || ny >= HEIGHT) continue;
         const nc = (nx >> 4 === cx && nz >> 4 === cz) ? cache : this.chunks.get(ckey(nx >> 4, nz >> 4));
-        if (!nc) continue;
+        if (!nc || !nc.lit) continue;
         const i = (ny << 8) | ((nz & 15) << 4) | (nx & 15);
         const op = OPACITY[nc.blocks[i]];
         if (op >= 15) continue;
@@ -627,7 +1043,7 @@ class World {
         if (nl > cur) {
           nc.light[i] = sky ? ((nc.light[i] & 0x0F) | (nl << 4)) : ((nc.light[i] & 0xF0) | nl);
           this.markLight(nc, nx & 15, ny, nz & 15);
-          q.push(nx, ny, nz);
+          if (nl > 1) q.push(nx, ny, nz);
         }
       }
     }

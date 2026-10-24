@@ -8,11 +8,15 @@ const Structures = {
   _pyramidCache: new Map(),
   _mineshaftCache: new Map(),
   _villageCache: new Map(),
+  _fortressCache: new Map(),
+  _strongholdCache: new Map(),
 
   clearCaches() {
     this._pyramidCache.clear();
     this._mineshaftCache.clear();
     this._villageCache.clear();
+    this._fortressCache.clear();
+    this._strongholdCache.clear();
   },
 
   // Helper: bounded chunk-local block setter
@@ -959,6 +963,361 @@ const Structures = {
   },
 
   // =========================================================================
+  // 4. NETHER FORTRESS (下界要塞) — Bridges, Pillars, Wart Staircase & Blaze Spawner
+  // =========================================================================
+  netherFortressInRegion(world, rx, rz) {
+    const key = `${ world.seed }:nether:${ rx }:${ rz }`;
+    if (this._fortressCache.has(key)) return this._fortressCache.get(key);
+    const r = RNG(hashStr('fortress_reg:' + key));
+    const REG = 12; // 12x12 chunks per Nether region
+    let found = null;
+    if (rx === 0 && rz === 0) {
+      // Guarantee a Nether Fortress near origin (cx=2, cz=2 -> wx=40, wz=40)
+      found = { wx: 40, wy: 50, wz: 40, cx: 2, cz: 2, seed: r.int(1 << 30) };
+    } else if (r() < 0.65) {
+      const cx = rx * REG + 3 + r.int(REG - 6);
+      const cz = rz * REG + 3 + r.int(REG - 6);
+      const wx = cx * 16 + 8, wz = cz * 16 + 8;
+      found = { wx, wy: 48 + r.int(7), wz, cx, cz, seed: r.int(1 << 30) };
+    }
+    if (this._fortressCache.size > 1000) this._fortressCache.clear();
+    this._fortressCache.set(key, found);
+    return found;
+  },
+
+  isInsideNetherFortress(wx, wy, wz, world) {
+    if (!world || world.dimension !== 'nether') return false;
+    const cx = wx >> 4, cz = wz >> 4;
+    const rx0 = Math.floor((cx - 4) / 12), rx1 = Math.floor((cx + 4) / 12);
+    const rz0 = Math.floor((cz - 4) / 12), rz1 = Math.floor((cz + 4) / 12);
+    for (let rz = rz0; rz <= rz1; rz++) {
+      for (let rx = rx0; rx <= rx1; rx++) {
+        const f = this.netherFortressInRegion(world, rx, rz);
+        if (!f) continue;
+        const ax = Math.abs(wx - f.wx), az = Math.abs(wz - f.wz);
+        if (wy >= f.wy - 6 && wy <= f.wy + 14 && ((ax <= 9 && az <= 9) || (ax <= 5 && az <= 46) || (az <= 5 && ax <= 46))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  },
+
+  buildNetherFortress(world, ch, f) {
+    const { wx: fx, wy, wz: fz } = f;
+    const { x0, z0, set, fillDown } = this.makeSetter(ch);
+    // Quick AABB reject against [fx-46..fx+46, fz-46..fz+46]
+    if (x0 + 15 < fx - 46 || x0 > fx + 46 || z0 + 15 < fz - 46 || z0 > fz + 46) return;
+    ch.hasSurfaceStructure = true;
+
+    const NBRICK = 533;   // nether_bricks
+    const NFENCE = 534;   // nether_brick_fence
+    const NSTAIRS = 535;  // nether_brick_stairs
+    const SOUL_SAND = 530;
+    const WART = 536;     // nether_wart_crop
+    const SPAWNER = 182;  // meta = 1 -> Blaze Spawner
+    const CHEST = 52;
+    const FORT_LOOT = 8 | (4 << 4); // lootType 4 = Nether Fortress
+
+    // 1. Central Keep & Nether Wart Staircase Hall (fx-7..fx+7, fz-7..fz+7)
+    if (!(x0 + 15 < fx - 7 || x0 > fx + 7 || z0 + 15 < fz - 7 || z0 > fz + 7)) {
+      for (let dz = -7; dz <= 7; dz++) {
+        for (let dx = -7; dx <= 7; dx++) {
+          const X = fx + dx, Z = fz + dz;
+          const ax = Math.abs(dx), az = Math.abs(dz);
+          // 4 massive 3x3 corner support pillars extending down into lava sea / floor
+          if (ax >= 5 && az >= 5) {
+            fillDown(X, wy - 1, Z, NBRICK, 0);
+          }
+          // Solid floor & roof
+          set(X, wy, Z, NBRICK, 0, true);
+          set(X, wy + 7, Z, NBRICK, 0, true);
+          for (let dy = 1; dy <= 6; dy++) {
+            const onWall = ax === 7 || az === 7;
+            const isDoorway = (ax <= 1 && az === 7 && dy <= 4) || (az <= 1 && ax === 7 && dy <= 4);
+            const isWindow = onWall && !isDoorway && (dy === 3 || dy === 4) && ((ax === 7 && (az === 3 || az === 4)) || (az === 7 && (ax === 3 || ax === 4)));
+            if (onWall && !isDoorway) {
+              set(X, wy + dy, Z, isWindow ? NFENCE : NBRICK, 0, true);
+            } else {
+              set(X, wy + dy, Z, AIR, 0, true);
+            }
+          }
+          // Roof battlements
+          if ((ax === 7 || az === 7) && ((dx + dz) & 1) === 0) {
+            set(X, wy + 8, Z, NFENCE, 0, true);
+          }
+        }
+      }
+      // Soul Sand & Nether Wart Gardens flanking central staircase (dx in -5..-3 and 3..5, dz in -4..2)
+      for (const side of [-1, 1]) {
+        for (let dz = -4; dz <= 2; dz++) {
+          for (let w = 3; w <= 5; w++) {
+            const X = fx + side * w, Z = fz + dz;
+            set(X, wy + 1, Z, SOUL_SAND, 0, true);
+            const stage = (Math.abs(w + dz) % 4); // stages 0..3 (3 = mature)
+            set(X, wy + 2, Z, WART, stage, true);
+          }
+          // Staircase rim holding the soul sand bed (high back side against soul sand: meta 1 for West, meta 0 for East)
+          set(fx + side * 2, wy + 1, fz + dz, NSTAIRS, side < 0 ? 1 : 0, true);
+        }
+      }
+      // Central Nether Brick Staircase ascending North (dz = 2..-1) to a raised balcony (dz = -5..-2, dy = 4)
+      for (let s = 0; s < 4; s++) {
+        const sz = fz + 2 - s, sy = wy + 1 + s;
+        for (let dx = -1; dx <= 1; dx++) {
+          set(fx + dx, sy, sz, NSTAIRS, 3, true); // ascending toward -Z (North = meta 3)
+          for (let fillY = wy + 1; fillY < sy; fillY++) set(fx + dx, fillY, sz, NBRICK, 0, true);
+        }
+      }
+      for (let dz = -5; dz <= -2; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          set(fx + dx, wy + 4, fz + dz, NBRICK, 0, true);
+        }
+      }
+      // 2 Fortress Loot Chests inside the Keep alcoves
+      set(fx - 6, wy + 1, fz + 5, CHEST, 1 | FORT_LOOT, true);
+      set(fx + 6, wy + 1, fz + 5, CHEST, 0 | FORT_LOOT, true);
+    }
+
+    // 2. Four Cardinal Bridges & Corridors (len = 30 blocks from offset 8..37)
+    const DIRS4 = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N, E, S, W
+    for (let dir = 0; dir < 4; dir++) {
+      const [dx, dz] = DIRS4[dir];
+      const px = -dz, pz = dx;
+      const enclosed = (dir === 1 || dir === 3); // East & West arms have roofed corridor sections
+      for (let step = 8; step <= 37; step++) {
+        const cx = fx + dx * step, cz = fz + dz * step;
+        if (cx + 3 < x0 || cx - 3 > x0 + 15 || cz + 3 < z0 || cz - 3 > z0 + 15) continue;
+        const isPier = (step === 14 || step === 24 || step === 34);
+        const isRoofed = enclosed && step <= 22;
+
+        for (let w = -2; w <= 2; w++) {
+          const X = cx + px * w, Z = cz + pz * w;
+          // Deck & under-arch
+          set(X, wy, Z, NBRICK, 0, true);
+          if (Math.abs(w) <= 1 || isPier) set(X, wy - 1, Z, NBRICK, 0, true);
+          if (isPier && Math.abs(w) <= 1) {
+            fillDown(X, wy - 2, Z, NBRICK, 0);
+          }
+          // Clear walkway air
+          for (let dy = 1; dy <= 5; dy++) set(X, wy + dy, Z, AIR, 0, true);
+
+          // Side walls / parapets
+          if (Math.abs(w) === 2) {
+            if (isRoofed) {
+              for (let dy = 1; dy <= 4; dy++) {
+                const win = (dy === 2 || dy === 3) && (step % 3 === 0);
+                set(X, wy + dy, Z, win ? NFENCE : NBRICK, 0, true);
+              }
+            } else {
+              set(X, wy + 1, Z, NBRICK, 0, true);
+              if (step % 2 === 0 || isPier) set(X, wy + 2, Z, NFENCE, 0, true);
+            }
+          }
+          if (isRoofed) {
+            set(X, wy + 5, Z, NBRICK, 0, true);
+          }
+        }
+        // Corridor loot chest at step 18 on enclosed arms
+        if (isRoofed && step === 18) {
+          set(cx + px, wy + 1, cz + pz, CHEST, (dir === 1 ? 4 : 5) | FORT_LOOT, true);
+        }
+      }
+
+      // 3. Blaze Spawner Platforms at the end of North (dir=0) and East (dir=1) bridges (step = 41)
+      if (dir === 0 || dir === 1) {
+        const sx = fx + dx * 41, sz = fz + dz * 41;
+        if (!(x0 + 15 < sx - 4 || x0 > sx + 4 || z0 + 15 < sz - 4 || z0 > sz + 4)) {
+          for (let oz = -4; oz <= 4; oz++) {
+            for (let ox = -4; ox <= 4; ox++) {
+              const X = sx + ox, Z = sz + oz;
+              set(X, wy, Z, NBRICK, 0, true);
+              set(X, wy + 1, Z, NBRICK, 0, true);
+              if (Math.abs(ox) >= 3 && Math.abs(oz) >= 3) {
+                fillDown(X, wy - 1, Z, NBRICK, 0);
+              }
+              for (let dy = 2; dy <= 6; dy++) set(X, wy + dy, Z, AIR, 0, true);
+              const edge = Math.abs(ox) === 4 || Math.abs(oz) === 4;
+              const entrance = (ox * (-dx) + oz * (-dz)) === 4 && Math.abs(ox * px + oz * pz) <= 1;
+              if (edge && !entrance) {
+                set(X, wy + 2, Z, NFENCE, 0, true);
+                if ((ox + oz) % 2 === 0) set(X, wy + 3, Z, NFENCE, 0, true);
+              } else if (entrance) {
+                set(X, wy + 1, Z, NSTAIRS, dir === 0 ? 3 : 0, true);
+              }
+            }
+          }
+          // Central pedestal + Blaze Spawner (ID 182, meta = 1)
+          for (let oz = -1; oz <= 1; oz++) {
+            for (let ox = -1; ox <= 1; ox++) {
+              set(sx + ox, wy + 1, sz + oz, NBRICK, 0, true);
+            }
+          }
+          set(sx, wy + 2, sz, SPAWNER, 1, true);
+        }
+      }
+    }
+  },
+
+
+  // =========================================================================
+  // 5. STRONGHOLD PORTAL ROOM (要塞末地传送门房间) — Weathered Stone Bricks,
+  //    Iron Bars, Lava Pools, Silverfish/Skeleton Spawner & 12 End Portal Frames
+  // =========================================================================
+  strongholdInRegion(world, rx, rz) {
+    const key = `${ world.seed }:stronghold:${ rx }:${ rz }`;
+    if (this._strongholdCache.has(key)) return this._strongholdCache.get(key);
+    const r = RNG(hashStr('stronghold_reg:' + key));
+    const REG = 16; // 16x16 chunks per Stronghold region
+    let found = null;
+    if (rx === 0 && rz === -1) {
+      // Primary Stronghold at (cx=10, cz=-10 -> wx=168, wz=-152, wy=28, portalPos=[168, 31, -157])
+      const cx = 10, cz = -10;
+      const wx = cx * 16 + 8, wz = cz * 16 + 8, wy = 28;
+      found = { wx, wy, wz, cx, cz, portalPos: [wx, wy + 3, wz - 5], seed: r.int(1 << 30) };
+    } else if ((rx !== 0 || rz !== 0) && r() < 0.55) {
+      const cx = rx * REG + 4 + r.int(REG - 8);
+      const cz = rz * REG + 4 + r.int(REG - 8);
+      const wx = cx * 16 + 8, wz = cz * 16 + 8, wy = 24 + r.int(10);
+      found = { wx, wy, wz, cx, cz, portalPos: [wx, wy + 3, wz - 5], seed: r.int(1 << 30) };
+    }
+    if (this._strongholdCache.size > 1000) this._strongholdCache.clear();
+    this._strongholdCache.set(key, found);
+    return found;
+  },
+
+  buildStronghold(world, ch, s) {
+    const { wx: sx, wy: sy, wz: sz } = s;
+    const { x0, z0, set } = this.makeSetter(ch);
+    // Quick AABB reject against [sx-10..sx+10, sz-12..sz+14]
+    if (x0 + 15 < sx - 10 || x0 > sx + 10 || z0 + 15 < sz - 12 || z0 > sz + 14) return;
+
+    const SBRICK = 23;     // stone_bricks
+    const CRACKED = 93;    // cracked_stone_bricks
+    const MOSSY = 94;      // mossy_stone_bricks
+    const SSTAIRS = 62;    // stone_brick_stairs
+    const IBARS = 542;     // iron_bars
+    const FRAME = 538;     // end_portal_frame
+    const SPAWNER = 182;   // monster spawner
+    const TORCH = 21;
+    const CHEST = 52;
+    const STRONGHOLD_LOOT = 8 | (5 << 4); // lootType 5 = Stronghold
+
+    const pickBrick = (wx, wy, wz) => {
+      const h = hash3(wx, wy, wz, s.seed);
+      return h < 0.20 ? MOSSY : h < 0.35 ? CRACKED : SBRICK;
+    };
+
+    // 1. Main Portal Chamber: dx in -7..7, dz in -9..8, dy in 0..8
+    for (let dy = 0; dy <= 8; dy++) {
+      for (let dz = -9; dz <= 8; dz++) {
+        for (let dx = -7; dx <= 7; dx++) {
+          const X = sx + dx, Y = sy + dy, Z = sz + dz;
+          const onWall = Math.abs(dx) === 7 || dz === -9 || dz === 8;
+          const isEntrance = dz === 8 && Math.abs(dx) <= 1 && dy >= 1 && dy <= 4;
+          if (dy === 0 || dy === 8) {
+            set(X, Y, Z, pickBrick(X, Y, Z), 0, false);
+          } else if (onWall && !isEntrance) {
+            // Iron bars windows along side walls & back wall
+            const isGrate = (dy >= 3 && dy <= 5) && (
+              (Math.abs(dx) === 7 && (dz === -5 || dz === -1 || dz === 3)) ||
+              (dz === -9 && Math.abs(dx) === 3)
+            );
+            set(X, Y, Z, isGrate ? IBARS : pickBrick(X, Y, Z), 0, false);
+          } else {
+            set(X, Y, Z, AIR, 0, false);
+          }
+        }
+      }
+    }
+
+    // 2. Two Side Lava Basins (dx in -6..-4 and 4..6, dz in -2..2, dy = 0..1)
+    for (const side of [-1, 1]) {
+      for (let dz = -3; dz <= 3; dz++) {
+        for (let w = 3; w <= 6; w++) {
+          const X = sx + side * w, Z = sz + dz;
+          const rim = w === 3 || w === 6 || dz === -3 || dz === 3;
+          set(X, sy + 1, Z, rim ? pickBrick(X, sy + 1, Z) : LAVA, 0, false);
+        }
+      }
+    }
+
+    // 3. Raised End Portal Platform & 3x3 Sub-Portal Lava Pool (dx in -3..3, dz in -8..-2)
+    for (let dz = -8; dz <= -2; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const X = sx + dx, Z = sz + dz;
+        const inInner3x3 = Math.abs(dx) <= 1 && dz >= -6 && dz <= -4;
+        const onFrameRing = (Math.abs(dx) <= 1 && (dz === -7 || dz === -3)) || (Math.abs(dx) === 2 && dz >= -6 && dz <= -4);
+        for (let dy = 1; dy <= 2; dy++) {
+          if (inInner3x3) {
+            set(X, sy + dy, Z, dy === 1 ? LAVA : AIR, 0, false);
+          } else {
+            set(X, sy + dy, Z, pickBrick(X, sy + dy, Z), 0, false);
+          }
+        }
+        if (onFrameRing) {
+          // Determine inward facing rotation (0=North, 1=East, 2=South, 3=West)
+          const rot = dz === -7 ? 2 : dz === -3 ? 0 : dx === -2 ? 1 : 3;
+          // Each frame has a deterministic 10% chance of pre-containing an Eye of Ender (meta bit 4)
+          const hasEye = hash3(X, sy + 3, Z, s.seed + 911) < 0.10 ? 4 : 0;
+          set(X, sy + 3, Z, FRAME, rot | hasEye, false);
+        }
+      }
+    }
+
+    // 4. Staircase leading up to Portal Ring (dx in -1..1, dz = 0..-2) & Spawner at (0, 2, -1)
+    for (let dx = -1; dx <= 1; dx++) {
+      set(sx + dx, sy + 1, sz, SSTAIRS, 3, false);
+      set(sx + dx, sy + 1, sz - 1, pickBrick(sx + dx, sy + 1, sz - 1), 0, false);
+      set(sx + dx, sy + 2, sz - 1, SSTAIRS, 3, false);
+      set(sx + dx, sy + 2, sz - 2, pickBrick(sx + dx, sy + 2, sz - 2), 0, false);
+      set(sx + dx, sy + 3, sz - 2, SSTAIRS, 3, false);
+    }
+    // Silverfish / Dungeon Spawner embedded in the staircase before the End Portal
+    set(sx, sy + 2, sz - 1, SPAWNER, 0, false);
+
+    // 5. Entrance Antechamber, Iron Bar Gate, Loot Chest & Surface Access Stairwell (dz = 8..13)
+    for (let dz = 8; dz <= 13; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const X = sx + dx, Z = sz + dz;
+        for (let dy = 0; dy <= 5; dy++) {
+          const wall = Math.abs(dx) === 3 || dz === 13 || dy === 0 || dy === 5;
+          set(X, sy + dy, Z, wall ? pickBrick(X, sy + dy, Z) : AIR, 0, false);
+        }
+      }
+    }
+    // Iron bars archway at dz = 8
+    for (const dx of [-2, 2]) {
+      for (let dy = 1; dy <= 4; dy++) set(sx + dx, sy + dy, sz + 8, IBARS, 0, false);
+    }
+    // Stronghold Altar Loot Chest inside the Portal Chamber (sx + 5, sy + 1, sz + 6)
+    set(sx + 5, sy + 1, sz + 6, pickBrick(sx + 5, sy + 1, sz + 6), 0, false);
+    set(sx + 5, sy + 2, sz + 6, CHEST, 4 | STRONGHOLD_LOOT, false);
+    // Wall torches illuminating the portal chamber
+    set(sx - 6, sy + 4, sz - 5, TORCH, 1, false);
+    set(sx + 6, sy + 4, sz - 5, TORCH, 6, false);
+    set(sx - 6, sy + 4, sz + 4, TORCH, 1, false);
+    set(sx + 6, sy + 4, sz + 4, TORCH, 6, false);
+
+    // Vertical stairwell shaft with ladder from (sx, sy + 1, sz + 11) up to y = 68 so players can climb down/up
+    for (let y = sy + 1; y <= 68; y++) {
+      for (let oz = -1; oz <= 1; oz++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const X = sx + ox, Z = sz + 11 + oz;
+          const isShell = Math.abs(ox) === 1 || Math.abs(oz) === 1;
+          if (isShell) {
+            if (y <= sy + 4 && oz === -1 && ox === 0) set(X, y, Z, AIR, 0, false);
+            else set(X, y, Z, pickBrick(X, y, Z), 0, false);
+          } else {
+            // Central shaft with ladder attached to +Z wall (meta = 5)
+            set(X, y, Z, 68, 5, false);
+          }
+        }
+      }
+    }
+  },
+
+  // =========================================================================
   // Master Chunk Entry Point & /locate Finder
   // =========================================================================
   applyToChunk(world, ch) {
@@ -966,6 +1325,22 @@ const Structures = {
     if (!ch.structureMask) ch.structureMask = new Uint8Array(256);
 
     const cx = ch.cx, cz = ch.cz;
+
+    if (world.dimension === 'end') return;
+    if (world.dimension === 'nether') {
+      const frx0 = Math.floor((cx - 4) / 12), frx1 = Math.floor((cx + 4) / 12);
+      const frz0 = Math.floor((cz - 4) / 12), frz1 = Math.floor((cz + 4) / 12);
+      for (let rz = frz0; rz <= frz1; rz++) {
+        for (let rx = frx0; rx <= frx1; rx++) {
+          const f = this.netherFortressInRegion(world, rx, rz);
+          if (f) {
+            this.buildNetherFortress(world, ch, f);
+            if (f.cx === cx && f.cz === cz) ch.fortress = [f.wx, f.wy + 1, f.wz];
+          }
+        }
+      }
+      return;
+    }
 
     // 1. Mineshafts (check 7x7 regions overlapping +-3 chunks around (cx, cz))
     const mrx0 = Math.floor((cx - 3) / 7), mrx1 = Math.floor((cx + 3) / 7);
@@ -1006,6 +1381,19 @@ const Structures = {
         }
       }
     }
+
+    // 4. Stronghold Portal Rooms (check 16x16 regions overlapping +-2 chunks around (cx, cz))
+    const srx0 = Math.floor((cx - 2) / 16), srx1 = Math.floor((cx + 2) / 16);
+    const srz0 = Math.floor((cz - 2) / 16), srz1 = Math.floor((cz + 2) / 16);
+    for (let rz = srz0; rz <= srz1; rz++) {
+      for (let rx = srx0; rx <= srx1; rx++) {
+        const s = this.strongholdInRegion(world, rx, rz);
+        if (s) {
+          this.buildStronghold(world, ch, s);
+          if (s.cx === cx && s.cz === cz) ch.stronghold = [...s.portalPos];
+        }
+      }
+    }
   },
 
   // Find the nearest structure of type ('village' | 'desert_pyramid' | 'mineshaft') around world (px, pz)
@@ -1043,6 +1431,21 @@ const Structures = {
         }
         if (best && r >= 1) break;
       }
+    } else if (type === 'nether_fortress' || type === 'fortress' || type === '下界要塞') {
+      const rx0 = Math.floor(pcx / 12), rz0 = Math.floor(pcz / 12);
+      for (let r = 0; r <= 6; r++) {
+        for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const f = this.netherFortressInRegion(world, rx0 + dx, rz0 + dz);
+          if (!f) continue;
+          const d = Math.hypot(f.wx - px, f.wz - pz);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { type: 'nether_fortress', cn: '下界要塞', x: f.wx, y: f.wy + 1, z: f.wz, dist: Math.round(d) };
+          }
+        }
+        if (best && r >= 1) break;
+      }
     } else if (type === 'mineshaft' || type === '废弃矿井') {
       const rx0 = Math.floor(pcx / 7), rz0 = Math.floor(pcz / 7);
       for (let r = 0; r <= 6; r++) {
@@ -1054,6 +1457,22 @@ const Structures = {
           if (d < bestDist) {
             bestDist = d;
             best = { type: 'mineshaft', cn: '废弃矿井', x: m.wx, y: m.wy, z: m.wz, dist: Math.round(d) };
+          }
+        }
+        if (best && r >= 1) break;
+      }
+    } else if (type === 'stronghold' || type === 'end_portal' || type === '要塞') {
+      const rx0 = Math.floor(pcx / 16), rz0 = Math.floor(pcz / 16);
+      for (let r = 0; r <= 6; r++) {
+        for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const s = this.strongholdInRegion(world, rx0 + dx, rz0 + dz);
+          if (!s) continue;
+          const [tx, ty, tz] = s.portalPos || [s.wx, s.wy + 3, s.wz - 5];
+          const d = Math.hypot(tx - px, tz - pz);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { type: 'stronghold', cn: '要塞 (末地传送门)', x: tx, y: ty, z: tz, dist: Math.round(d) };
           }
         }
         if (best && r >= 1) break;

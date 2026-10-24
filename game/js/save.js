@@ -1,6 +1,9 @@
 'use strict';
 // ---------------------------------------------------------------------------
 // Persistence: IndexedDB, falling back to localStorage, then to memory
+// Supports Guard Rule #5 per-dimension chunk isolation:
+// - Overworld uses legacy key `${id}:${cx}:${cz}` (100% backward compatible)
+// - Non-overworld dimensions ('nether', 'end') use `${id}:${dimension}:${cx}:${cz}`
 // ---------------------------------------------------------------------------
 const LS = {
   ok: (() => { try { const k = '__mcjs_test'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; } catch (e) { return false; } })(),
@@ -8,6 +11,27 @@ const LS = {
   set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
   keys(prefix) { const out = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith(prefix)) out.push(k); } return out; },
 };
+
+function chunkStoreKey(id, cx, cz, dimension = 'overworld') {
+  const dim = dimension || 'overworld';
+  return dim === 'overworld' ? `${id}:${cx}:${cz}` : `${id}:${dim}:${cx}:${cz}`;
+}
+
+function parseChunkStoreKey(key, id, targetDim = 'overworld') {
+  if (!key || !key.startsWith(id + ':')) return null;
+  const rest = key.slice(id.length + 1).split(':');
+  if (rest.length === 2) {
+    if ((targetDim || 'overworld') !== 'overworld') return null;
+    const cx = +rest[0], cz = +rest[1];
+    return (!isNaN(cx) && !isNaN(cz)) ? [cx, cz] : null;
+  }
+  if (rest.length === 3) {
+    if (rest[0] !== (targetDim || 'overworld')) return null;
+    const cx = +rest[1], cz = +rest[2];
+    return (!isNaN(cx) && !isNaN(cz)) ? [cx, cz] : null;
+  }
+  return null;
+}
 
 const DB = {
   db: null, mem: { worlds: new Map(), chunks: new Map() }, ok: false, backend: 'memory',
@@ -60,7 +84,7 @@ const DB = {
   async deleteWorld(id) {
     if (this.backend === 'idb') {
       await this.tx('worlds', 'readwrite', s => s.delete(id));
-      await this.tx('chunks', 'readwrite', s => s.delete(IDBKeyRange.bound(id + ':', id + ':￿')));
+      await this.tx('chunks', 'readwrite', s => s.delete(IDBKeyRange.bound(id + ':', id + ':\uffff')));
     } else if (this.backend === 'local') {
       localStorage.removeItem('mcjs:w:' + id);
       for (const k of LS.keys('mcjs:c:' + id + ':')) localStorage.removeItem(k);
@@ -69,31 +93,42 @@ const DB = {
       for (const k of [...this.mem.chunks.keys()]) if (k.startsWith(id + ':')) this.mem.chunks.delete(k);
     }
   },
-  async loadChunks(id, fallbackBits) {
+  async loadChunks(id, fallbackBits, dimension = 'overworld') {
     const out = new Map();
+    const dim = dimension || 'overworld';
     if (this.backend === 'idb') {
       await new Promise((res) => {
         const t = this.db.transaction('chunks', 'readonly'), s = t.objectStore('chunks');
-        const req = s.openCursor(IDBKeyRange.bound(id + ':', id + ':￿'));
+        const req = s.openCursor(IDBKeyRange.bound(id + ':', id + ':\uffff'));
         req.onsuccess = () => {
           const c = req.result;
-          if (c) { const [, cx, cz] = c.key.split(':'); out.set(ckey(+cx, +cz), normalizeChunkRec(c.value, fallbackBits)); c.continue(); }
+          if (c) {
+            const parsed = parseChunkStoreKey(c.key, id, dim);
+            if (parsed) out.set(ckey(parsed[0], parsed[1]), normalizeChunkRec(c.value, fallbackBits));
+            c.continue();
+          }
         };
         t.oncomplete = res; t.onerror = res;
       });
     } else if (this.backend === 'local') {
       for (const k of LS.keys('mcjs:c:' + id + ':')) {
-        const [, , , cx, cz] = k.split(':'); const v = LS.get(k);
-        if (v) out.set(ckey(+cx, +cz), normalizeChunkRec(v, fallbackBits));
+        const rawKey = k.slice('mcjs:c:'.length);
+        const parsed = parseChunkStoreKey(rawKey, id, dim);
+        if (!parsed) continue;
+        const v = LS.get(k);
+        if (v) out.set(ckey(parsed[0], parsed[1]), normalizeChunkRec(v, fallbackBits));
       }
     } else {
-      for (const [k, v] of this.mem.chunks) if (k.startsWith(id + ':')) { const [, cx, cz] = k.split(':'); out.set(ckey(+cx, +cz), normalizeChunkRec(v, fallbackBits)); }
+      for (const [k, v] of this.mem.chunks) {
+        const parsed = parseChunkStoreKey(k, id, dim);
+        if (parsed) out.set(ckey(parsed[0], parsed[1]), normalizeChunkRec(v, fallbackBits));
+      }
     }
     return out;
   },
-  async getChunk(id, cx, cz, fallbackBits) {
+  async getChunk(id, cx, cz, fallbackBits, dimension = 'overworld') {
     if (!id) return null;
-    const key = id + ':' + cx + ':' + cz;
+    const key = chunkStoreKey(id, cx, cz, dimension);
     if (this.backend === 'idb') {
       const v = await this.tx('chunks', 'readonly', s => s.get(key));
       return normalizeChunkRec(v, fallbackBits);
@@ -103,16 +138,26 @@ const DB = {
     }
     return normalizeChunkRec(this.mem.chunks.get(key), fallbackBits);
   },
-  async putChunks(id, list) {
+  async putChunks(id, list, dimension = 'overworld') {
     if (!list.length) return;
-    if (this.backend === 'idb') return this.tx('chunks', 'readwrite', s => { for (const [cx, cz, v] of list) s.put(normalizeChunkRec(v), id + ':' + cx + ':' + cz); });
-    if (this.backend === 'local') { for (const [cx, cz, v] of list) LS.set('mcjs:c:' + id + ':' + cx + ':' + cz, { b: Array.from(v.b), m: Array.from(v.m), blockBits: v.blockBits || SAVE_BLOCK_BITS }); return; }
-    for (const [cx, cz, v] of list) this.mem.chunks.set(id + ':' + cx + ':' + cz, normalizeChunkRec(v));
+    const dim = dimension || 'overworld';
+    if (this.backend === 'idb') {
+      return this.tx('chunks', 'readwrite', s => {
+        for (const [cx, cz, v] of list) s.put(normalizeChunkRec(v), chunkStoreKey(id, cx, cz, dim));
+      });
+    }
+    if (this.backend === 'local') {
+      for (const [cx, cz, v] of list) {
+        LS.set('mcjs:c:' + chunkStoreKey(id, cx, cz, dim), { b: Array.from(v.b), m: Array.from(v.m), blockBits: v.blockBits || SAVE_BLOCK_BITS });
+      }
+      return;
+    }
+    for (const [cx, cz, v] of list) this.mem.chunks.set(chunkStoreKey(id, cx, cz, dim), normalizeChunkRec(v));
   },
   async exportWorldData(id) {
     const meta = await this.getWorld(id);
     if (!meta) throw new Error('找不到存档: ' + id);
-    const chunksMap = await this.loadChunks(id, meta.blockBits);
+    const chunksMap = await this.loadChunks(id, meta.blockBits, 'overworld');
     const chunks = [];
     for (const [k, rec] of chunksMap.entries()) {
       const cx = Math.floor(k / 65536) - 32768;
@@ -120,6 +165,33 @@ const DB = {
       chunks.push({
         cx,
         cz,
+        dimension: 'overworld',
+        blockBits: rec.blockBits || meta.blockBits || SAVE_BLOCK_BITS,
+        b: Array.from(rec.b),
+        m: Array.from(rec.m),
+      });
+    }
+    const netherMap = await this.loadChunks(id, meta.blockBits, 'nether');
+    for (const [k, rec] of netherMap.entries()) {
+      const cx = Math.floor(k / 65536) - 32768;
+      const cz = (k % 65536) - 32768;
+      chunks.push({
+        cx,
+        cz,
+        dimension: 'nether',
+        blockBits: rec.blockBits || meta.blockBits || SAVE_BLOCK_BITS,
+        b: Array.from(rec.b),
+        m: Array.from(rec.m),
+      });
+    }
+    const endMap = await this.loadChunks(id, meta.blockBits, 'end');
+    for (const [k, rec] of endMap.entries()) {
+      const cx = Math.floor(k / 65536) - 32768;
+      const cz = (k % 65536) - 32768;
+      chunks.push({
+        cx,
+        cz,
+        dimension: 'end',
         blockBits: rec.blockBits || meta.blockBits || SAVE_BLOCK_BITS,
         b: Array.from(rec.b),
         m: Array.from(rec.m),
@@ -128,7 +200,7 @@ const DB = {
     const worldCopy = JSON.parse(JSON.stringify(meta));
     worldCopy.schemaVersion = worldCopy.schemaVersion || SAVE_SCHEMA_VERSION;
     worldCopy.blockBits = worldCopy.blockBits || SAVE_BLOCK_BITS;
-    worldCopy.modifiedChunkKeys = chunks.map(c => ckey(c.cx, c.cz));
+    worldCopy.modifiedChunkKeys = chunks.filter(c => (c.dimension || 'overworld') === 'overworld').map(c => ckey(c.cx, c.cz));
     return {
       format: 'htgame-world-save',
       schemaVersion: worldCopy.schemaVersion,
@@ -150,25 +222,37 @@ const DB = {
     meta.schemaVersion = data.schemaVersion || meta.schemaVersion || SAVE_SCHEMA_VERSION;
     meta.blockBits = data.blockBits || meta.blockBits || SAVE_BLOCK_BITS;
     const rawChunks = data.chunks || srcWorld.chunks || [];
-    const chunkList = [];
+    const byDim = { overworld: [], nether: [], end: [] };
     const modKeys = new Set(Array.isArray(meta.modifiedChunkKeys) ? meta.modifiedChunkKeys : []);
     if (Array.isArray(rawChunks)) {
       for (const item of rawChunks) {
         if (Array.isArray(item) && item.length >= 3) {
-          const [cx, cz, rec] = item;
+          const [cx, cz, rec, dim] = item;
+          const d = dim || 'overworld';
           const norm = normalizeChunkRec(rec, meta.blockBits);
-          if (norm) { chunkList.push([+cx, +cz, norm]); modKeys.add(ckey(+cx, +cz)); }
+          if (norm) {
+            if (!byDim[d]) byDim[d] = [];
+            byDim[d].push([+cx, +cz, norm]);
+            if (d === 'overworld') modKeys.add(ckey(+cx, +cz));
+          }
         } else if (item && typeof item === 'object') {
           const cx = +item.cx, cz = +item.cz;
+          const d = item.dimension || 'overworld';
           const norm = normalizeChunkRec(item, meta.blockBits);
-          if (norm && !isNaN(cx) && !isNaN(cz)) { chunkList.push([cx, cz, norm]); modKeys.add(ckey(cx, cz)); }
+          if (norm && !isNaN(cx) && !isNaN(cz)) {
+            if (!byDim[d]) byDim[d] = [];
+            byDim[d].push([cx, cz, norm]);
+            if (d === 'overworld') modKeys.add(ckey(cx, cz));
+          }
         }
       }
     }
     meta.modifiedChunkKeys = [...modKeys];
     await this.deleteWorld(meta.id);
     await this.putWorld(meta);
-    if (chunkList.length) await this.putChunks(meta.id, chunkList);
+    for (const [dim, list] of Object.entries(byDim)) {
+      if (list && list.length) await this.putChunks(meta.id, list, dim);
+    }
     return meta;
   },
 };

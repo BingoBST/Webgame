@@ -124,6 +124,61 @@ uniform vec4 u_color; uniform vec3 u_fogColor; uniform vec2 u_fog;
 in vec4 v_col; in float v_dist; out vec4 o;
 void main(){ vec4 c = v_col * u_color; float f = clamp((v_dist - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0); o = vec4(mix(c.rgb, u_fogColor, f), c.a * (1.0 - f * 0.0)); }`;
 
+const END_PORTAL_VS = `#version 300 es
+layout(location=0) in vec3 a_pos;
+uniform mat4 u_vp; uniform mat4 u_model; uniform vec3 u_cam;
+out vec4 v_clip; out float v_dist;
+void main(){
+  vec4 wp = u_model * vec4(a_pos, 1.0);
+  gl_Position = u_vp * wp;
+  v_clip = gl_Position;
+  v_dist = length(wp.xz - u_cam.xz);
+  float dy = abs(wp.y - u_cam.y); v_dist = max(v_dist, dy * 0.5);
+}`;
+
+const END_PORTAL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex; uniform float u_time; uniform vec3 u_fogColor; uniform vec2 u_fog;
+in vec4 v_clip; in float v_dist; out vec4 o;
+const vec3 COLORS[16] = vec3[16](
+  vec3(0.022087, 0.098399, 0.110818),
+  vec3(0.011892, 0.095924, 0.089485),
+  vec3(0.027636, 0.101689, 0.100326),
+  vec3(0.046564, 0.109883, 0.114838),
+  vec3(0.064901, 0.117696, 0.097189),
+  vec3(0.063761, 0.086895, 0.123646),
+  vec3(0.084817, 0.111994, 0.166380),
+  vec3(0.097489, 0.154120, 0.091064),
+  vec3(0.106152, 0.131144, 0.195191),
+  vec3(0.097721, 0.110188, 0.187229),
+  vec3(0.133516, 0.138278, 0.148582),
+  vec3(0.070006, 0.243332, 0.235792),
+  vec3(0.196766, 0.142899, 0.214696),
+  vec3(0.047281, 0.315338, 0.321970),
+  vec3(0.204675, 0.390010, 0.302066),
+  vec3(0.080955, 0.314821, 0.661491)
+);
+vec2 portalUV(vec2 ndc, float layer) {
+  vec2 uv = ndc * 0.5 + 0.5;
+  uv += vec2(17.0 / layer, (2.0 + layer / 1.5) * (u_time * 0.0015));
+  float ang = radians((layer * layer * 4321.0 + layer * 9.0) * 2.0);
+  float c = cos(ang), s = sin(ang);
+  uv = mat2(c, s, -s, c) * uv;
+  uv *= (4.5 - layer / 4.0) * 1.25;
+  return uv;
+}
+void main(){
+  vec2 ndc = v_clip.xy / max(0.001, v_clip.w);
+  vec3 col = vec3(0.015, 0.03, 0.05);
+  for (int i = 0; i < 15; i++) {
+    float l = float(i + 1);
+    vec2 uv = portalUV(ndc, l);
+    col += texture(u_tex, uv).rgb * COLORS[i + 1] * 2.4;
+  }
+  float f = clamp((v_dist - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);
+  o = vec4(mix(col, u_fogColor, f), 1.0);
+}`;
+
 function compile(gl, vs, fs) {
   const mk = (type, src) => {
     const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -156,6 +211,7 @@ class Renderer {
     this.progSky = compile(gl, SKY_VS, SKY_FS);
     this.progTex = compile(gl, TEX_VS, TEX_FS);
     this.progCol = compile(gl, COL_VS, COL_FS);
+    this.progEndPortal = compile(gl, END_PORTAL_VS, END_PORTAL_FS);
     this.proj = M4.create(); this.view = M4.create(); this.vp = M4.create();
     this.identity = M4.create();
     this.fov = 70; this.renderDist = 8;
@@ -222,9 +278,9 @@ class Renderer {
     // ---- 2D images
     this.images = {};
     for (const k in ASSETS.images) this.images[k] = await loadImage(ASSETS.images[k]);
-    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'armor_leather_1', 'armor_leather_2', 'armor_iron_1', 'armor_iron_2', 'armor_diamond_1', 'armor_diamond_2', 'villager', 'villager_farmer', 'villager_librarian', 'villager_smith', 'enchant_book', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
+    for (const k of ['pig', 'cow', 'sheep', 'sheep_wool', 'chicken', 'zombie', 'skeleton', 'creeper', 'spider', 'spider_eyes', 'steve', 'armor_leather_1', 'armor_leather_2', 'armor_iron_1', 'armor_iron_2', 'armor_diamond_1', 'armor_diamond_2', 'villager', 'villager_farmer', 'villager_librarian', 'villager_smith', 'enchant_book', 'shield', 'blaze', 'wither_skeleton', 'ghast', 'ghast_shooting', 'zombified_piglin', 'enderman', 'enderman_eyes', 'end_crystal', 'ender_dragon', 'dragon_eyes', 'dragon_fireball', 'end_beam', 'end_portal', 'sun', 'moon0', 'moon1', 'moon2', 'moon3', 'moon4', 'moon5', 'moon6', 'moon7', 'arrow_entity', 'shadow', 'rain', 'snowfall']) {
       const img = this.images[k] || (k.startsWith('villager_') ? this.images.villager : null);
-      if (img) this.entityTex[k] = this.tex2D(img, k === 'rain' || k === 'snowfall');
+      if (img) this.entityTex[k] = this.tex2D(img, k === 'rain' || k === 'snowfall' || k === 'end_portal');
     }
     // colormaps
     const cm = (img) => { const c = document.createElement('canvas'); c.width = 256; c.height = 256; const x = c.getContext('2d'); x.drawImage(img, 0, 0); return x.getImageData(0, 0, 256, 256).data; };
@@ -561,7 +617,124 @@ class Renderer {
       { name: 'page_l', pivot: [0, 0, -0.8], boxes: [[24, 10, -4.8, -4, -0.1, 5, 8, 0.1]] },
       { name: 'page_r', pivot: [0, 0, -0.8], boxes: [[24, 10, -0.2, -4, -0.1, 5, 8, 0.1]] },
     ], 'enchant_book');
+    M.shield = P(64, 64, [
+      { name: 'plate', pivot: [0, 0, 0], boxes: [
+        [0, 0, -6, -11, -2, 12, 22, 1],
+        [26, 0, -1, -3, -1, 2, 6, 6],
+      ] },
+    ], 'shield');
     M.arm = P(64, 64, [{ name: 'arm', pivot: [0, 0, 0], boxes: [[40, 16, -2, -10, -2, 4, 12, 4]] }]);
+    // W3 Nether Mob Models: Blaze, Ghast, Enderman
+    const blazeParts = [
+      { name: 'head', pivot: [0, 20, 0], boxes: [[0, 0, -4, -4, -4, 8, 8, 8]] },
+    ];
+    for (let i = 0; i < 12; i++) {
+      const yPivot = i < 4 ? 18 : i < 8 ? 12 : 7;
+      blazeParts.push({ name: 'rod' + i, pivot: [0, yPivot, 0], boxes: [[0, 16, -1, -4, -1, 2, 8, 2]] });
+    }
+    M.blaze = P(64, 32, blazeParts, 'blaze');
+
+    const ghastParts = [
+      { name: 'body', pivot: [0, 16, 0], boxes: [[0, 0, -8, -8, -8, 16, 16, 16]] },
+    ];
+    for (let i = 0; i < 9; i++) {
+      const col = i % 3, row = (i / 3) | 0;
+      const gx = -3.8 + col * 3.8, gz = -5 + row * 5;
+      const gh = 9 + ((i * 3) % 5);
+      ghastParts.push({ name: 'tentacle' + i, pivot: [gx, 9, gz], boxes: [[0, 0, -1, -gh, -1, 2, gh, 2]] });
+    }
+    M.ghast = P(64, 32, ghastParts);
+
+    M.enderman = P(64, 32, [
+      { name: 'head', pivot: [0, 38, 0], boxes: [[0, 0, -4, 0, -4, 8, 8, 8], [0, 16, -4, -1, -4, 8, 8, 8, -0.35]] },
+      { name: 'body', pivot: [0, 26, 0], boxes: [[32, 16, -4, 0, -2, 8, 12, 4]] },
+      { name: 'rarm', pivot: [5, 36, 0], boxes: [[56, 0, -1, -24, -1, 2, 26, 2]] },
+      { name: 'larm', pivot: [-5, 36, 0], boxes: [[56, 0, -1, -24, -1, 2, 26, 2, 0, true]] },
+      { name: 'rleg', pivot: [2, 26, 0], boxes: [[56, 0, -1, -26, -1, 2, 26, 2]] },
+      { name: 'lleg', pivot: [-2, 26, 0], boxes: [[56, 0, -1, -26, -1, 2, 26, 2, 0, true]] },
+    ], 'enderman');
+
+    // W3 Phase 2 Models: End Crystal & Ender Dragon
+    M.end_crystal = P(64, 32, [
+      { name: 'base', pivot: [0, 0, 0], boxes: [[0, 16, -6, 0, -6, 12, 4, 12]] },
+      { name: 'glass', pivot: [0, 14, 0], boxes: [[0, 0, -4, -4, -4, 8, 8, 8]] },
+      { name: 'cube', pivot: [0, 14, 0], boxes: [[32, 0, -3.2, -3.2, -3.2, 6.4, 6.4, 6.4]] },
+    ]);
+
+    const dragonParts = [
+      { name: 'body', pivot: [0, 20, -8], boxes: [
+        [0, 0, -12, -21, -24, 24, 24, 64],
+        [220, 53, -1, 3, -18, 2, 6, 12],
+        [220, 53, -1, 3, 2, 2, 6, 12],
+        [220, 53, -1, 3, 22, 2, 6, 12],
+      ] },
+      // 5 articulated neck segments (10x10x10 + dorsal scale)
+      ...[0, 1, 2, 3, 4].map(i => ({
+        name: 'neck' + i,
+        pivot: [0, 14, -34 - i * 10],
+        boxes: [
+          [192, 104, -5, -5, -5, 10, 10, 10],
+          [48, 0, -1, 5, -3, 2, 4, 6],
+        ]
+      })),
+      // Head + upperlip + horns/scales + nostrils
+      { name: 'head', pivot: [0, 14, -84], boxes: [
+        [112, 30, -8, -8, -16, 16, 16, 16],
+        [176, 44, -6, -4, -30, 12, 5, 16],
+        [0, 0, -5, 8, -10, 2, 4, 6],
+        [0, 0, 3, 8, -10, 2, 4, 6],
+        [112, 0, -5, 1, -28, 2, 2, 4],
+        [112, 0, 3, 1, -28, 2, 2, 4],
+      ] },
+      { name: 'jaw', pivot: [0, 10, -98], boxes: [
+        [176, 65, -6, -4, -16, 12, 4, 16],
+      ] },
+      // 12 articulated tail segments (10x10x10 + dorsal scale)
+      ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(i => ({
+        name: 'tail' + i,
+        pivot: [0, 14, 16 + i * 10],
+        boxes: [
+          [192, 104, -5, -5, 0, 10, 10, 10],
+          [48, 0, -1, 5, 2, 2, 4, 6],
+        ]
+      })),
+      // Wings (inner wing bone 56x8x8 + membrane 56x56 + outer wing tip bone 56x4x4 + membrane 56x56)
+      { name: 'wing_r', pivot: [12, 19, -22], boxes: [
+        [112, 88, 0, -4, -4, 56, 8, 8],
+        [-56, 88, 0, -0.5, 2, 56, 1, 56],
+        [112, 136, 56, -2, -2, 56, 4, 4],
+        [-56, 144, 56, -0.5, 2, 56, 1, 56],
+      ] },
+      { name: 'wing_l', pivot: [-12, 19, -22], boxes: [
+        [112, 88, -56, -4, -4, 56, 8, 8, 0, true],
+        [-56, 88, -56, -0.5, 2, 56, 1, 56, 0, true],
+        [112, 136, -112, -2, -2, 56, 4, 4, 0, true],
+        [-56, 144, -112, -0.5, 2, 56, 1, 56, 0, true],
+      ] },
+      // Front legs (thigh + shin + foot)
+      { name: 'front_leg_r', pivot: [12, 8, -20], rotX: -0.65, boxes: [
+        [112, 104, -4, -20, -4, 8, 24, 8],
+        [226, 138, -3, -40, -5, 6, 24, 6],
+        [144, 104, -4, -43, -16, 8, 4, 16],
+      ] },
+      { name: 'front_leg_l', pivot: [-12, 8, -20], rotX: -0.65, boxes: [
+        [112, 104, -4, -20, -4, 8, 24, 8, 0, true],
+        [226, 138, -3, -40, -5, 6, 24, 6, 0, true],
+        [144, 104, -4, -43, -16, 8, 4, 16, 0, true],
+      ] },
+      // Hind legs (thigh + shin + foot)
+      { name: 'hind_leg_r', pivot: [16, 10, 12], rotX: -0.55, boxes: [
+        [0, 0, -8, -28, -8, 16, 32, 16],
+        [196, 0, -6, -56, -6, 12, 32, 12],
+        [112, 0, -9, -60, -20, 18, 6, 24],
+      ] },
+      { name: 'hind_leg_l', pivot: [-16, 10, 12], rotX: -0.55, boxes: [
+        [0, 0, -8, -28, -8, 16, 32, 16, 0, true],
+        [196, 0, -6, -56, -6, 12, 32, 12, 0, true],
+        [112, 0, -9, -60, -20, 18, 6, 24, 0, true],
+      ] },
+    ];
+    M.ender_dragon = P(256, 256, dragonParts, 'ender_dragon');
   }
 
   // ---- frame ---------------------------------------------------------------------------
@@ -611,31 +784,35 @@ class Renderer {
     gl.uniform3fv(S.u.u_void, env.voidColor);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    // stars
-    const vpr = this.vpNoTranslate();
-    if (env.starBright > 0.01) {
-      const C = this.progCol; gl.useProgram(C.p);
-      const m = M4.create(); M4.rotY(m, -Math.PI / 2); M4.rotX(m, env.celestial * Math.PI * 2);
-      gl.uniformMatrix4fv(C.u.u_vp, false, vpr); gl.uniformMatrix4fv(C.u.u_model, false, m);
-      gl.uniform4f(C.u.u_color, 1, 1, 1, env.starBright); gl.uniform3f(C.u.u_cam, 0, 0, 0); gl.uniform2f(C.u.u_fog, 1e9, 2e9);
-      gl.uniform3fv(C.u.u_fogColor, env.fogColor); gl.uniform1f(C.u.u_psize, Math.max(1, this.canvas.height / 700));
+    if (!env.isNether) {
+      // stars
+      const vpr = this.vpNoTranslate();
+      if (env.starBright > 0.01) {
+        const C = this.progCol; gl.useProgram(C.p);
+        const m = M4.create(); M4.rotY(m, -Math.PI / 2); M4.rotX(m, env.celestial * Math.PI * 2);
+        gl.uniformMatrix4fv(C.u.u_vp, false, vpr); gl.uniformMatrix4fv(C.u.u_model, false, m);
+        gl.uniform4f(C.u.u_color, 1, 1, 1, env.starBright); gl.uniform3f(C.u.u_cam, 0, 0, 0); gl.uniform2f(C.u.u_fog, 1e9, 2e9);
+        gl.uniform3fv(C.u.u_fogColor, env.fogColor); gl.uniform1f(C.u.u_psize, Math.max(1, this.canvas.height / 700));
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.bindVertexArray(this.starVao); gl.drawArrays(gl.POINTS, 0, this.starCount);
+      }
+      // sun & moon (skipped in The End)
+      if (!env.isEnd) {
+      const T = this.progTex; gl.useProgram(T.p);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-      gl.bindVertexArray(this.starVao); gl.drawArrays(gl.POINTS, 0, this.starCount);
-    }
-    // sun & moon
-    const T = this.progTex; gl.useProgram(T.p);
-    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-    gl.uniformMatrix4fv(T.u.u_vp, false, vpr);
-    gl.bindVertexArray(this.quadVao);
-    gl.activeTexture(gl.TEXTURE0);
-    const a = env.celestial * Math.PI * 2;
-    for (const which of ['sun', 'moon']) {
-      const m = M4.create(); M4.rotY(m, -Math.PI / 2); M4.rotX(m, a + (which === 'moon' ? Math.PI : 0));
-      M4.translate(m, 0, 100, 0); M4.scale(m, which === 'sun' ? 30 : 20, 1, which === 'sun' ? 30 : 20);
-      gl.uniformMatrix4fv(T.u.u_model, false, m);
-      gl.uniform4f(T.u.u_color, 1, 1, 1, which === 'sun' ? env.sunAlpha : 1 - env.rain * 0.9);
-      gl.bindTexture(gl.TEXTURE_2D, this.entityTex[which === 'sun' ? 'sun' : 'moon' + env.moonPhase]);
-      gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
+      gl.uniformMatrix4fv(T.u.u_vp, false, vpr);
+      gl.bindVertexArray(this.quadVao);
+      gl.activeTexture(gl.TEXTURE0);
+      const a = env.celestial * Math.PI * 2;
+      for (const which of ['sun', 'moon']) {
+        const m = M4.create(); M4.rotY(m, -Math.PI / 2); M4.rotX(m, a + (which === 'moon' ? Math.PI : 0));
+        M4.translate(m, 0, 100, 0); M4.scale(m, which === 'sun' ? 30 : 20, 1, which === 'sun' ? 30 : 20);
+        gl.uniformMatrix4fv(T.u.u_model, false, m);
+        gl.uniform4f(T.u.u_color, 1, 1, 1, which === 'sun' ? env.sunAlpha : 1 - env.rain * 0.9);
+        gl.bindTexture(gl.TEXTURE_2D, this.entityTex[which === 'sun' ? 'sun' : 'moon' + env.moonPhase]);
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
+      }
+      }
     }
     gl.disable(gl.BLEND);
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.enable(gl.CULL_FACE);
@@ -684,7 +861,7 @@ class Renderer {
   }
 
   drawClouds(env, px, pz) {
-    if (!this.showClouds) return;
+    if (!this.showClouds || env.isNether || env.isEnd) return;
     const drift = env.tick * 0.03;
     this.buildClouds(px, pz, drift);
     const gl = this.gl, C = this.progCol;
@@ -803,6 +980,51 @@ class Renderer {
     gl.bindVertexArray(dyn.vao);
     gl.drawElements(gl.TRIANGLES, mb.n * 1.5, gl.UNSIGNED_INT, 0);
     gl.disable(gl.BLEND); gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.enable(gl.CULL_FACE);
+  }
+
+  drawEndPortalBlocks(positions, env) {
+    if (!positions || !positions.length || !this.entityTex.end_portal) return;
+    const gl = this.gl, P = this.progEndPortal;
+    if (!this.endPortalVao) {
+      this.endPortalVao = gl.createVertexArray();
+      this.endPortalBuf = gl.createBuffer();
+      gl.bindVertexArray(this.endPortalVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.endPortalBuf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.quadIdx);
+      gl.bindVertexArray(null);
+    }
+    const v = [];
+    const h0 = 0.06, h1 = 0.7505;
+    for (const [x, y, z] of positions) {
+      // Top face (y + h1)
+      v.push(x, y + h1, z, x, y + h1, z + 1, x + 1, y + h1, z + 1, x + 1, y + h1, z);
+      // Bottom face (y + h0)
+      v.push(x, y + h0, z, x + 1, y + h0, z, x + 1, y + h0, z + 1, x, y + h0, z + 1);
+    }
+    gl.useProgram(P.p);
+    gl.uniformMatrix4fv(P.u.u_vp, false, this.vp);
+    gl.uniformMatrix4fv(P.u.u_model, false, this.identity);
+    gl.uniform3fv(P.u.u_cam, this.camPos);
+    gl.uniform1f(P.u.u_time, env.tick || 0);
+    gl.uniform3fv(P.u.u_fogColor, env.fogColor);
+    gl.uniform2f(P.u.u_fog, env.fogNear, env.fogFar);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.entityTex.end_portal);
+    gl.uniform1i(P.u.u_tex, 1);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this.endPortalVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.endPortalBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.DYNAMIC_DRAW);
+    const numQuads = v.length / 12;
+    gl.drawElements(gl.TRIANGLES, numQuads * 6, gl.UNSIGNED_INT, 0);
+    gl.depthFunc(gl.LESS);
+    gl.enable(gl.CULL_FACE);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   drawLines(verts, color) {

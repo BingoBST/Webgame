@@ -86,7 +86,7 @@ const ENCHANTS = {
   unbreaking: {
     key: 'unbreaking', cn: '耐久', max: 3, weight: 5, anvilCost: 2,
     tableItems: ['sword', 'pickaxe', 'axe', 'shovel', 'hoe', 'bow', 'helmet', 'chestplate', 'leggings', 'boots'],
-    anvilItems: ['sword', 'pickaxe', 'axe', 'shovel', 'hoe', 'bow', 'shears', 'flint_and_steel', 'helmet', 'chestplate', 'leggings', 'boots'],
+    anvilItems: ['sword', 'pickaxe', 'axe', 'shovel', 'hoe', 'bow', 'shield', 'shears', 'flint_and_steel', 'helmet', 'chestplate', 'leggings', 'boots'],
     minE: (l) => 5 + (l - 1) * 8,
     maxE: (l) => 55 + (l - 1) * 8,
   },
@@ -207,7 +207,7 @@ const Enchant = {
     if (!d) return null;
     if (d.tool) return d.tool.type;
     if (d.armor) return ['helmet', 'chestplate', 'leggings', 'boots'][d.armor.slot];
-    if (d.key === 'bow' || d.key === 'book' || d.key === 'enchanted_book' || d.key === 'shears' || d.key === 'flint_and_steel') return d.key;
+    if (d.key === 'bow' || d.key === 'shield' || d.key === 'book' || d.key === 'enchanted_book' || d.key === 'shears' || d.key === 'flint_and_steel') return d.key;
     return null;
   },
 

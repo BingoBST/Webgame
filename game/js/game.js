@@ -10,6 +10,10 @@ const ADVANCEMENTS = {
   tnt: ['轰隆隆！', 'tnt'], deep: ['深入地底', 'deepslate'], night: ['活过第一夜', 'torch'], build: ['建筑师', 'bricks'], farm: ['开始耕作', 'wheat'],
   cook: ['美味佳肴', 'cooked_beef'], bow: ['狙击手', 'bow'], sleep: ['甜蜜的梦', 'red_bed'], enchant: ['附魔师', 'enchanting_table'],
   brew: ['本地酿造厂', 'brewing_stand'],
+  nether: ['我们需要再深入些', 'obsidian'],
+  eye_spy: ['隔墙有眼', 'eye_of_ender'],
+  the_end: ['结束了？', 'end_stone'],
+  end_dragon: ['解放末地', 'dragon_egg'],
 };
 
 const TUTORIAL = [
@@ -93,11 +97,11 @@ class Game {
   resize() { this.renderer.resize(); if (this.ui) this.ui.resize(); }
 
   // ---- worlds -----------------------------------------------------------------
-  setupWorld(seed) {
+  setupWorld(seed, dimension = 'overworld') {
     this.worldSessionId = (this.worldSessionId || 0) + 1;
     if (this.world) this.unloadAll();
     if (typeof Structures !== 'undefined' && Structures.clearCaches) Structures.clearCaches();
-    this.world = new World(seed);
+    this.world = new World(seed, dimension);
     this.world.grassMap = this.renderer.grassMap; this.world.foliageMap = this.renderer.foliageMap;
     this.world.listener = this;
     this.entities = []; this.blockEntities = new Map(); this.particles.list = [];
@@ -113,7 +117,7 @@ class Game {
   }
   startTitle() {
     this.state = 'title';
-    this.setupWorld(hashStr('panorama' + ((Math.random() * 8) | 0)));
+    this.setupWorld(hashStr('panorama' + ((Math.random() * 8) | 0)), 'overworld');
     const sp = this.findInland();
     this.player = new Player(this, sp[0], sp[1] + 6, sp[2]);
     this.titleCam = [sp[0] + 0.5, sp[1] + 16, sp[2] + 0.5];
@@ -151,7 +155,7 @@ class Game {
     if (!seedStr) seed = (Math.random() * 2 ** 31) | 0;
     else if (isNaN(seed) || String(seed) !== seedStr.trim()) seed = hashStr(seedStr);
     const id = 'w' + Date.now().toString(36);
-    const meta = { id, name: name || '新的世界', seed, mode, flat: !!flat, created: Date.now(), lastPlayed: Date.now(), time: 1000, player: null, schemaVersion: 2, blockBits: 16, modifiedChunkKeys: [] };
+    const meta = { id, name: name || '新的世界', seed, mode, flat: !!flat, dimension: 'overworld', dimensions: {}, created: Date.now(), lastPlayed: Date.now(), time: 1000, player: null, schemaVersion: 2, blockBits: 16, modifiedChunkKeys: [] };
     await DB.putWorld(meta);
     return this.loadWorld(id);
   }
@@ -160,12 +164,15 @@ class Game {
     if (!meta) return;
     this.ui.open(new LoadingScreen(this, '正在载入世界…'));
     this.worldMeta = meta;
-    this.setupWorld(meta.seed);
-    this.world.flat = !!meta.flat;
+    if (!meta.dimensions) meta.dimensions = {};
+    const initDim = (meta.player && meta.player.dimension) || meta.dimension || 'overworld';
+    this.setupWorld(meta.seed, initDim);
+    this.world.flat = (initDim === 'overworld') && !!meta.flat;
     if (this.worker) this.worker.resetSession(this.worldSessionId, this.world);
-    const loadedChunks = await DB.loadChunks(id, meta.blockBits);
+    const loadedChunks = await DB.loadChunks(id, meta.blockBits, initDim);
     this.dirtySaved = new Set();
-    this.world.setSavedChunks(loadedChunks, meta.modifiedChunkKeys || []);
+    const dimMeta = meta.dimensions[initDim] || (initDim === 'overworld' ? meta : {});
+    this.world.setSavedChunks(loadedChunks, dimMeta.modifiedChunkKeys || []);
     this.mode = meta.mode;
     this.worldTime = meta.time || 1000;
     this.weather = meta.weather || 0; this.rainTarget = meta.rainTarget || 0;
@@ -179,7 +186,7 @@ class Game {
       p.pos = [...d.pos]; p.prev = [...d.pos]; p.yaw = d.yaw; p.pitch = d.pitch;
       p.health = d.health; p.food = d.food; p.saturation = d.sat; p.xp = d.xp || 0; p.flying = !!d.flying;
       p.enchantSeed = d.enchantSeed || 1337;
-      p.inv.slots = d.inv.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null); while (p.inv.slots.length < 40) p.inv.slots.push(null);
+      p.inv.slots = d.inv.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null); while (p.inv.slots.length < 41) p.inv.slots.push(null);
       p.inv.sel = d.sel || 0;
       p.air = 300;
       p.effects = {};
@@ -199,15 +206,24 @@ class Game {
       if (this.mode === 'creative') this.giveCreativeKit();
     }
     this.world.evictColdChunks(Math.floor(p.pos[0]) >> 4, Math.floor(p.pos[2]) >> 4, this.dirtySaved);
-    for (const [k, v] of Object.entries(meta.blockEntities || {})) this.blockEntities.set(k, v);
-    this.pendingMobs = (meta.mobs || []).map(m => ({
+    for (const [k, v] of Object.entries(dimMeta.blockEntities || {})) this.blockEntities.set(k, v);
+    this.pendingMobs = (dimMeta.mobs || []).map(m => ({
       ...m,
       pos: [...m.pos],
       trades: Array.isArray(m.trades) && typeof Trading !== 'undefined' ? m.trades.map(t => Trading.cloneTrade(t)) : m.trades,
     }));
-    this.spawnedChunks = new Set(meta.spawnedChunks || []);
+    this.spawnedChunks = new Set(dimMeta.spawnedChunks || []);
+    this._dragonKilled = !!meta.dragonKilled;
     this.state = 'loading';
     this.loadStart = performance.now();
+    if (initDim === 'end') {
+      if (Array.isArray(dimMeta.crystals)) {
+        for (const cPos of dimMeta.crystals) {
+          this.entities.push(new EndCrystal(this, cPos[0], cPos[1], cPos[2]));
+        }
+      }
+      this.initEndBossFight(Array.isArray(dimMeta.crystals));
+    }
   }
   giveCreativeKit() {
     const inv = this.player.inv;
@@ -240,6 +256,7 @@ class Game {
     if (!this.worldMeta || !this.dirtySaved || !this.dirtySaved.size || this._flushingDirty) return;
     this._flushingDirty = true;
     const w = this.world;
+    const curDim = (w && w.dimension) || 'overworld';
     const dirtyKeys = [...this.dirtySaved];
     const list = [];
     for (const k of dirtyKeys) {
@@ -250,7 +267,7 @@ class Game {
       }
     }
     try {
-      await DB.putChunks(this.worldMeta.id, list);
+      await DB.putChunks(this.worldMeta.id, list, curDim);
       for (const k of dirtyKeys) this.dirtySaved.delete(k);
       if (this.world === w) {
         const center = this.player ? this.player.pos : [0, 0, 0];
@@ -265,6 +282,7 @@ class Game {
   async saveWorld(quiet) {
     if (!this.worldMeta || (this.state !== 'play' && this.state !== 'loading')) return;
     const w = this.world, p = this.player, list = [], modChunks = [];
+    const curDim = (w && w.dimension) || 'overworld';
     for (const ch of w.chunks.values()) if (ch.modified) {
       const k = ckey(ch.cx, ch.cz);
       const rec = encodeChunk(ch);
@@ -273,7 +291,7 @@ class Game {
       list.push([ch.cx, ch.cz, rec]);
       modChunks.push(ch);
     }
-    const dirtyKeys = [...this.dirtySaved];
+    const dirtyKeys = [...(this.dirtySaved || [])];
     for (const k of dirtyKeys) {
       const rec = w.savedChunks.get(k);
       if (rec) { const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768; list.push([cx, cz, rec]); }
@@ -281,6 +299,8 @@ class Game {
     const m = this.worldMeta;
     m.schemaVersion = 2; m.blockBits = 16;
     m.lastPlayed = Date.now(); m.time = this.worldTime; m.mode = this.mode; m.weather = this.weather; m.rainTarget = this.rainTarget;
+    m.dimension = curDim;
+    m.dragonKilled = !!this._dragonKilled;
     m.spawn = p.spawn; m.adv = this.adv; m.stats = this.stats; m.tutorial = this.tutorial;
     const savedEffects = {};
     if (p.effects) {
@@ -293,20 +313,527 @@ class Game {
         }
       }
     }
-    m.player = { pos: [...p.pos], yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, enchantSeed: p.enchantSeed || 1337, inv: p.inv.slots.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null), sel: p.inv.sel, flying: p.flying, effects: savedEffects };
-    m.blockEntities = Object.fromEntries(this.blockEntities);
-    const activeMobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead).map(e => this.serializeMob(e));
-    m.mobs = [...(this.pendingMobs || []), ...activeMobs];
-    m.spawnedChunks = [...(this.spawnedChunks || [])];
-    m.modifiedChunkKeys = [...w.modifiedChunkKeys];
+    m.player = { pos: [...p.pos], dimension: curDim, yaw: p.yaw, pitch: p.pitch, health: p.health, food: p.food, sat: p.saturation, xp: p.xp, enchantSeed: p.enchantSeed || 1337, inv: p.inv.slots.map(s => s ? { ...s, ench: s.ench ? { ...s.ench } : undefined } : null), sel: p.inv.sel, flying: p.flying, effects: savedEffects };
+    const dimBlockEntities = Object.fromEntries(this.blockEntities);
+    const activeMobs = this.entities.filter(e => e instanceof Mob && e.persistent && !e.dead && !e.deathTime && e.health > 0).map(e => this.serializeMob(e));
+    const dimMobs = [...(this.pendingMobs || []), ...activeMobs];
+    const dimSpawned = [...(this.spawnedChunks || [])];
+    const dimModKeys = [...w.modifiedChunkKeys];
+    if (!m.dimensions) m.dimensions = {};
+    const dimCrystals = curDim === 'end'
+      ? this.entities.filter(e => e instanceof EndCrystal && !e.dead).map(e => [...e.pos])
+      : undefined;
+    m.dimensions[curDim] = {
+      blockEntities: dimBlockEntities,
+      mobs: dimMobs,
+      spawnedChunks: dimSpawned,
+      modifiedChunkKeys: dimModKeys,
+      portals: (m.dimensions[curDim] && m.dimensions[curDim].portals) || [],
+      ...(dimCrystals !== undefined ? { crystals: dimCrystals } : {}),
+    };
+    if (curDim === 'overworld') {
+      m.blockEntities = dimBlockEntities;
+      m.mobs = dimMobs;
+      m.spawnedChunks = dimSpawned;
+      m.modifiedChunkKeys = dimModKeys;
+    }
     try {
-      await DB.putChunks(m.id, list);
+      await DB.putChunks(m.id, list, curDim);
       await DB.putWorld(m);
       for (const ch of modChunks) ch.modified = false;
-      for (const k of dirtyKeys) this.dirtySaved.delete(k);
+      if (this.dirtySaved) for (const k of dirtyKeys) this.dirtySaved.delete(k);
       w.evictColdChunks(Math.floor(p.pos[0]) >> 4, Math.floor(p.pos[2]) >> 4, this.dirtySaved, 128);
       if (!quiet) this.ui.message('世界已保存', '#AAAAAA');
     } catch (e) { this.ui.message('保存失败: ' + e.message, '#FF5555'); }
+  }
+
+  // ---- Guard Rule #5: Single-Active-Dimension Switching & 8:1 Portal Scaling ----
+  tryIgnitePortal(x, y, z) {
+    const w = this.world;
+    if (!w || y <= 1 || y >= HEIGHT - 4) return false;
+    const cur = w.getBlock(x, y, z);
+    if (cur !== 0 && cur !== 537) return false;
+
+    for (const axis of [0, 1]) {
+      const dx = axis === 0 ? 1 : 0, dz = axis === 1 ? 1 : 0;
+      // 1. Scan downward to find bottom obsidian frame
+      let bottomY = y;
+      while (bottomY > 1 && (w.getBlock(x, bottomY - 1, z) === 0 || w.getBlock(x, bottomY - 1, z) === 537) && (y - bottomY) <= 21) {
+        bottomY--;
+      }
+      if (w.getBlock(x, bottomY - 1, z) !== 28) continue;
+
+      // 2. Scan left (-dir) and right (+dir) along bottomY
+      let left = 0;
+      while (left < 22) {
+        const bid = w.getBlock(x - dx * (left + 1), bottomY, z - dz * (left + 1));
+        if (bid === 0 || bid === 537) left++;
+        else break;
+      }
+      let right = 0;
+      while (right < 22) {
+        const bid = w.getBlock(x + dx * (right + 1), bottomY, z + dz * (right + 1));
+        if (bid === 0 || bid === 537) right++;
+        else break;
+      }
+      const width = left + right + 1;
+      if (width < 2 || width > 21) continue;
+      const startX = x - dx * left, startZ = z - dz * left;
+      if (w.getBlock(startX - dx, bottomY, startZ - dz) !== 28) continue;
+      if (w.getBlock(startX + dx * width, bottomY, startZ + dz * width) !== 28) continue;
+
+      // 3. Scan upward to find height H (3..21)
+      let height = 0;
+      let validFrame = true;
+      while (height < 22) {
+        const cy = bottomY + height;
+        if (cy >= HEIGHT - 1) { validFrame = false; break; }
+        // Check if this row is the top obsidian border
+        let allTopObsidian = true;
+        for (let i = 0; i < width; i++) {
+          if (w.getBlock(startX + dx * i, cy, startZ + dz * i) !== 28) { allTopObsidian = false; break; }
+        }
+        if (allTopObsidian) break;
+        // Otherwise check left & right obsidian walls and empty interior
+        if (w.getBlock(startX - dx, cy, startZ - dz) !== 28 || w.getBlock(startX + dx * width, cy, startZ + dz * width) !== 28) {
+          validFrame = false;
+          break;
+        }
+        for (let i = 0; i < width; i++) {
+          const bid = w.getBlock(startX + dx * i, cy, startZ + dz * i);
+          if (bid !== 0 && bid !== 537) { validFrame = false; break; }
+        }
+        if (!validFrame) break;
+        height++;
+      }
+      if (!validFrame || height < 3 || height > 21) continue;
+
+      // 4. Verify bottom obsidian border and top obsidian border
+      for (let i = 0; i < width; i++) {
+        if (w.getBlock(startX + dx * i, bottomY - 1, startZ + dz * i) !== 28) { validFrame = false; break; }
+        if (w.getBlock(startX + dx * i, bottomY + height, startZ + dz * i) !== 28) { validFrame = false; break; }
+      }
+      if (!validFrame) continue;
+
+      // 5. Fill interior with nether_portal (528, meta = axis) without triggering intermediate cascade breaks
+      for (let py = bottomY; py < bottomY + height; py++) {
+        for (let i = 0; i < width; i++) {
+          w.setBlock(startX + dx * i, py, startZ + dz * i, 528, axis, 0);
+        }
+      }
+      for (let py = bottomY; py < bottomY + height; py++) {
+        for (let i = 0; i < width; i++) {
+          w.markBlock(w.getChunk((startX + dx * i) >> 4, (startZ + dz * i) >> 4), (startX + dx * i) & 15, py, (startZ + dz * i) & 15);
+        }
+      }
+      const centerPos = [startX + dx * (width / 2), bottomY, startZ + dz * (width / 2)];
+      if (this.worldMeta) {
+        const curDim = w.dimension || 'overworld';
+        if (!this.worldMeta.dimensions) this.worldMeta.dimensions = {};
+        if (!this.worldMeta.dimensions[curDim]) this.worldMeta.dimensions[curDim] = {};
+        if (!this.worldMeta.dimensions[curDim].portals) this.worldMeta.dimensions[curDim].portals = [];
+        this.worldMeta.dimensions[curDim].portals.push({ x: Math.floor(centerPos[0]), y: bottomY, z: Math.floor(centerPos[2]), axis });
+      }
+      if (typeof Sound !== 'undefined' && Sound.tone) Sound.tone(centerPos, { freq: 180, end: 360, dur: 0.35, vol: 0.3, type: 'sine' });
+      this.flushMesh();
+      return true;
+    }
+    return false;
+  }
+
+  findOrCreateDestinationPortal(tx, ty, tz, preferredAxis = 0) {
+    const w = this.world;
+    const isNether = w.dimension === 'nether';
+    // Ensure 3x3 chunks around (tx, tz) are generated/loaded synchronously
+    const tcx = tx >> 4, tcz = tz >> 4;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cx = tcx + dx, cz = tcz + dz;
+        const ck = ckey(cx, cz);
+        if (!w.chunks.has(ck)) {
+          const saved = w.savedChunks && w.savedChunks.get(ck);
+          const ch = saved ? this._buildChunkFromSaved(cx, cz, saved) : w.generate(cx, cz);
+          this._mountLoadedChunk(cx, cz, ch, !!saved);
+        }
+      }
+    }
+
+    // 1. Search within +-20 blocks horizontally for an existing nether_portal (528) block
+    const minY = isNether ? 32 : 50, maxY = isNether ? 114 : 120;
+    let bestPortal = null, bestDist = Infinity;
+    for (let dz = -20; dz <= 20; dz++) {
+      for (let dx = -20; dx <= 20; dx++) {
+        const sx = tx + dx, sz = tz + dz;
+        if (!w.isLoaded(sx, sz)) continue;
+        for (let sy = minY; sy <= maxY; sy++) {
+          if (w.getBlock(sx, sy, sz) === 528 && w.getBlock(sx, sy - 1, sz) === 28) {
+            const d = dx * dx + dz * dz + (sy - ty) * (sy - ty);
+            if (d < bestDist) {
+              bestDist = d;
+              bestPortal = [sx + 0.5, sy, sz + 0.5];
+            }
+          }
+        }
+      }
+    }
+    if (bestPortal) return bestPortal;
+
+    // 2. Otherwise find a safe floor y near (tx, tz); only build an obsidian side-pad if suspended over water/lava/air!
+    let px = tx, pz = tz, py = isNether ? 64 : Math.max(SEA + 1, w.surfaceY(tx, tz) + 1);
+    let foundLand = false;
+    if (isNether) {
+      for (let r = 0; r <= 12 && !foundLand; r += 2) {
+        for (const [ox, oz] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
+          const cx = tx + ox, cz = tz + oz;
+          if (!w.isLoaded(cx, cz)) continue;
+          for (let y = 34; y <= 102; y++) {
+            const g = w.getBlock(cx, y - 1, cz);
+            if (g && g !== 6 && g !== LAVA && BLOCKS[g] && BLOCKS[g].solid && w.getBlock(cx, y, cz) === 0 && w.getBlock(cx, y + 1, cz) === 0 && w.getBlock(cx, y + 2, cz) === 0 && w.getBlock(cx, y + 3, cz) === 0) {
+              px = cx; py = y; pz = cz;
+              foundLand = true;
+              break;
+            }
+          }
+          if (foundLand) break;
+        }
+      }
+    } else {
+      // Overworld: check if the terrain at (px, py - 1, pz) is solid dry land (not water/lava/air)
+      const g0 = w.getBlock(px, py - 1, pz), g1 = w.getBlock(px + 1, py - 1, pz);
+      if (g0 && !IS_FLUID[g0] && BLOCKS[g0] && BLOCKS[g0].solid && g1 && !IS_FLUID[g1] && BLOCKS[g1] && BLOCKS[g1].solid) {
+        foundLand = true;
+      }
+    }
+
+    // 3. Per Minecraft Wiki: only generate the 4x3 Obsidian standing ledge if no solid land was found (e.g. over Ocean/Lava/Air);
+    // on solid land, only clear the 4x4x3 air pocket so the player does not suffocate, leaving only the 4x5 Obsidian frame!
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 2; dx++) {
+        if (!foundLand && (dz !== 0)) {
+          w.setBlock(px + dx, py - 1, pz + dz, 28, 0, 0);
+        }
+        for (let dy = 0; dy <= 3; dy++) {
+          w.setBlock(px + dx, py + dy, pz + dz, 0, 0, 0);
+        }
+      }
+    }
+
+    // 4. Build standard 4x5 Obsidian frame along X (dx = -1..2, dy = -1..3 at pz) with 2x3 nether_portal (528) interior
+    for (let dx = -1; dx <= 2; dx++) {
+      w.setBlock(px + dx, py - 1, pz, 28, 0, 0);
+      w.setBlock(px + dx, py + 3, pz, 28, 0, 0);
+    }
+    for (let dy = 0; dy <= 2; dy++) {
+      w.setBlock(px - 1, py + dy, pz, 28, 0, 0);
+      w.setBlock(px + 2, py + dy, pz, 28, 0, 0);
+      w.setBlock(px, py + dy, pz, 528, 0, 0);
+      w.setBlock(px + 1, py + dy, pz, 528, 0, 0);
+    }
+    // Re-init lighting on affected chunks
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const ch = w.getChunk((px >> 4) + dx, (pz >> 4) + dz);
+        if (ch) { w.initLight(ch); ch.bumpMask(0xFFFF); }
+      }
+    }
+    return [px + 0.5, py, pz + 0.5];
+  }
+
+  async triggerNetherPortal() {
+    if (this._switchingDim || !this.world) return;
+    const targetDim = this.world.dimension === 'nether' ? 'overworld' : 'nether';
+    await this.switchDimension(targetDim);
+  }
+
+  checkActivateEndPortal(fx, fy, fz) {
+    const w = this.world;
+    if (!w) return false;
+    // Search all possible 3x3 interior centers (cx, fy, cz) within +-2 blocks of the frame at (fx, fy, fz)
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const cx = fx + dx, cz = fz + dz;
+        let all12Filled = true;
+        for (let i = -1; i <= 1 && all12Filled; i++) {
+          // North (cz-2), South (cz+2), West (cx-2), East (cx+2)
+          for (const [rx, rz] of [[cx + i, cz - 2], [cx + i, cz + 2], [cx - 2, cz + i], [cx + 2, cz + i]]) {
+            if (w.getBlock(rx, fy, rz) !== 538 || !(w.getMeta(rx, fy, rz) & 4)) {
+              all12Filled = false;
+              break;
+            }
+          }
+        }
+        if (all12Filled) {
+          for (let pz = -1; pz <= 1; pz++) {
+            for (let px = -1; px <= 1; px++) {
+              w.setBlock(cx + px, fy, cz + pz, 539, 0, 0);
+              if (this.particles) {
+                for (let k = 0; k < 6; k++) {
+                  this.particles.spawn('portal', cx + px + Math.random(), fy + 0.8, cz + pz + Math.random(), (Math.random() - 0.5) * 0.1, 0.05, (Math.random() - 0.5) * 0.1);
+                }
+              }
+            }
+          }
+          for (let pz = -1; pz <= 1; pz++) {
+            for (let px = -1; px <= 1; px++) {
+              const ch = w.getChunk((cx + px) >> 4, (cz + pz) >> 4);
+              if (ch) { w.initLight(ch); ch.bumpMask(0xFFFF); }
+            }
+          }
+          if (typeof Sound !== 'undefined' && Sound.tone) {
+            Sound.tone([cx, fy, cz], { freq: 140, end: 420, dur: 0.6, vol: 0.4, type: 'triangle' });
+          }
+          this.flushMesh(true);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  teleportDragonEgg(x, y, z) {
+    const w = this.world;
+    if (!w || w.getBlock(x, y, z) !== 541) return false;
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const nx = x + Math.floor((Math.random() - 0.5) * 15);
+      const ny = clamp(y + Math.floor((Math.random() - 0.5) * 7), 2, HEIGHT - 2);
+      const nz = z + Math.floor((Math.random() - 0.5) * 15);
+      if (nx === x && ny === y && nz === z) continue;
+      if (!w.isLoaded(nx, nz)) continue;
+      if (w.getBlock(nx, ny, nz) === 0 && SOLIDCUBE[w.getBlock(nx, ny - 1, nz)]) {
+        w.setBlock(x, y, z, 0, 0);
+        w.setBlock(nx, ny, nz, 541, 0);
+        if (this.particles) {
+          for (let i = 0; i < 24; i++) {
+            const t = i / 24;
+            this.particles.spawn('portal', lerp(x + 0.5, nx + 0.5, t) + (Math.random() - 0.5) * 0.3, lerp(y + 0.5, ny + 0.5, t) + (Math.random() - 0.5) * 0.3, lerp(z + 0.5, nz + 0.5, t) + (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.08, 0.02, (Math.random() - 0.5) * 0.08);
+          }
+        }
+        if (typeof Sound !== 'undefined' && Sound.tone) Sound.tone([nx + 0.5, ny + 0.5, nz + 0.5], { freq: 300, end: 620, dur: 0.15, vol: 0.28, type: 'sine' });
+        this.flushMesh();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  initEndBossFight(hadSavedCrystals = false, isRespawn = false) {
+    const w = this.world;
+    if (!w || w.dimension !== 'end') return;
+    // Ensure main island chunks (-3..3, -3..3) are loaded so pillars and fountain exist
+    for (let cz = -3; cz <= 3; cz++) {
+      for (let cx = -3; cx <= 3; cx++) {
+        this.loadChunk(cx, cz);
+      }
+    }
+    const dragonKilled = !!(this._dragonKilled || (this.worldMeta && this.worldMeta.dragonKilled));
+    if (dragonKilled && !isRespawn) {
+      this.activateEndExitPortal(false);
+      return;
+    }
+    if (isRespawn) {
+      // Extinguish Exit Portal (539 -> 0) and rebuild all 8 Obsidian Pillar tops, cages & crystals per vanilla EndDragonFight.respawnDragon
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (w.getBlock(dx, 59, dz) === 539) w.setBlock(dx, 59, dz, 0, 0, 0);
+        }
+      }
+      this.entities = this.entities.filter(e => !(e instanceof EndCrystal) && !(e instanceof Mob && e.type === 'ender_dragon'));
+      for (const pil of w.getEndPillars()) {
+        for (let dz = -2; dz <= 2; dz++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const wx = pil.x + dx, wz = pil.z + dz;
+            const onCageWall = Math.abs(dx) === 2 || Math.abs(dz) === 2;
+            for (let dy = 1; dy <= 4; dy++) {
+              const cy = pil.topY + dy;
+              if (pil.caged && (dy === 4 || onCageWall)) w.setBlock(wx, cy, wz, 542, 0, 0);
+              else w.setBlock(wx, cy, wz, 0, 0, 0);
+            }
+          }
+        }
+        w.setBlock(pil.x, pil.topY, pil.z, 6, 0, 0);
+        const [cx, cy, cz] = pil.crystalPos;
+        this.entities.push(new EndCrystal(this, cx, cy, cz));
+      }
+      for (let cz = -3; cz <= 3; cz++) {
+        for (let cx = -3; cx <= 3; cx++) {
+          const ch = w.getChunk(cx, cz);
+          if (ch) { w.initLight(ch); ch.bumpMask(0xFFFF); }
+        }
+      }
+      this.flushMesh(true);
+    } else {
+      // Spawn EndCrystal on each of the 8 Obsidian Pillars only on initial fight (not if player already destroyed all 8 in a saved session)
+      const hasCrystals = this.entities.some(e => e instanceof EndCrystal && !e.dead);
+      if (!hasCrystals && !hadSavedCrystals) {
+        for (const pil of w.getEndPillars()) {
+          const [cx, cy, cz] = pil.crystalPos;
+          this.entities.push(new EndCrystal(this, cx, cy, cz));
+        }
+      }
+    }
+    // If a saved ender_dragon is still in pendingMobs (e.g., saved outside chunk -3..3), restore it immediately into entities
+    if (this.pendingMobs && this.pendingMobs.length) {
+      const idx = this.pendingMobs.findIndex(m => m.type === 'ender_dragon');
+      if (idx >= 0) {
+        const m = this.pendingMobs.splice(idx, 1)[0];
+        const e = new Mob(this, m.type, m.pos[0], m.pos[1], m.pos[2]);
+        e.yaw = m.yaw || 0;
+        e.health = m.health || 200;
+        e.persistent = true;
+        e.orbitAngle = Math.atan2(e.pos[2] - 0.5, e.pos[0] - 0.5);
+        this.entities.push(e);
+      }
+    }
+    // Spawn Ender Dragon Boss if not already present in entities
+    const hasDragon = this.entities.some(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon');
+    if (!hasDragon) {
+      const dragon = new Mob(this, 'ender_dragon', 0.5, 75, 28.5);
+      dragon.orbitAngle = Math.PI / 2;
+      dragon.persistent = true;
+      this.entities.push(dragon);
+    }
+  }
+
+  activateEndExitPortal(placeEgg = true) {
+    const w = this.world;
+    if (!w || w.dimension !== 'end') return;
+    this.loadChunk(0, 0);
+    this.loadChunk(-1, 0);
+    this.loadChunk(0, -1);
+    this.loadChunk(-1, -1);
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const ax = Math.abs(dx), az = Math.abs(dz);
+        if (ax === 2 && az === 2) continue;
+        if (dx === 0 && dz === 0) continue; // central bedrock column
+        w.setBlock(dx, 59, dz, 539, 0, 0);
+      }
+    }
+    if (placeEgg) {
+      w.setBlock(0, 63, 0, 541, 0, 1); // Dragon Egg (541) atop central bedrock pillar!
+    }
+    for (const [cx, cz] of [[0, 0], [-1, 0], [0, -1], [-1, -1]]) {
+      const ch = w.getChunk(cx, cz);
+      if (ch) { w.initLight(ch); ch.bumpMask(0xFFFF); }
+    }
+    this.flushMesh(true);
+  }
+
+  completeEndFight(dragon) {
+    this._dragonKilled = true;
+    if (this.worldMeta) this.worldMeta.dragonKilled = true;
+    this.grant('end_dragon');
+    // Award 12,000 XP per Minecraft Wiki first-kill reward
+    this.player.xp = (this.player.xp || 0) + 12000;
+    if (typeof Sound !== 'undefined' && Sound.levelup) Sound.levelup();
+    if (this.particles && dragon) {
+      for (let i = 0; i < 40; i++) {
+        this.particles.spawn('explosion', dragon.pos[0] + (Math.random() - 0.5) * 6, dragon.pos[1] + (Math.random() - 0.5) * 4, dragon.pos[2] + (Math.random() - 0.5) * 6, 0, 0, 0);
+        this.particles.spawn('portal', (Math.random() - 0.5) * 5, 60 + Math.random() * 5, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 0.15, 0.08, (Math.random() - 0.5) * 0.15);
+      }
+    }
+    this.activateEndExitPortal(true);
+    if (this.ui) {
+      this.ui.message('✨ 末影龙已被击败！中央返回传送门与龙蛋已在 (0, 63, 0) 显现！', '#55FFFF');
+    }
+  }
+
+  async triggerEndPortal() {
+    if (this._switchingDim || !this.world) return;
+    if (this.world.dimension === 'end') {
+      // Victory return from The End Exit Portal to Overworld spawn!
+      const sp = (this.player && this.player.spawn) || (this.worldMeta && this.worldMeta.spawn) || [0, 80, 0];
+      this.player.health = this.player.maxHealth || 20;
+      this.player.food = 20;
+      await this.switchDimension('overworld', [sp[0] + 0.5, sp[1], sp[2] + 0.5]);
+      if (this.ui) {
+        this.ui.toast('恭喜通关！', '击败末影龙，重返主世界', item('dragon_egg'));
+        this.ui.message('🎉 恭喜通关！你已从末地返回传送门回到主世界出生点！', '#FFFF55');
+      }
+    } else {
+      await this.switchDimension('end', [42.5, 50, 0.5]);
+    }
+  }
+
+  async switchDimension(targetDim, explicitPos = null) {
+    if (this._switchingDim || !this.world) return null;
+    const curDim = this.world.dimension || 'overworld';
+    if (targetDim === curDim && !explicitPos) return this.player.pos;
+    this._switchingDim = true;
+    try {
+      const p = this.player;
+      const oldX = p.pos[0], oldY = p.pos[1], oldZ = p.pos[2];
+      // 1. Flush & save current dimension state to IndexedDB
+      if (this.worldMeta) await this.saveWorld(true);
+
+      // 2. Compute 8:1 scaled coordinates per Minecraft Wiki
+      let tx, ty, tz;
+      if (explicitPos) {
+        [tx, ty, tz] = explicitPos.map(Math.floor);
+      } else if (curDim === 'overworld' && targetDim === 'nether') {
+        tx = Math.floor(oldX / 8);
+        tz = Math.floor(oldZ / 8);
+        ty = clamp(Math.floor(oldY), 38, 100);
+      } else if (curDim === 'nether' && targetDim === 'overworld') {
+        tx = Math.floor(oldX * 8);
+        tz = Math.floor(oldZ * 8);
+        ty = clamp(Math.floor(oldY), 64, 96);
+      } else {
+        tx = Math.floor(oldX); ty = Math.floor(oldY); tz = Math.floor(oldZ);
+      }
+
+      // 3. Guard Rule #5: Unload all current dimension chunks/VAOs/entities and switch world.dimension
+      const seed = this.worldMeta ? this.worldMeta.seed : this.world.seed;
+      this.setupWorld(seed, targetDim);
+      this.world.flat = (targetDim === 'overworld') && !!(this.worldMeta && this.worldMeta.flat);
+      if (this.worker) this.worker.resetSession(this.worldSessionId, this.world);
+
+      // 4. Load target dimension saved chunks & metadata
+      this.dirtySaved = new Set();
+      if (this.worldMeta) {
+        const loadedChunks = await DB.loadChunks(this.worldMeta.id, this.worldMeta.blockBits, targetDim);
+        const dimMeta = (this.worldMeta.dimensions && this.worldMeta.dimensions[targetDim]) || {};
+        this.world.setSavedChunks(loadedChunks, dimMeta.modifiedChunkKeys || []);
+        for (const [k, v] of Object.entries(dimMeta.blockEntities || {})) this.blockEntities.set(k, v);
+        this.pendingMobs = (dimMeta.mobs || []).map(m => ({ ...m, pos: [...m.pos] }));
+        this.spawnedChunks = new Set(dimMeta.spawnedChunks || []);
+        if (targetDim === 'end' && Array.isArray(dimMeta.crystals)) {
+          for (const cPos of dimMeta.crystals) {
+            this.entities.push(new EndCrystal(this, cPos[0], cPos[1], cPos[2]));
+          }
+        }
+      }
+
+      // 5. Locate or construct destination portal / End spawn platform and place player inside
+      let dest;
+      if (targetDim === 'end') {
+        const hadSavedCrystals = !!(this.worldMeta && this.worldMeta.dimensions && this.worldMeta.dimensions.end && Array.isArray(this.worldMeta.dimensions.end.crystals));
+        dest = explicitPos ? [explicitPos[0], explicitPos[1], explicitPos[2]] : [42.5, 50, 0.5];
+        this.initEndBossFight(hadSavedCrystals);
+        this.grant('the_end');
+      } else if (explicitPos) {
+        this.loadChunk(Math.floor(explicitPos[0]) >> 4, Math.floor(explicitPos[2]) >> 4);
+        dest = [explicitPos[0], explicitPos[1], explicitPos[2]];
+      } else {
+        dest = this.findOrCreateDestinationPortal(tx, ty, tz);
+      }
+      p.world = this.world;
+      p.pos = [dest[0], dest[1], dest[2]];
+      p.prev = [...p.pos];
+      p.vel = [0, 0, 0];
+      p.fallDist = 0;
+      p.portalCooldown = 100;
+      p.portalTime = 0;
+      this._lastCC = null;
+
+      if (targetDim === 'nether') this.grant('nether');
+      if (typeof Sound !== 'undefined' && Sound.tone) Sound.tone(p.pos, { freq: 220, end: 110, dur: 0.45, vol: 0.35, type: 'sine' });
+      if (this.worldMeta) await this.saveWorld(true);
+      this.flushMesh(true);
+      return p.pos;
+    } finally {
+      this._switchingDim = false;
+    }
   }
   async exportWorld(id) {
     if (this.worldMeta && this.worldMeta.id === id && (this.state === 'play' || this.state === 'loading')) {
@@ -375,8 +902,9 @@ class Game {
     const useWorker = !!(this.worker && this.worker.isReady());
 
     // generation queue: nearest missing chunks within R+1
-    if (!this.genQueue.length || this._lastCC !== pcx + ',' + pcz) {
-      this._lastCC = pcx + ',' + pcz;
+    const ccKey = pcx + ',' + pcz + ',' + R;
+    if (this._lastCC !== ccKey) {
+      this._lastCC = ccKey;
       const q = [];
       for (let dx = -R - 1; dx <= R + 1; dx++) for (let dz = -R - 1; dz <= R + 1; dz++) {
         if (dx * dx + dz * dz > (R + 1.5) * (R + 1.5)) continue;
@@ -457,9 +985,10 @@ class Game {
           if (this.state === 'play' && this.entities.length) {
             this.entities = this.entities.filter(e => {
               if (e.dead) return false;
+              if (typeof EndCrystal !== 'undefined' && e instanceof EndCrystal && w.dimension === 'end') return true;
               const ecx = Math.floor(e.pos[0]) >> 4, ecz = Math.floor(e.pos[2]) >> 4;
               if (ecx !== ch.cx || ecz !== ch.cz) return true;
-              if (e instanceof Mob && e.persistent) {
+              if (e instanceof Mob && e.persistent && !e.deathTime && e.health > 0) {
                 if (!this.pendingMobs) this.pendingMobs = [];
                 this.pendingMobs.push(this.serializeMob(e));
               }
@@ -493,11 +1022,33 @@ class Game {
     const w = this.world;
     const ch = new Chunk(cx, cz);
     decodeChunk(saved, ch, this.worldMeta && this.worldMeta.blockBits);
-    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
-      const c = w.flat ? { temp: 0.3, humid: 0.2, h: 60, river: 0, cont: 0.3, mount: 0 } : w.column(cx * 16 + x, cz * 16 + z);
-      ch.biome[z * 16 + x] = w.biomeOf(c);
-      w.tintFor(w.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
-      w.tintFor(w.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
+    if (w.dimension === 'end') {
+      for (let i = 0; i < 256; i++) {
+        ch.biome[i] = BI.THE_END;
+        const ti = i * 3;
+        ch.grass[ti] = 142; ch.grass[ti + 1] = 185; ch.grass[ti + 2] = 113;
+        ch.foliage[ti] = 114; ch.foliage[ti + 1] = 167; ch.foliage[ti + 2] = 85;
+      }
+    } else if (w.dimension === 'nether') {
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+        const i = z * 16 + x, ti = i * 3;
+        ch.biome[i] = w.netherBiomeAt(cx * 16 + x, cz * 16 + z);
+        ch.grass[ti] = 190; ch.grass[ti + 1] = 155; ch.grass[ti + 2] = 85;
+        ch.foliage[ti] = 165; ch.foliage[ti + 1] = 125; ch.foliage[ti + 2] = 60;
+      }
+    } else {
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+        const c = w.flat ? { temp: 0.3, humid: 0.2, h: 60, river: 0, cont: 0.3, mount: 0 } : w.column(cx * 16 + x, cz * 16 + z);
+        const bi = w.biomeOf(c);
+        ch.biome[z * 16 + x] = bi;
+        if (bi === BI.CHERRY_GROVE) {
+          w.tintFor(w.grassMap, 0.45, 0.65, ch.grass, (z * 16 + x) * 3);
+          w.tintFor(w.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
+        } else {
+          w.tintFor(w.grassMap, c.temp, c.humid, ch.grass, (z * 16 + x) * 3);
+          w.tintFor(w.foliageMap, c.temp, c.humid, ch.foliage, (z * 16 + x) * 3);
+        }
+      }
     }
     ch.recount();
     return ch;
@@ -509,7 +1060,11 @@ class Game {
     w.chunks.set(ck, ch);
     w.initLight(ch);
     ch.bumpMask(0xFFFF);
-    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const n = w.getChunk(cx + a, cz + b); if (n && n !== ch) n.bumpMask(0xFFFF); }
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+      const n = w.getChunk(cx + a, cz + b);
+      if (n && n !== ch && n.dirty !== 0xFFFF) n.bumpMask(0xFFFF);
+    }
+    this._nearbyScanned = false;
     if (this.state === 'play' || this.state === 'loading') {
       // restore saved mobs
       if (this.pendingMobs && this.pendingMobs.length) {
@@ -558,7 +1113,7 @@ class Game {
       w.loadingChunks.add(ck);
       const worldId = this.worldMeta ? this.worldMeta.id : '';
       const fallbackBits = this.worldMeta ? this.worldMeta.blockBits : 16;
-      const p = DB.getChunk(worldId, cx, cz, fallbackBits).then((rec) => {
+      const p = DB.getChunk(worldId, cx, cz, fallbackBits, w.dimension || 'overworld').then((rec) => {
         w.loadingChunks.delete(ck);
         this._loadingPromises.delete(ck);
         if (this.world !== w) return null;
@@ -587,6 +1142,7 @@ class Game {
     return this._mountLoadedChunk(cx, cz, ch, false);
   }
   spawnAnimals(ch) {
+    if (this.world && this.world.dimension !== 'overworld') return;
     if (ch.village && !ch.villageSpawned) {
       ch.villageSpawned = true;
       const [vx, vy, vz] = ch.village.pos;
@@ -712,7 +1268,7 @@ class Game {
     const k = this.keys;
     return {
       fwd: (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0), strafe: (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0),
-      jump: !!k.Space, sneak: !!(k.ShiftLeft || k.ShiftRight), sprint: !!(k.ControlLeft || this.sprintToggle),
+      jump: !!k.Space, sneak: !!(k.ShiftLeft || k.ShiftRight), sprint: !!(k.ControlLeft || k.ControlRight || this.sprintToggle),
     };
   }
   ambientParticles() {
@@ -743,6 +1299,10 @@ class Game {
         this.particles.spawn('reddust', x + 0.5 + (Math.random() - 0.5) * 0.3, y + 0.35, z + 0.5 + (Math.random() - 0.5) * 0.3, 0, 0.004, 0, { col: [255, 30, 20] });
       } else if (id === 520 && w.getBlock(x, y - 1, z) === 0 && Math.random() < 0.38) {
         this.particles.spawn('cherry_petal', x + Math.random(), y - 0.05, z + Math.random(), (Math.random() - 0.5) * 0.02, -0.02, (Math.random() - 0.5) * 0.02);
+      } else if (id === 528 || id === 539 || id === 541) {
+        this.particles.spawn('portal', x + Math.random(), y + Math.random(), z + Math.random(), (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.05, (Math.random() - 0.5) * 0.08);
+      } else if (id === 537) {
+        this.particles.spawn('smoke', x + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, z + 0.2 + Math.random() * 0.6, 0, 0.015, 0).size = 0.08;
       } else if (id === 182) {
         this.particles.spawn('flame', x + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, z + 0.2 + Math.random() * 0.6, 0, 0.005, 0).life = 14;
         this.particles.spawn('smoke', x + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, z + 0.2 + Math.random() * 0.6, 0, 0.01, 0).size = 0.07;
@@ -751,39 +1311,57 @@ class Game {
         if (Math.random() < 0.3) Sound.noise([x, y, z], { type: 'bandpass', freq: 400, q: 2, dur: 0.1, vol: 0.3 });
       }
     }
-    // Continuous flame & smoke particles for nearby monster spawners (ID 182) & enchanting tables (ID 185)
-    this.nearbySpawners = [];
-    this.nearbyEnchantTables = [];
+    // Continuous flame & smoke particles for nearby monster spawners (ID 182), enchanting tables (ID 185) & end portals (ID 539)
     const px = Math.floor(p.pos[0]), py = Math.floor(p.pos[1]), pz = Math.floor(p.pos[2]);
-    for (let dy = -6; dy <= 6; dy++) {
-      const y = py + dy;
-      if (y < 1 || y >= HEIGHT) continue;
-      for (let dz = -14; dz <= 14; dz++) {
-        for (let dx = -14; dx <= 14; dx++) {
-          const bid = w.getBlock(px + dx, y, pz + dz);
-          if (bid === 185) {
-            const tx = px + dx, tz = pz + dz;
-            this.nearbyEnchantTables.push([tx, y, tz]);
-            if (typeof Enchant !== 'undefined' && Math.random() < 0.45) {
-              const bs = Enchant.countBookshelves(w, tx, y, tz);
-              if (bs.positions.length) {
-                const [bx, by, bz] = bs.positions[(Math.random() * bs.positions.length) | 0];
-                const sx = bx + 0.5 + (Math.random() - 0.5) * 0.4, sy = by + 0.5 + Math.random() * 0.4, sz = bz + 0.5 + (Math.random() - 0.5) * 0.4;
-                this.particles.spawn('glint', sx, sy, sz, (tx + 0.5 - sx) * 0.05, (y + 0.9 - sy) * 0.05, (tz + 0.5 - sz) * 0.05);
+    const posKey = `${px >> 1},${py >> 1},${pz >> 1}`;
+    if (!this._nearbyScanned || this._nearbyPosKey !== posKey || (this.tickCount % 10 === 0)) {
+      this._nearbyScanned = true;
+      this._nearbyPosKey = posKey;
+      this.nearbySpawners = [];
+      this.nearbyEnchantTables = [];
+      this.nearbyEndPortals = [];
+      const yMin = Math.max(1, py - 6), yMax = Math.min(HEIGHT - 1, py + 6);
+      const xMin = px - 14, xMax = px + 14, zMin = pz - 14, zMax = pz + 14;
+      const cx0 = xMin >> 4, cx1 = xMax >> 4, cz0 = zMin >> 4, cz1 = zMax >> 4;
+      for (let cz = cz0; cz <= cz1; cz++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ch = w.getChunk(cx, cz);
+          if (!ch) continue;
+          const B = ch.blocks;
+          const lx0 = Math.max(0, xMin - (cx << 4)), lx1 = Math.min(15, xMax - (cx << 4));
+          const lz0 = Math.max(0, zMin - (cz << 4)), lz1 = Math.min(15, zMax - (cz << 4));
+          for (let y = yMin; y <= yMax; y++) {
+            if (!ch.sectionCount[y >> 4]) { y = ((y >> 4) << 4) + 15; continue; }
+            const yOff = y << 8;
+            for (let lz = lz0; lz <= lz1; lz++) {
+              const rowOff = yOff | (lz << 4);
+              for (let lx = lx0; lx <= lx1; lx++) {
+                const bid = B[rowOff | lx];
+                if (bid === 185) this.nearbyEnchantTables.push([(cx << 4) + lx, y, (cz << 4) + lz]);
+                else if (bid === 539) this.nearbyEndPortals.push([(cx << 4) + lx, y, (cz << 4) + lz]);
+                else if (bid === 182) this.nearbySpawners.push([(cx << 4) + lx, y, (cz << 4) + lz]);
               }
             }
           }
-          if (bid === 182) {
-            const sx = px + dx, sz = pz + dz;
-            this.nearbySpawners.push([sx, y, sz]);
-            if (Math.random() < 0.65) {
-              this.particles.spawn('flame', sx + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, sz + 0.2 + Math.random() * 0.6, 0, 0.006, 0).life = 14;
-            }
-            if (Math.random() < 0.45) {
-              this.particles.spawn('smoke', sx + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, sz + 0.2 + Math.random() * 0.6, 0, 0.012, 0).size = 0.07;
-            }
-          }
         }
+      }
+    }
+    for (const [tx, y, tz] of this.nearbyEnchantTables) {
+      if (typeof Enchant !== 'undefined' && Math.random() < 0.45) {
+        const bs = Enchant.countBookshelves(w, tx, y, tz);
+        if (bs.positions.length) {
+          const [bx, by, bz] = bs.positions[(Math.random() * bs.positions.length) | 0];
+          const sx = bx + 0.5 + (Math.random() - 0.5) * 0.4, sy = by + 0.5 + Math.random() * 0.4, sz = bz + 0.5 + (Math.random() - 0.5) * 0.4;
+          this.particles.spawn('glint', sx, sy, sz, (tx + 0.5 - sx) * 0.05, (y + 0.9 - sy) * 0.05, (tz + 0.5 - sz) * 0.05);
+        }
+      }
+    }
+    for (const [sx, y, sz] of this.nearbySpawners) {
+      if (Math.random() < 0.65) {
+        this.particles.spawn('flame', sx + 0.2 + Math.random() * 0.6, y + 0.2 + Math.random() * 0.6, sz + 0.2 + Math.random() * 0.6, 0, 0.006, 0).life = 14;
+      }
+      if (Math.random() < 0.45) {
+        this.particles.spawn('smoke', sx + 0.2 + Math.random() * 0.6, y + 0.3 + Math.random() * 0.5, sz + 0.2 + Math.random() * 0.6, 0, 0.012, 0).size = 0.07;
       }
     }
   }
@@ -795,10 +1373,11 @@ class Game {
     const w = this.world;
     for (const [sx, sy, sz] of list) {
       if (w.getBlock(sx, sy, sz) !== 182) continue;
-      // Count existing spiders within 8 blocks of this spawner
+      const isBlaze = (w.getMeta(sx, sy, sz) === 1 || w.dimension === 'nether');
+      const sType = isBlaze ? 'blaze' : 'spider';
       let nearby = 0;
       for (const e of this.entities) {
-        if (!e.dead && e instanceof Mob && e.type === 'spider' && Math.hypot(e.pos[0] - (sx + 0.5), e.pos[1] - sy, e.pos[2] - (sz + 0.5)) < 9) nearby++;
+        if (!e.dead && e instanceof Mob && e.type === sType && Math.hypot(e.pos[0] - (sx + 0.5), e.pos[1] - sy, e.pos[2] - (sz + 0.5)) < 9) nearby++;
       }
       if (nearby >= 4) continue;
       const toSpawn = 1 + (Math.random() < 0.4 ? 1 : 0);
@@ -808,11 +1387,10 @@ class Game {
         const my = sy + Math.floor(Math.random() * 3) - 1;
         const mz = sz + Math.floor((Math.random() - 0.5) * 7);
         if (my < 1 || my >= HEIGHT - 2) continue;
-        // Spider needs 2x1x2 air/cobweb space and solid ground within 2 blocks below
         const b0 = w.getBlock(mx, my, mz), bAbove = w.getBlock(mx, my + 1, mz);
         if ((b0 !== 0 && b0 !== 177) || (bAbove !== 0 && bAbove !== 177)) continue;
-        if (!BLOCKS[w.getBlock(mx, my - 1, mz)].solid && !BLOCKS[w.getBlock(mx, my - 2, mz)].solid) continue;
-        const mob = new Mob(this, 'spider', mx + 0.5, my, mz + 0.5);
+        if (!isBlaze && !BLOCKS[w.getBlock(mx, my - 1, mz)].solid && !BLOCKS[w.getBlock(mx, my - 2, mz)].solid) continue;
+        const mob = new Mob(this, sType, mx + 0.5, my, mz + 0.5);
         if (mob.collides(mob.box())) continue;
         this.entities.push(mob);
         spawned++;
@@ -921,6 +1499,19 @@ class Game {
   onNeighborUpdate(x, y, z, id) {
     const w = this.world, b = BLOCKS[id];
     if (!b) return;
+    if (id === 528) {
+      // Nether portal cascade break if any in-plane adjacent frame/portal block is broken
+      const meta = w.getMeta(x, y, z) & 1;
+      const dx = meta === 0 ? 1 : 0, dz = meta === 1 ? 1 : 0;
+      const n1 = w.getBlock(x - dx, y, z - dz), n2 = w.getBlock(x + dx, y, z + dz);
+      const n3 = w.getBlock(x, y - 1, z), n4 = w.getBlock(x, y + 1, z);
+      const valid = (bid) => bid === 28 || bid === 528;
+      if (!valid(n1) || !valid(n2) || !valid(n3) || !valid(n4)) {
+        w.setBlock(x, y, z, 0, 0, 1);
+        this.flushMesh();
+      }
+      return;
+    }
     if (b.gravity) {
       const below = w.getBlock(x, y - 1, z);
       if (y > 0 && (below === 0 || REPLACEABLE[below] || IS_FLUID[below]) && w.isLoaded(x, z)) {
@@ -959,6 +1550,7 @@ class Game {
         return solidBelow;
       case 'ladder': return !!SOLIDCUBE[w.getBlock(x + DIRS[meta][0], y, z + DIRS[meta][2])];
       case 'wheat': return below === 63;
+      case 'nether_wart_crop': return below === 530;
       case 'sugar_cane': return below === 38 || below === 2 || below === 3 || below === 9 || below === 97;
       case 'cactus': return below === 37 || below === 9 || below === 97;
       case 'dead_bush': return below === 9 || below === 97 || below === 3 || below === 2 || below === 83;
@@ -990,6 +1582,15 @@ class Game {
       case 64: {
         const m = w.getMeta(x, y, z);
         if (m < 7 && Math.max(w.skyAt(x, y, z) * this.daylight(), w.blockLightAt(x, y, z)) >= 9 && Math.random() < (w.getMeta(x, y - 1, z) ? 0.5 : 0.25)) w.setMeta(x, y, z, m + 1);
+        break;
+      }
+      case 536: {
+        const m = w.getMeta(x, y, z) & 3;
+        if (m < 3 && Math.random() < 0.18) w.setMeta(x, y, z, m + 1);
+        break;
+      }
+      case 537: {
+        if (w.getBlock(x, y - 1, z) !== 529 && Math.random() < 0.35) w.setBlock(x, y, z, 0, 0);
         break;
       }
       case 65: case 66: case 67: case 521:
@@ -1049,9 +1650,59 @@ class Game {
   }
 
   // ---- mob spawning ----------------------------------------------------------------------
+  pickNetherMobType(x, y, z, r = Math.random()) {
+    const w = this.world;
+    const inFortress = typeof Structures !== 'undefined' && Structures.isInsideNetherFortress && Structures.isInsideNetherFortress(x, y, z, w);
+    if (inFortress) {
+      // Nether Fortress: Blaze (35%), Wither Skeleton (35%), Zombified Piglin (20%), Skeleton (10%)
+      return r < 0.35 ? 'blaze' : r < 0.70 ? 'wither_skeleton' : r < 0.90 ? 'zombified_piglin' : 'skeleton';
+    }
+    // Nether Wastes: Zombified Piglin (55%), Ghast (25%), Enderman (14% small amount), Skeleton (6% very small amount)
+    return r < 0.55 ? 'zombified_piglin' : r < 0.80 ? 'ghast' : r < 0.94 ? 'enderman' : 'skeleton';
+  }
   spawnMobs() {
     if (this.mode === 'creative' && !this.settings.creativeMobs) { }
     const p = this.player, w = this.world;
+    if (w.dimension === 'end') {
+      const endermanCount = this.entities.filter(e => e instanceof Mob && !e.dead && e.type === 'enderman').length;
+      if (endermanCount >= 14) return;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const a = Math.random() * Math.PI * 2, d = 14 + Math.random() * 28;
+        const x = Math.floor(p.pos[0] + Math.sin(a) * d), z = Math.floor(p.pos[2] + Math.cos(a) * d);
+        if (!w.isLoaded(x, z)) continue;
+        const y = w.surfaceY(x, z) + 1;
+        if (y <= 20 || w.getBlock(x, y - 1, z) !== 540) continue;
+        if (w.getBlock(x, y, z) !== 0 || w.getBlock(x, y + 1, z) !== 0 || w.getBlock(x, y + 2, z) !== 0) continue;
+        const m = new Mob(this, 'enderman', x + 0.5, y, z + 0.5);
+        m.persistent = false;
+        if (!m.collides(m.box())) this.entities.push(m);
+      }
+      return;
+    }
+    if (w.dimension === 'nether') {
+      const netherCount = this.entities.filter(e => e instanceof Mob && !e.dead).length;
+      const ghastCount = this.entities.filter(e => e instanceof Mob && !e.dead && e.type === 'ghast').length;
+      if (netherCount >= 26) return;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const a = Math.random() * Math.PI * 2, d = 20 + Math.random() * 38;
+        const x = Math.floor(p.pos[0] + Math.sin(a) * d), z = Math.floor(p.pos[2] + Math.cos(a) * d);
+        if (!w.isLoaded(x, z)) continue;
+        // Find a valid cavern floor y in 32..108
+        let y = w.surfaceY(x, z) + 1;
+        const ry = 33 + Math.floor(Math.random() * 72);
+        if (w.getBlock(x, ry, z) === 0 && w.getBlock(x, ry + 1, z) === 0 && SOLIDCUBE[w.getBlock(x, ry - 1, z)]) {
+          y = ry;
+        }
+        if (w.getBlock(x, y, z) !== 0 || w.getBlock(x, y + 1, z) !== 0 || !SOLIDCUBE[w.getBlock(x, y - 1, z)]) continue;
+        let type = this.pickNetherMobType(x, y, z, Math.random());
+        if (type === 'ghast' && ghastCount >= 4) type = 'zombified_piglin';
+        const sy = type === 'ghast' ? Math.min(104, y + 6) : y;
+        const m = new Mob(this, type, x + 0.5, sy, z + 0.5);
+        m.persistent = false;
+        if (!m.collides(m.box())) this.entities.push(m);
+      }
+      return;
+    }
     const hostiles = this.entities.filter(e => e instanceof Mob && e.T.hostile).length;
     const passives = this.entities.filter(e => e instanceof Mob && e.T.passive && e.distTo(p) < 96).length;
     const day = this.daylight();
@@ -1189,6 +1840,22 @@ class Game {
     const meta = w.getMeta(x, y, z);
     let hx = x, hz = z;
     if (!(meta & 4)) { const D2 = DIRS[[4, 1, 5, 0][meta & 3]]; hx += D2[0]; hz += D2[2]; }
+    if (w.dimension !== 'overworld') {
+      // Attempting to sleep in a bed in the Nether triggers a power 5 explosion!
+      const R = [4, 1, 5, 0][meta & 3], D2 = DIRS[(meta & 4) ? OPP[R] : R];
+      const ox = x + D2[0], oz = z + D2[2];
+      w.setBlock(x, y, z, 0, 0, 1);
+      if (w.getBlock(ox, y, oz) === 118) w.setBlock(ox, y, oz, 0, 0, 1);
+      this.explode(x + 0.5, y + 0.5, z + 0.5, 5, null);
+      for (let i = 0; i < 8; i++) {
+        const fx = x + ((Math.random() * 7) | 0) - 3, fy = y + ((Math.random() * 5) | 0) - 2, fz = z + ((Math.random() * 7) | 0) - 3;
+        if (fy > 1 && fy < HEIGHT - 1 && w.getBlock(fx, fy, fz) === 0 && SOLIDCUBE[w.getBlock(fx, fy - 1, fz)]) {
+          w.setBlock(fx, fy, fz, 537, 0);
+        }
+      }
+      this.flushMesh();
+      return;
+    }
     p.spawn = [hx, y + 1, hz];
     const t = this.dayTime();
     if (t > 1000 && t < 12542 && this.weather < 0.8) { this.ui.actionBar = { text: '你只能在夜间或雷暴中入睡（已设置重生点）', t: performance.now() }; return; }
@@ -1239,6 +1906,14 @@ class Game {
        ['iron_pickaxe', 1, 1, 0.35], ['iron_sword', 1, 1, 0.35], ['iron_helmet', 1, 1, 0.25], ['iron_chestplate', 1, 1, 0.25],
        ['iron_leggings', 1, 1, 0.25], ['iron_boots', 1, 1, 0.25], ['obsidian', 3, 7, 0.25], ['oak_sapling', 3, 7, 0.3],
        ['emerald', 1, 4, 0.35], ['diamond', 1, 3, 0.22], ['baked_potato', 1, 4, 0.35], ['carrot', 1, 4, 0.35]],
+      // 4: Nether Fortress (Minecraft Wiki nether_bridge table)
+      [['diamond', 1, 3, 0.35], ['iron_ingot', 1, 5, 0.45], ['gold_ingot', 1, 3, 0.65], ['golden_sword', 1, 1, 0.35],
+       ['flint_and_steel', 1, 1, 0.45], ['nether_wart', 3, 7, 0.55], ['obsidian', 2, 4, 0.3], ['golden_apple', 1, 1, 0.28],
+       ['iron_chestplate', 1, 1, 0.25]],
+      // 5: Stronghold Altar Chest (Minecraft Wiki stronghold_crossing / corridor table)
+      [['ender_pearl', 1, 3, 0.75], ['diamond', 1, 3, 0.35], ['iron_ingot', 1, 5, 0.55], ['gold_ingot', 1, 3, 0.4],
+       ['bread', 1, 3, 0.6], ['apple', 1, 3, 0.5], ['iron_pickaxe', 1, 1, 0.35], ['iron_sword', 1, 1, 0.35],
+       ['golden_apple', 1, 1, 0.25], ['redstone', 4, 9, 0.35]],
     ];
     const table = tables[lootType] || tables[0];
     for (const [k, mn, mx, ch] of table) {
@@ -1296,19 +1971,24 @@ class Game {
     this.deathMsg = '玩家' + msg;
     this.ui.message(this.deathMsg, '#FFFFFF');
     // drop inventory
-    for (let i = 0; i < 40; i++) { const s = p.inv.slots[i]; if (s) { this.dropItem(p.pos[0], p.pos[1] + 1, p.pos[2], s, [(Math.random() - 0.5) * 0.5, 0.3, (Math.random() - 0.5) * 0.5]); p.inv.slots[i] = null; } }
+    for (let i = 0; i < 41; i++) { const s = p.inv.slots[i]; if (s) { this.dropItem(p.pos[0], p.pos[1] + 1, p.pos[2], s, [(Math.random() - 0.5) * 0.5, 0.3, (Math.random() - 0.5) * 0.5]); p.inv.slots[i] = null; } }
     this.deathScore = p.xp; p.xp = 0;
     setTimeout(() => { if (this.state === 'play') this.ui.open(new DeathScreen(this)); }, 1000);
   }
-  respawn() {
-    const p = this.player, s = p.spawn;
-    p.pos = [s[0] + 0.5, s[1], s[2] + 0.5]; p.prev = [...p.pos]; p.vel = [0, 0, 0];
+  async respawn() {
+    const p = this.player, s = p.spawn || [0, 80, 0];
     p.health = 20; p.food = 20; p.saturation = 5; p.deathTime = 0; p.fire = 0; p.air = 300; p.fallDist = 0; p.dead = false;
     if (p.clearEffects) p.clearEffects();
+    this.ui.close();
+    if (this.world && this.world.dimension !== 'overworld') {
+      await this.switchDimension('overworld', [s[0] + 0.5, s[1], s[2] + 0.5]);
+      return;
+    }
+    this.loadChunk(s[0] >> 4, s[2] >> 4);
+    p.pos = [s[0] + 0.5, s[1], s[2] + 0.5]; p.prev = [...p.pos]; p.vel = [0, 0, 0];
     let y = s[1];
     while (p.collides(p.box()) && y < HEIGHT) { y++; p.pos[1] = y; }
     p.prev = [...p.pos];
-    this.ui.close();
   }
 
   // ---- items & drops ---------------------------------------------------------------------
@@ -1330,7 +2010,7 @@ class Game {
     const b = BLOCKS[id];
     const silk = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'silk_touch') : 0;
     const fortune = tool && typeof Enchant !== 'undefined' ? Enchant.level(tool, 'fortune') : 0;
-    const SILK_SET = new Set(['stone', 'grass_block', 'coal_ore', 'deepslate_coal_ore', 'diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'emerald_ore', 'iron_ore', 'deepslate_iron_ore', 'gold_ore', 'deepslate_gold_ore', 'glass', 'ice', 'packed_ice', 'bookshelf', 'glowstone', 'sea_lantern', 'melon', 'clay', 'snow_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cherry_leaves', 'cobweb']);
+    const SILK_SET = new Set(['stone', 'grass_block', 'coal_ore', 'deepslate_coal_ore', 'diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'emerald_ore', 'iron_ore', 'deepslate_iron_ore', 'gold_ore', 'deepslate_gold_ore', 'nether_quartz_ore', 'nether_gold_ore', 'glass', 'ice', 'packed_ice', 'bookshelf', 'glowstone', 'sea_lantern', 'melon', 'clay', 'snow_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cherry_leaves', 'cobweb']);
     let drops;
     if (tool && ITEMS[tool.id].key === 'shears' && (b.key.endsWith('leaves') || id === 39 || id === 40 || id === 45)) {
       drops = [[id, 1]];
@@ -1343,7 +2023,7 @@ class Game {
     } else if (b.drops) {
       drops = b.drops(meta, Math.random, tool);
       if (fortune > 0) {
-        const FORTUNE_MULT = new Set(['coal', 'diamond', 'emerald', 'lapis_lazuli', 'raw_iron', 'raw_gold']);
+        const FORTUNE_MULT = new Set(['coal', 'diamond', 'emerald', 'lapis_lazuli', 'raw_iron', 'raw_gold', 'quartz', 'gold_nugget']);
         drops = drops.map(([k, n]) => {
           if (FORTUNE_MULT.has(k)) {
             const mult = 1 + Math.max(0, Math.floor(Math.random() * (fortune + 2)) - 1);
@@ -1394,28 +2074,49 @@ class Game {
     }
     for (const k of destroy) {
       const [bx, by, bz] = k.split(',').map(Number);
-      const id = w.getBlock(bx, by, bz);
+      const id = w.getBlock(bx, by, bz), meta = w.getMeta(bx, by, bz);
       if (!id || IS_FLUID[id]) continue;
       if (id === 26) { w.setBlock(bx, by, bz, 0, 0); this.entities.push(new PrimedTNT(this, bx, by, bz, 10 + ((Math.random() * 20) | 0))); continue; }
-      if (Math.random() < 1 / power && this.mode !== 'creative') this.dropBlockLoot(bx, by, bz, id, w.getMeta(bx, by, bz), null);
+      const b = BLOCKS[id];
+      if (b && b.door) { const oy = (meta & 8) ? by - 1 : by + 1; if (w.getBlock(bx, oy, bz) === id) w.setBlock(bx, oy, bz, 0, 0, 1); }
+      if ((id === 516 || id === 517) && (meta & 8)) {
+        const dir = meta & 7, D = DIRS[dir];
+        if (w.getBlock(bx + D[0], by + D[1], bz + D[2]) === 518) w.setBlock(bx + D[0], by + D[1], bz + D[2], 0, 0, 1);
+      }
+      if (id === 518) {
+        const dir = meta & 7, B = DIRS[OPP[dir]];
+        const baseId = w.getBlock(bx + B[0], by + B[1], bz + B[2]);
+        if (baseId === 516 || baseId === 517) w.setBlock(bx + B[0], by + B[1], bz + B[2], 0, 0, 1);
+      }
+      if (b && b.bed) {
+        const R2 = [4, 1, 5, 0][meta & 3], D2 = DIRS[(meta & 4) ? OPP[R2] : R2];
+        if (w.getBlock(bx + D2[0], by, bz + D2[2]) === id) w.setBlock(bx + D2[0], by, bz + D2[2], 0, 0, 1);
+      }
+      if (Math.random() < 1 / power && this.mode !== 'creative') this.dropBlockLoot(bx, by, bz, id, meta, null);
       w.setBlock(bx, by, bz, 0, 0);
     }
     // damage entities
     const R = power * 2;
     for (const e of [...this.entities, this.player]) {
-      if (e === source) continue;
+      if (e === source || e.dead) continue;
+      if (e instanceof Mob && e.type === 'ender_dragon' && typeof EndCrystal !== 'undefined' && source instanceof EndCrystal) continue;
       const d = Math.hypot(e.pos[0] - x, e.pos[1] + e.h / 2 - y, e.pos[2] - z);
       if (d > R) continue;
       const imp = 1 - d / R;
       const dir = [(e.pos[0] - x) / (d || 1), (e.pos[1] + e.h / 2 - y) / (d || 1), (e.pos[2] - z) / (d || 1)];
-      if (e instanceof Living) e.hurt(Math.floor((imp * imp + imp) / 2 * 7 * R + 1), { type: 'explosion', attacker: source && source.T ? source : null });
-      e.vel[0] += dir[0] * imp; e.vel[1] += dir[1] * imp + 0.1; e.vel[2] += dir[2] * imp;
+      const expSrc = { type: 'explosion', attacker: source && source.T ? source : null, sourcePos: [x, y, z], knockFrom: [x, y, z] };
+      const blockedExp = e === this.player && e.isBlocking && e.isBlocking() && e.isBlockedFromFront(expSrc);
+      if (e instanceof Living) e.hurt(Math.floor((imp * imp + imp) / 2 * 7 * R + 1), expSrc);
+      else if (typeof EndCrystal !== 'undefined' && e instanceof EndCrystal) { e.hurt(1, expSrc); continue; }
+      const kImp = blockedExp ? imp * 0.15 : imp;
+      e.vel[0] += dir[0] * kImp; e.vel[1] += dir[1] * kImp + (blockedExp ? 0.02 : 0.1); e.vel[2] += dir[2] * kImp;
     }
     for (let i = 0; i < 24; i++) this.particles.spawn('explosion', x + (Math.random() - 0.5) * power * 1.5, y + (Math.random() - 0.5) * power * 1.5, z + (Math.random() - 0.5) * power * 1.5, 0, 0, 0);
     for (let i = 0; i < 40; i++) this.particles.spawn('smoke', x + (Math.random() - 0.5) * power * 2, y + (Math.random() - 0.5) * power * 2, z + (Math.random() - 0.5) * power * 2, (Math.random() - 0.5) * 0.3, Math.random() * 0.2, (Math.random() - 0.5) * 0.3);
     const p = this.player;
     const pd = Math.hypot(p.pos[0] - x, p.pos[1] - y, p.pos[2] - z);
     if (pd < 30) this.shake = Math.max(this.shake || 0, (1 - pd / 30) * power / 4);
+    this.flushMesh();
   }
 
   // ---- raycasting ----------------------------------------------------------------------------
@@ -1458,10 +2159,13 @@ class Game {
   rayEntity(origin, dir, maxD) {
     let best = null;
     for (const e of this.entities) {
-      if (!(e instanceof Living) || e.deathTime > 0) continue;
-      const b = e.box();
-      const hit = rayBox(origin, dir, b[0] - 0.1, b[1] - 0.1, b[2] - 0.1, b[3] + 0.1, b[4] + 0.1, b[5] + 0.1);
-      if (hit && hit.t <= maxD && (!best || hit.t < best.t)) best = { e, t: hit.t };
+      if ((!(e instanceof Living) && !(e instanceof GhastFireball) && !(e instanceof EndCrystal)) || e.deathTime > 0) continue;
+      const effMaxD = (e instanceof Mob && e.type === 'ender_dragon') ? Math.max(maxD, 4.5) : maxD;
+      const boxes = typeof e.subBoxes === 'function' ? e.subBoxes() : [e.box()];
+      for (const b of boxes) {
+        const hit = rayBox(origin, dir, b[0] - 0.1, b[1] - 0.1, b[2] - 0.1, b[3] + 0.1, b[4] + 0.1, b[5] + 0.1);
+        if (hit && hit.t <= effMaxD && (!best || hit.t < best.t)) best = { e, t: hit.t };
+      }
     }
     return best;
   }
@@ -1483,11 +2187,21 @@ class Game {
     this.updateTarget();
     if (this.useCd > 0) this.useCd--;
     if (this.attackCd > 0) this.attackCd--;
-    // continuous using (eating / bow)
+    // continuous using (eating / potion / bow / shield)
     if (p.usingItem) {
       const held = p.inv.held;
-      if (!this.mouseBtn[2] || !held || held.id !== p.usingItem) { if (p.usingItem === item('bow') && held && held.id === p.usingItem) this.releaseBow(); p.usingItem = null; p.useT = 0; }
-      else {
+      const uDef = ITEMS[p.usingItem];
+      if (uDef && uDef.shield) {
+        const hasShield = (held && ITEMS[held.id] && ITEMS[held.id].shield) || (p.inv.offhand && ITEMS[p.inv.offhand.id] && ITEMS[p.inv.offhand.id].shield);
+        if (!this.mouseBtn[2] || !hasShield) {
+          p.usingItem = null; p.blocking = false; p.useT = 0;
+        } else {
+          p.useT++; p.blocking = true;
+        }
+      } else if (!this.mouseBtn[2] || !held || held.id !== p.usingItem) {
+        if (p.usingItem === item('bow') && held && held.id === p.usingItem) this.releaseBow();
+        p.usingItem = null; p.blocking = false; p.useT = 0;
+      } else {
         p.useT++;
         const def = ITEMS[held.id];
         if (def.food) {
@@ -1512,6 +2226,13 @@ class Game {
             if (!(held && ITEMS[held.id].tool && ITEMS[held.id].tool.type === 'sword')) this.breakBlock(...t.pos, false);
             this.attackCd = 5; p.swingT = 6;
           }
+        } else if (t.id === 541) {
+          // Left-clicking Dragon Egg in survival teleports it!
+          if (this.attackCd <= 0) {
+            this.teleportDragonEgg(...t.pos);
+            this.attackCd = 5; p.swingT = 6;
+          }
+          this.breaking = null;
         } else {
           const key = t.pos.join(',');
           if (!this.breaking || this.breaking.key !== key) this.breaking = { key, pos: t.pos, progress: 0, id: t.id };
@@ -1574,7 +2295,7 @@ class Game {
       if (!natural) {
         p.exhaust(0.005);
         if (held && ITEMS[held.id].durability && b.hardness > 0) this.damageHeld(1);
-        const xp = { coal_ore: [0, 2], deepslate_coal_ore: [0, 2], diamond_ore: [3, 7], deepslate_diamond_ore: [3, 7], redstone_ore: [1, 5], deepslate_redstone_ore: [1, 5], lapis_ore: [2, 5], emerald_ore: [3, 7] }[b.key];
+        const xp = { coal_ore: [0, 2], deepslate_coal_ore: [0, 2], diamond_ore: [3, 7], deepslate_diamond_ore: [3, 7], redstone_ore: [1, 5], deepslate_redstone_ore: [1, 5], lapis_ore: [2, 5], emerald_ore: [3, 7], nether_quartz_ore: [2, 5], nether_gold_ore: [0, 1] }[b.key];
         if (xp && silk <= 0 && this.canHarvest(id, held)) this.addXp(xp[0] + Math.floor(Math.random() * (xp[1] - xp[0] + 1)));
         this.stats.mined++;
       }
@@ -1615,6 +2336,7 @@ class Game {
     if (h.dmg >= ITEMS[h.id].durability) { p.inv.slots[p.inv.sel] = null; Sound.block('break', 'wood', p.pos); this.ui.actionBar = { text: (h.name || ITEMS[h.id].cn) + ' 损坏了', t: performance.now(), color: '#FF5555' }; }
   }
   flushMesh(sync = false) {
+    this._nearbyScanned = false;
     // remesh dirty sections near the player immediately or via urgent Tier-0 Worker tasks
     const p = this.player, pcx = Math.floor(p.pos[0]) >> 4, pcz = Math.floor(p.pos[2]) >> 4;
     const useWorker = !sync && !!(this.worker && this.worker.isReady());
@@ -1767,8 +2489,26 @@ class Game {
       if (b.onUse === 'chest') {
         const be = this.getBlockEntity(x, y, z, 'chest');
         const cm = w.getMeta(x, y, z);
-        if (cm & 8) { this.fillLoot(be, x, y, z, (cm >> 4) & 3); w.setMeta(x, y, z, cm & 7); }
+        if (cm & 8) { this.fillLoot(be, x, y, z, (cm >> 4) & 7); w.setMeta(x, y, z, cm & 7); }
         this.ui.open(new ChestScreen(this, be)); Sound.door([x, y, z], true); return;
+      }
+      if (b.onUse === 'dragon_egg') {
+        this.teleportDragonEgg(x, y, z);
+        p.swingT = 6;
+        return;
+      }
+      if (t.id === 538 && def && def.key === 'eye_of_ender') {
+        const curMeta = w.getMeta(x, y, z);
+        if (!(curMeta & 4)) {
+          w.setMeta(x, y, z, curMeta | 4);
+          if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+          if (typeof Sound !== 'undefined' && Sound.tone) Sound.tone([x + 0.5, y + 0.8, z + 0.5], { freq: 520, end: 780, dur: 0.14, vol: 0.3, type: 'sine' });
+          if (typeof Redstone !== 'undefined' && Redstone.updateComparatorsNear) Redstone.updateComparatorsNear(this, x, y, z);
+          this.checkActivateEndPortal(x, y, z);
+          p.swingT = 6;
+          this.flushMesh();
+          return;
+        }
       }
       if (b.onUse === 'bell') {
         Sound.note([x, y, z], 20); Sound.note([x, y, z], 8);
@@ -1834,7 +2574,16 @@ class Game {
       if (b.trapdoor) { w.setMeta(x, y, z, w.getMeta(x, y, z) ^ 4); Sound.door([x, y, z], true); p.swingT = 6; this.flushMesh(); return; }
       if (t.id === 26 && def && def.key === 'flint_and_steel') { w.setBlock(x, y, z, 0, 0); this.entities.push(new PrimedTNT(this, x, y, z)); this.damageHeld(1); p.swingT = 6; return; }
     }
-    if (!held) return;
+    const tryOffhandShield = () => {
+      const oh = p.inv.offhand;
+      if (oh && ITEMS[oh.id] && ITEMS[oh.id].shield) {
+        p.usingItem = oh.id; p.blocking = true; p.useT = 0;
+        return true;
+      }
+      return false;
+    };
+    if (!held) { tryOffhandShield(); return; }
+    if (def.shield) { p.usingItem = held.id; p.blocking = true; p.useT = 0; return; }
     if (def.armor) {
       const slot = 36 + def.armor.slot;
       const cur = p.inv.slots[slot];
@@ -1844,9 +2593,27 @@ class Game {
       return;
     }
     // food & potions
-    if (def.food) { if (p.food < 20 || this.mode === 'creative' || def.key === 'golden_apple') { p.usingItem = held.id; p.useT = 0; } return; }
+    if (def.food) { if (p.food < 20 || this.mode === 'creative' || def.key === 'golden_apple') { p.usingItem = held.id; p.useT = 0; } else tryOffhandShield(); return; }
     if (def.potion) { p.usingItem = held.id; p.useT = 0; return; }
     if (def.key === 'glass_bottle') {
+      // Check if player is near an active DragonBreathCloud (vanilla Dragon's Breath collection)
+      if (typeof DragonBreathCloud !== 'undefined') {
+        const cloud = this.entities.find(e => e instanceof DragonBreathCloud && !e.dead && Math.hypot(e.pos[0] - p.pos[0], e.pos[1] - p.pos[1], e.pos[2] - p.pos[2]) < 4.5);
+        if (cloud) {
+          const filled = makeStack('dragon_breath', 1);
+          if (this.mode !== 'creative') {
+            held.count--;
+            if (!held.count) p.inv.slots[p.inv.sel] = filled;
+            else if (p.inv.add(filled)) this.dropFromPlayer(filled);
+          } else {
+            if (p.inv.add(filled)) this.dropFromPlayer(filled);
+          }
+          cloud.duration = Math.max(20, cloud.duration - 40);
+          if (typeof Sound !== 'undefined' && Sound.pop) Sound.pop(cloud.pos);
+          p.swingT = 6;
+          return;
+        }
+      }
       const ft = this.raycast([p.pos[0], p.pos[1] + p.eye(), p.pos[2]], this.lookDir(), this.reach(), true);
       if (ft && ft.id === WATER) {
         const filled = makeStack('water_bottle', 1);
@@ -1869,6 +2636,60 @@ class Game {
       if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
       Sound.bow(p.pos); p.swingT = 6; return;
     }
+    if (def.key === 'ender_pearl') {
+      if ((p.pearlCooldown || 0) > 0) return;
+      p.pearlCooldown = 20; // 1-second (20 ticks) Ender Pearl cooldown per Minecraft Wiki
+      const d = this.lookDir();
+      const ep = new EnderPearlEntity(this, p.pos[0], p.pos[1] + p.eye() - 0.1, p.pos[2], [d[0] * 1.5, d[1] * 1.5 + 0.05, d[2] * 1.5], p);
+      this.entities.push(ep);
+      if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+      Sound.bow(p.pos); p.swingT = 6; return;
+    }
+    if (def.key === 'eye_of_ender') {
+      if (w.dimension !== 'overworld') {
+        if (this.ui) this.ui.actionBar = { text: '末影之眼只能在主世界感应要塞', t: performance.now(), color: '#FF8888' };
+        return;
+      }
+      const sh = (typeof Structures !== 'undefined' && Structures.locateNearest)
+        ? Structures.locateNearest(w, 'stronghold', Math.floor(p.pos[0]), Math.floor(p.pos[2]))
+        : { x: 168, y: 31, z: -157 };
+      const tx = sh ? sh.x : 168, ty = sh ? sh.y : 31, tz = sh ? sh.z : -157;
+      const eyeEnt = new EyeOfEnderEntity(this, p.pos[0], p.pos[1] + p.eye() - 0.1, p.pos[2], tx, ty, tz);
+      this.entities.push(eyeEnt);
+      this.grant('eye_spy');
+      if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+      Sound.bow(p.pos);
+      p.swingT = 6;
+      return;
+    }
+    if (def.key === 'end_crystal' && t && (t.id === 28 || t.id === 6)) {
+      const [cx, cy, cz] = t.pos;
+      if (w.getBlock(cx, cy + 1, cz) === 0) {
+        this.entities.push(new EndCrystal(this, cx + 0.5, cy + 1, cz + 0.5));
+        if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+        Sound.block('place', 'glass', [cx + 0.5, cy + 1, cz + 0.5]);
+        p.swingT = 6;
+        // If in The End and 4 EndCrystals are placed around the Exit Portal, respawn Ender Dragon!
+        if (w.dimension === 'end' && !this.entities.some(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon')) {
+          const portalCrystals = this.entities.filter(e => e instanceof EndCrystal && !e.dead && Math.hypot(e.pos[0], e.pos[2]) < 6);
+          if (portalCrystals.length >= 4) {
+            for (const pc of portalCrystals) {
+              pc.dead = true;
+              if (this.particles) {
+                for (let k = 0; k < 16; k++) {
+                  this.particles.spawn('explosion', pc.pos[0] + (Math.random() - 0.5), pc.pos[1] + 0.5 + (Math.random() - 0.5), pc.pos[2] + (Math.random() - 0.5), 0, 0, 0);
+                }
+              }
+            }
+            this._dragonKilled = false;
+            if (this.worldMeta) this.worldMeta.dragonKilled = false;
+            this.initEndBossFight(false, true);
+            if (this.ui) this.ui.message('⚡ 末影龙已重新召唤！8 根黑曜石柱顶端的末影水晶已全部恢复！', '#FF55FF');
+          }
+        }
+        return;
+      }
+    }
     // buckets
     if (def.key === 'bucket') {
       const ft = this.raycast([p.pos[0], p.pos[1] + p.eye(), p.pos[2]], this.lookDir(), this.reach(), true);
@@ -1880,7 +2701,7 @@ class Game {
       }
       return;
     }
-    if (!t) return;
+    if (!t) { tryOffhandShield(); return; }
     const [x, y, z] = t.pos, D = DIRS[t.face];
     // tools acting on blocks
     if (def.tool && def.tool.type === 'hoe' && (t.id === 2 || t.id === 3 || t.id === 181) && w.getBlock(x, y + 1, z) === 0) {
@@ -1912,7 +2733,25 @@ class Game {
       }
       return;
     }
-    if (def.key === 'flint_and_steel') return;
+    if (def.key === 'flint_and_steel' || def.key === 'fire_charge') {
+      const fx = x + D[0], fy = y + D[1], fz = z + D[2];
+      if (this.tryIgnitePortal(fx, fy, fz)) {
+        if (def.key === 'flint_and_steel') this.damageHeld(1);
+        else if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+        p.swingT = 6;
+        return;
+      }
+      if (fy > 0 && fy < HEIGHT && w.getBlock(fx, fy, fz) === 0 && SOLIDCUBE[w.getBlock(fx, fy - 1, fz)]) {
+        w.setBlock(fx, fy, fz, 537, 0);
+        this.tryIgnitePortal(fx, fy, fz);
+        if (typeof Sound !== 'undefined' && Sound.fizz) Sound.fizz([fx, fy, fz]);
+        if (def.key === 'flint_and_steel') this.damageHeld(1);
+        else if (this.mode !== 'creative') { held.count--; if (!held.count) p.inv.slots[p.inv.sel] = null; }
+        p.swingT = 6;
+        this.flushMesh();
+      }
+      return;
+    }
     if (def.spawnEgg) {
       const m = new Mob(this, def.spawnEgg, x + D[0] + 0.5, y + Math.max(0, D[1]) + (D[1] < 0 ? -2 : 0), z + D[2] + 0.5);
       m.persistent = true; m.yaw = m.bodyYaw = p.yaw + Math.PI;
@@ -1925,7 +2764,7 @@ class Game {
     let placeId = null;
     if (def.block !== undefined && BLOCKS[def.block]) placeId = def.block;
     else if (def.places) placeId = BID[def.places];
-    if (placeId == null) return;
+    if (placeId == null) { tryOffhandShield(); return; }
     const pb = BLOCKS[placeId];
     // slab merging
     if (pb.slab && t.id === placeId) {
@@ -1960,6 +2799,7 @@ class Game {
     if (placeId === 21 || placeId === 120) { if (t.face === 2) return; meta = t.face === 3 ? 0 : (OPP[t.face] === 0 ? 6 : OPP[t.face]); }
     if (pb.lever || pb.button) { meta = OPP[t.face]; }
     if (pb.repeater || pb.comparator) { meta = { 4: 0, 1: 1, 5: 2, 0: 3 }[hdir]; }
+    if (placeId === 538) { meta = { 4: 2, 1: 3, 5: 0, 0: 1 }[hdir]; }
     if (pb.piston) { meta = Math.abs(look[1]) > 0.65 ? (look[1] > 0 ? 2 : 3) : OPP[hdir]; }
     if (pb.observer) { meta = Math.abs(look[1]) > 0.65 ? (look[1] > 0 ? 3 : 2) : hdir; }
     if (pb.ladder) { if (t.face === 2 || t.face === 3) return; meta = OPP[t.face]; }
@@ -1991,6 +2831,13 @@ class Game {
       }
     }
     if (IS_FLUID[placeId]) {
+      if (placeId === WATER && w.dimension === 'nether') {
+        // Water evaporates immediately in the Nether with smoke and fizz!
+        if (this.mode !== 'creative') p.inv.slots[p.inv.sel] = makeStack('bucket');
+        this.onFizz(px, py, pz);
+        p.swingT = 6;
+        return;
+      }
       if (cur && !IS_FLUID[cur]) this.dropBlockLoot(px, py, pz, cur, w.getMeta(px, py, pz), null);
       w.setBlock(px, py, pz, placeId, 0);
       if (this.mode !== 'creative') p.inv.slots[p.inv.sel] = makeStack('bucket');
@@ -2043,6 +2890,33 @@ class Game {
 
   // ---- rendering ---------------------------------------------------------------------------
   env(a) {
+    const p = this.player;
+    const R = this.renderer.renderDist * 16;
+    const hasNightVision = !!(p && p.hasEffect && p.hasEffect('night_vision'));
+    if (this.world && this.world.dimension === 'end') {
+      const day = hasNightVision ? 0.96 : 0.80;
+      const fog = [0.09, 0.04, 0.13];
+      const sky = [0.04, 0.015, 0.07];
+      return {
+        tick: this.worldTime + a, day, fogColor: fog, skyColor: sky,
+        sunDir: [0, 1, 0], sunset: [0, 0, 0, 0], voidColor: [0.02, 0.0, 0.04],
+        celestial: 0.5, starBright: 0.65, sunAlpha: 0, rain: 0, moonPhase: 0,
+        fogNear: R * 0.45, fogFar: R * 0.95, nightTint: [0.92, 0.84, 1.0], cloudColor: [0, 0, 0], isEnd: true,
+      };
+    }
+    if (this.world && this.world.dimension === 'nether') {
+      let day = hasNightVision ? 0.95 : 0.72;
+      let fog = hasNightVision ? [0.45, 0.14, 0.14] : [0.33, 0.05, 0.05];
+      let sky = [0.22, 0.03, 0.03];
+      let fogNear = R * 0.22, fogFar = hasNightVision ? R * 0.9 : R * 0.65;
+      if (this.headInLava) { fog = [0.6, 0.1, 0]; fogNear = 0; fogFar = 2; }
+      return {
+        tick: this.worldTime + a, day, fogColor: fog, skyColor: sky,
+        sunDir: [0, 1, 0], sunset: [0, 0, 0, 0], voidColor: [0.18, 0.02, 0.02],
+        celestial: 0.5, starBright: 0, sunAlpha: 0, rain: 0, moonPhase: 0,
+        fogNear, fogFar, nightTint: [1.0, 0.85, 0.8], cloudColor: [0, 0, 0], isNether: true,
+      };
+    }
     const cel = this.celestial();
     const c = Math.cos(cel * Math.PI * 2);
     const br = clamp(c * 2 + 0.5, 0, 1);
@@ -2057,14 +2931,12 @@ class Game {
     if (Math.abs(sunAlt) < 0.4) sunsetA = (1 - Math.abs(sunAlt) / 0.4) * 0.85;
     const sunset = [1.0, 0.45 + 0.2 * Math.max(0, sunAlt), 0.2, sunsetA * (1 - rain)];
     // fog color looks toward sun at sunset
-    const p = this.player;
     const sunDir = [-Math.sin(cel * Math.PI * 2), Math.cos(cel * Math.PI * 2), 0];
     if (sunsetA > 0) {
       const ld = this.lookDir();
       const facing = Math.max(0, ld[0] * Math.sign(sunDir[0]));
       fog = fog.map((v, i) => lerp(v, sunset[i], facing * sunsetA * 0.6));
     }
-    const R = this.renderer.renderDist * 16;
     let fogNear = R * 0.6, fogFar = R * 0.95;
     if (rain > 0) { fogNear *= 1 - rain * 0.4; fogFar *= 1 - rain * 0.2; }
     const nightTint = [0.55, 0.62, 0.95];
@@ -2072,7 +2944,6 @@ class Game {
       const wl = Math.max(0.12, day * ((this.world.getLight(Math.floor(p.pos[0]), Math.floor(p.pos[1] + 1.6), Math.floor(p.pos[2])) >> 4) / 15));
       fog = [0.05 * wl, 0.18 * wl, 0.45 * wl]; fogNear = -4; fogFar = 28;
     } else if (this.headInLava) { fog = [0.6, 0.1, 0]; fogNear = 0; fogFar = 2; }
-    const hasNightVision = !!(p && p.hasEffect && p.hasEffect('night_vision'));
     if (hasNightVision) {
       day = Math.max(day, 0.94);
       fog = fog.map((v, i) => Math.max(v, [0.32, 0.38, 0.55][i]));
@@ -2103,8 +2974,8 @@ class Game {
       if (this.state === 'loading') { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); this.ui.draw(); return; }
     } else {
       const ip = p.ipos(a);
-      const eyeH = this.sleeping ? 0.2 : p.sneaking && !p.flying ? 1.27 : 1.62;
-      this.smoothEye = this.smoothEye == null ? eyeH : lerp(this.smoothEye, eyeH, 0.4);
+      const eyeH = this.sleeping ? 0.2 : p.swimming ? 0.45 : p.sneaking && !p.flying ? 1.27 : 1.62;
+      this.smoothEye = this.smoothEye == null ? eyeH : lerp(this.smoothEye, eyeH, 0.35);
       eye = [ip[0], ip[1] + this.smoothEye, ip[2]];
       yaw = p.yaw; pitch = p.pitch;
       if (this.sleeping) { yaw = [0, -Math.PI / 2, Math.PI, Math.PI / 2][this.sleeping.rot] + Math.PI; pitch = 0.5; }
@@ -2203,9 +3074,22 @@ class Game {
       const ip = e.ipos(a);
       const dx = ip[0] - cam[0], dz = ip[2] - cam[2];
       if (dx * dx + dz * dz > (r.renderDist * 16) ** 2) continue;
-      if (!aabbInFrustum(r.planes, ip[0] - 2, ip[1] - 1, ip[2] - 2, ip[0] + 2, ip[1] + 3, ip[2] + 2)) continue;
+      const pad = (e instanceof Mob && e.type === 'ender_dragon') ? 8 : 2;
+      if (r.planes && !aabbInFrustum(r.planes, ip[0] - pad, ip[1] - 2, ip[2] - pad, ip[0] + pad, ip[1] + pad + 2, ip[2] + pad)) continue;
       const l = e.lightAt();
       if (e instanceof Mob || e === this.player) this.drawMob(e, ip, a, env, l);
+      else if (e instanceof EndCrystal && r.models.end_crystal) {
+        const t = (this.tickCount + a) * 0.08 + (e.bobPhase || 0);
+        const bob = Math.sin(t) * 0.18;
+        const m = M4.create();
+        M4.translate(m, ip[0], ip[1], ip[2]);
+        const poses = {
+          base: { ry: 0 },
+          glass: { t: [0, bob, 0], ry: t * 1.1, rx: 0.6, rz: 0.6 },
+          cube: { t: [0, bob, 0], ry: -t * 1.6, rx: 0.78, rz: -0.78 },
+        };
+        r.drawModel('end_crystal', 'end_crystal', m, poses, [1, 1], env, {});
+      }
       else if (e instanceof ItemEntity) {
         const st = e.stack;
         const t = (e.age + a) / 20;
@@ -2234,6 +3118,19 @@ class Game {
         M4.scale(m, 0.7, 0.7, 0.7); M4.translate(m, -0.5, -0.5, 0);
         const lay = e.snowball ? ITEMS[e.snowball].tex : T('i_arrow');
         r.drawMesh(this.spriteMesh(lay), m, env, l);
+      } else if (e instanceof GhastFireball || e instanceof BlazeFireball || e instanceof EnderPearlEntity || e instanceof EyeOfEnderEntity || e instanceof DragonFireball) {
+        const m = M4.create(); M4.translate(m, ip[0], ip[1] + 0.3, ip[2]);
+        M4.rotY(m, (this.tickCount + a) * 0.25);
+        const sc = (e instanceof GhastFireball || e instanceof DragonFireball) ? 0.9 : 0.55;
+        M4.scale(m, sc, sc, sc); M4.translate(m, -0.5, -0.5, 0);
+        const lay = e instanceof EnderPearlEntity
+          ? T('i_ender_pearl')
+          : e instanceof EyeOfEnderEntity
+            ? T('i_ender_eye')
+            : e instanceof DragonFireball
+              ? T('i_dragon_breath')
+              : T('i_fire_charge');
+        r.drawMesh(this.spriteMesh(lay), m, env, [1, 1]);
       }
     }
     // Render floating 3D open book above nearby Enchanting Tables (ID 185)
@@ -2262,16 +3159,21 @@ class Game {
         r.drawModel('enchant_book', 'enchant_book', m, poses, [(l >> 4) / 15, Math.max(0.5, (l & 15) / 15)], env, {});
       }
     }
+    // Render dynamic multi-layer starry void shader on nearby End Portal blocks (ID 539)
+    if (this.nearbyEndPortals && this.nearbyEndPortals.length && r.drawEndPortalBlocks) {
+      r.drawEndPortalBlocks(this.nearbyEndPortals, env);
+    }
     // Render spinning miniature spider inside nearby Monster Spawners (ID 182)
     if (this.nearbySpawners && this.nearbySpawners.length) {
       const spin = (this.tickCount + a) * 0.14;
       for (const [sx, sy, sz] of this.nearbySpawners) {
         if (this.world.getBlock(sx, sy, sz) !== 182) continue;
+        const isBlaze = (this.world.getMeta(sx, sy, sz) === 1 || this.world.dimension === 'nether');
         const m = M4.create();
         M4.translate(m, sx + 0.5, sy + 0.25 + Math.sin(spin * 0.8) * 0.05, sz + 0.5);
         M4.rotY(m, spin);
         M4.scale(m, 0.36, 0.36, 0.36);
-        r.drawModel('spider', 'spider', m, {}, [1, 1], env, {});
+        r.drawModel(isBlaze ? 'blaze' : 'spider', isBlaze ? 'blaze' : 'spider', m, {}, [1, 1], env, {});
       }
     }
   }
@@ -2285,6 +3187,13 @@ class Game {
     if (!isPlayer && e.prevBodyYaw !== undefined) { let d = e.bodyYaw - e.prevBodyYaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; by = e.prevBodyYaw + d * a; }
     M4.rotY(m, by);
     if (e.deathTime > 0) M4.rotZ(m, Math.min(1, Math.sqrt((e.deathTime + a) / 20)) * Math.PI / 2);
+    const swim = isPlayer ? lerp(e.prevSwimAmt || 0, e.swimAmt !== undefined ? e.swimAmt : (e.swimming ? 1 : 0), a) : 0;
+    if (swim > 0.01) {
+      // Horizontal prone swimming posture in third-person, pitched along look direction
+      M4.translate(m, 0, 0.32 * swim, 0);
+      M4.rotX(m, (-Math.PI / 2 + e.pitch * 0.85) * swim);
+      M4.translate(m, 0, -0.9 * swim, 0);
+    }
     let sc = isPlayer ? 0.9375 : e.T.scale;
     if (e.type === 'creeper' && e.fuse >= 0) { const f = lerp(e.prevFuse, e.fuse, a) / 28; const s = 1 + Math.sin(f * 100) * f * 0.01; sc *= (1 + f * 0.4) * s; }
     if (e.baby) sc *= 0.5;
@@ -2294,21 +3203,61 @@ class Game {
     if (e.type === 'creeper' && e.fuse >= 0 && (e.fuse / 4 | 0) % 2 === 0) overlay = [1, 1, 1, 0.5];
     const lt = [l[0], l[1]];
     if (e.fire > 0) lt[1] = 1;
-    let heldId = null;
-    if (isPlayer && e.inv.held) heldId = e.inv.held.id;
-    else if (e.type === 'skeleton') heldId = item('bow');
-    const attach = heldId != null ? { rarm: (am) => {
-      const def = ITEMS[heldId], b = def.block !== undefined ? BLOCKS[def.block] : null;
+    let heldId = null, offhandId = null;
+    if (isPlayer) {
+      if (e.inv.held) heldId = e.inv.held.id;
+      if (e.inv.offhand) offhandId = e.inv.offhand.id;
+    } else if (e.type === 'skeleton') heldId = item('bow');
+    else if (e.type === 'wither_skeleton') heldId = item('stone_sword');
+    else if (e.type === 'zombified_piglin') heldId = item('golden_sword');
+    if (e.type === 'blaze') { lt[0] = 1; lt[1] = 1; }
+    const activeSh = isPlayer && e.getActiveShield ? e.getActiveShield() : null;
+    const makeArmAttach = (itemId, isLeft) => (am) => {
+      const def = ITEMS[itemId], b = def.block !== undefined ? BLOCKS[def.block] : null;
+      if (def.shield && r.models.shield) {
+        const blockingThisArm = !!(activeSh && ((isLeft && activeSh.hand === 'offhand') || (!isLeft && activeSh.hand === 'main')));
+        if (blockingThisArm) {
+          // Arm is raised with rx=1.05, ry=(isLeft ? -0.52 : 0.52).
+          // Place shield directly in front of Steve's torso (x near 0, z=-0.49),
+          // and undo arm rx/ry so shield stands upright facing straight forward (-Z) with handle (+Z) in hand!
+          const armRx = 1.05, armRy = isLeft ? -0.52 : 0.52;
+          M4.translate(am, isLeft ? 2.5 / 16 : -2.5 / 16, -9 / 16, -2.5 / 16);
+          M4.rotX(am, -armRx + 0.12);
+          M4.rotY(am, -armRy);
+          M4.scale(am, 0.78, 0.78, 0.78);
+        } else {
+          // Idle at side of arm: handle (+Z in shield space) points INWARD toward hand,
+          // and decorative shield plate (-Z in shield space) faces OUTWARD away from body!
+          M4.translate(am, isLeft ? -3 / 16 : 3 / 16, -9 / 16, 0);
+          M4.rotY(am, isLeft ? Math.PI / 2 : -Math.PI / 2);
+          M4.scale(am, 0.75, 0.75, 0.75);
+        }
+        r.drawModel('shield', 'shield', am, null, lt, env, { overlay });
+        return;
+      }
       const flat = !b || def.flat || b.shape === SH_CROSS || b.shape === SH_TORCH || b.ladder || b.door;
       M4.translate(am, 0, -9 / 16, -1 / 16);
       if (flat) {
-        M4.rotY(am, Math.PI / 2);
-        if (def.tool || def.key === 'stick' || def.key === 'bow') { if (def.key === 'bow') M4.rotZ(am, -0.6); M4.scale(am, 0.8, 0.8, 0.8); M4.translate(am, -0.3, -0.3, 0); }
-        else { M4.scale(am, 0.5, 0.5, 0.5); M4.translate(am, -0.5, -0.4, 0); }
+        if (def.key === 'bow') {
+          // Vanilla bow.json thirdperson_righthand: wooden limb curves forward (-Z) away from arm, string at hand
+          M4.translate(am, 0, -1 / 16, -2 / 16);
+          M4.rotY(am, -Math.PI / 2);
+          M4.rotZ(am, -0.75);
+          M4.scale(am, 0.85, 0.85, 0.85);
+          M4.translate(am, -0.45, -0.45, 0);
+        } else {
+          M4.rotY(am, Math.PI / 2);
+          if (def.tool || def.key === 'stick') { M4.scale(am, 0.8, 0.8, 0.8); M4.translate(am, -0.3, -0.3, 0); }
+          else { M4.scale(am, 0.5, 0.5, 0.5); M4.translate(am, -0.5, -0.4, 0); }
+        }
       } else { M4.scale(am, 0.375, 0.375, 0.375); M4.translate(am, -0.5, -0.8, -0.5); }
-      this.drawItemModel(heldId, am, lt, env, 'hand');
-    } } : null;
-    let texName = model === 'steve' ? 'steve' : e.type === 'sheep' ? 'sheep' : model;
+      this.drawItemModel(itemId, am, lt, env, 'hand');
+    };
+    const attach = (heldId != null || offhandId != null) ? {} : null;
+    if (heldId != null) attach.rarm = makeArmAttach(heldId, false);
+    if (offhandId != null) attach.larm = makeArmAttach(offhandId, true);
+    let texName = model === 'steve' ? 'steve' : e.type === 'sheep' ? 'sheep' : (e.T && e.T.tex) ? e.T.tex : model;
+    if (e.type === 'ghast' && e.charging && r.entityTex.ghast_shooting) texName = 'ghast_shooting';
     if (e.type === 'villager' && e.profession) {
       const profTex = 'villager_' + e.profession;
       if (r.entityTex[profTex]) texName = profTex;
@@ -2320,6 +3269,20 @@ class Game {
       r.drawModel('sheep_wool', 'sheep_wool', m, poses, lt, env, { overlay, tint: col });
     }
     if (e.type === 'spider') { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthFunc(gl.LEQUAL); r.drawModel('spider', 'spider_eyes', m, poses, [1, 1], env, {}); gl.disable(gl.BLEND); gl.depthFunc(gl.LESS); }
+    if (e.type === 'enderman' && r.entityTex.enderman_eyes) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthFunc(gl.LEQUAL); r.drawModel('enderman', 'enderman_eyes', m, poses, [1, 1], env, {}); gl.disable(gl.BLEND); gl.depthFunc(gl.LESS); }
+    if (e.type === 'ender_dragon' && r.entityTex.dragon_eyes) {
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthFunc(gl.LEQUAL);
+      r.drawModel('ender_dragon', 'dragon_eyes', m, poses, [1, 1], env, {});
+      gl.disable(gl.BLEND); gl.depthFunc(gl.LESS);
+    }
+    if (e.type === 'ender_dragon' && e.healingCrystal && !e.healingCrystal.dead) {
+      const cp = e.healingCrystal.pos;
+      const beamVerts = [
+        cp[0], cp[1] + 0.9, cp[2], 1, 0.4, 1, 0.9,
+        ip[0], ip[1] + 1.5, ip[2], 1, 0.8, 1, 0.9,
+      ];
+      r.drawLines(beamVerts, [1, 0.45, 1, 0.9]);
+    }
     // shadow on the ground below
     if (e.deathTime === 0) {
       const fx = Math.floor(ip[0]), fz = Math.floor(ip[2]);
@@ -2334,7 +3297,43 @@ class Game {
     const swing = lerp(p.limbSwing - p.limbAmt, p.limbSwing, a) * 0.6662, amt = p.limbAmt;
     const l = Math.cos(swing) * 1.4 * amt, r = -l;
     const sw = p.swingT > 0 ? Math.sin((6 - p.swingT + a) / 6 * Math.PI) : 0;
-    return { head: { rx: p.pitch }, rarm: { rx: r * 0.7 + sw * 1.2 }, larm: { rx: l * 0.7 }, rleg: { rx: l }, lleg: { rx: r } };
+    const pose = {
+      head: { rx: p.pitch },
+      rarm: { rx: r * 0.7 + sw * 1.2, ry: 0, rz: 0 },
+      larm: { rx: l * 0.7, ry: 0, rz: 0 },
+      rleg: { rx: l },
+      lleg: { rx: r },
+      bodyPitch: 0,
+    };
+    const swim = lerp(p.prevSwimAmt || 0, p.swimAmt !== undefined ? p.swimAmt : (p.swimming ? 1 : 0), a);
+    if (swim > 0.01) {
+      const ph = (this.tickCount + a) * 0.42;
+      pose.bodyPitch = (-Math.PI / 2 + p.pitch * 0.85) * swim;
+      pose.head.rx = lerp(pose.head.rx, Math.PI * 0.42 + p.pitch * 0.25, swim);
+      pose.rarm.rx = lerp(pose.rarm.rx, Math.PI * 0.82 + Math.sin(ph) * 0.65, swim);
+      pose.rarm.rz = lerp(0, 0.22 + Math.cos(ph) * 0.18, swim);
+      pose.larm.rx = lerp(pose.larm.rx, Math.PI * 0.82 - Math.sin(ph) * 0.65, swim);
+      pose.larm.rz = lerp(0, -0.22 - Math.cos(ph) * 0.18, swim);
+      pose.rleg.rx = lerp(pose.rleg.rx, Math.sin(ph * 1.6) * 0.45, swim);
+      pose.lleg.rx = lerp(pose.lleg.rx, -Math.sin(ph * 1.6) * 0.45, swim);
+    }
+    if (p.usingItem && ITEMS[p.usingItem] && ITEMS[p.usingItem].key === 'bow') {
+      pose.rarm.rx = Math.PI / 2 - p.pitch * 0.8;
+      pose.rarm.ry = -0.1;
+      pose.larm.rx = Math.PI / 2 - p.pitch * 0.8;
+      pose.larm.ry = 0.45;
+    }
+    const sh = p.getActiveShield && p.getActiveShield();
+    if (sh) {
+      if (sh.hand === 'main') {
+        pose.rarm.rx = 1.05;
+        pose.rarm.ry = 0.52;
+      } else {
+        pose.larm.rx = 1.05;
+        pose.larm.ry = -0.52;
+      }
+    }
+    return pose;
   }
   blockMesh(id, meta) {
     if (!this._bm) this._bm = new Map();
@@ -2346,6 +3345,12 @@ class Game {
   spriteMesh(layer) { return itemSpriteMesh(layer); }
   drawItemModel(id, m, l, env, ctx) {
     const def = ITEMS[id], r = this.renderer;
+    if (def && def.shield && r.models.shield) {
+      const mm = new Float32Array(m);
+      if (ctx === 'ground') { M4.scale(mm, 0.45, 0.45, 0.45); M4.translate(mm, 0, 0.6, 0); }
+      r.drawModel('shield', 'shield', mm, null, l, env, {});
+      return;
+    }
     const b = def.block !== undefined ? BLOCKS[def.block] : null;
     const flat = !b || def.flat || b.shape === SH_CROSS || b.shape === SH_TORCH || b.ladder || b.door;
     if (flat) {
@@ -2401,48 +3406,85 @@ class Game {
       const flat = !b || def.flat || b.shape === SH_CROSS || b.shape === SH_TORCH || b.ladder || b.door;
       const eating = p.usingItem && (def.food || def.potion);
       const bowing = p.usingItem && def.key === 'bow';
-      if (eating) {
-        const left = 32 - p.useT - a + 1, f1 = left / 32;
-        if (f1 < 0.8) M4.translate(m, 0, Math.abs(Math.cos(left / 4 * PI) * 0.1), 0);
-        const f3 = 1 - Math.pow(Math.max(0, f1), 27);
-        M4.translate(m, f3 * 0.6, f3 * -0.5, 0);
-        M4.rotY(m, f3 * 90 * D); M4.rotX(m, f3 * 10 * D); M4.rotZ(m, f3 * 30 * D);
-        M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
-      } else if (bowing) {
-        M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
-        M4.translate(m, -0.2785682, 0.18344387, 0.15731531);
-        M4.rotX(m, -13.935 * D); M4.rotY(m, 35.3 * D); M4.rotZ(m, -9.785 * D);
-        let f = (p.useT + a) / 20; f = (f * f + f * 2) / 3; if (f > 1) f = 1;
-        if (f > 0.1) M4.translate(m, 0, Math.sin((p.useT - 0.1) * 1.3) * (f - 0.1) * 0.004, 0);
-        M4.translate(m, 0, 0, f * 0.04);
-        M4.scale(m, 1, 1, 1 + f * 0.2);
-        M4.rotY(m, -45 * D);
+      const activeShield = p.getActiveShield && p.getActiveShield();
+      const blockingMain = activeShield && activeShield.hand === 'main';
+      if (def.shield && r.models.shield) {
+        if (blockingMain) {
+          M4.translate(m, 0.30, -0.26 - eq * 0.3, -0.58);
+          M4.rotY(m, 165 * D);
+          M4.rotX(m, -8 * D);
+        } else {
+          const f1 = Math.sqrt(sw);
+          M4.translate(m, -0.25 * Math.sin(f1 * PI) + 0.56, 0.15 * Math.sin(f1 * PI * 2) - 0.52 - eq * 0.5, -0.72);
+          M4.rotY(m, 145 * D);
+        }
+        M4.scale(m, 0.65, 0.65, 0.65);
+        r.drawModel('shield', 'shield', m, null, lt, env2, { vp: proj });
       } else {
-        const f1 = Math.sqrt(sw);
-        M4.translate(m, -0.4 * Math.sin(f1 * PI), 0.2 * Math.sin(f1 * PI * 2), -0.2 * Math.sin(sw * PI));
-        M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
-        const f = Math.sin(sw * sw * PI);
-        M4.rotY(m, (45 + f * -20) * D);
-        M4.rotZ(m, f * -20 * D * Math.sin(f1 * PI));
-        M4.rotX(m, Math.sin(f1 * PI) * -80 * D);
-        M4.rotY(m, -45 * D);
+        if (eating) {
+          const left = 32 - p.useT - a + 1, f1 = left / 32;
+          if (f1 < 0.8) M4.translate(m, 0, Math.abs(Math.cos(left / 4 * PI) * 0.1), 0);
+          const f3 = 1 - Math.pow(Math.max(0, f1), 27);
+          M4.translate(m, f3 * 0.6, f3 * -0.5, 0);
+          M4.rotY(m, f3 * 90 * D); M4.rotX(m, f3 * 10 * D); M4.rotZ(m, f3 * 30 * D);
+          M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
+        } else if (bowing) {
+          M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
+          M4.translate(m, -0.2785682, 0.18344387, 0.15731531);
+          M4.rotX(m, -13.935 * D); M4.rotY(m, 35.3 * D); M4.rotZ(m, -9.785 * D);
+          let f = (p.useT + a) / 20; f = (f * f + f * 2) / 3; if (f > 1) f = 1;
+          if (f > 0.1) M4.translate(m, 0, Math.sin((p.useT - 0.1) * 1.3) * (f - 0.1) * 0.004, 0);
+          M4.translate(m, 0, 0, f * 0.04);
+          M4.scale(m, 1, 1, 1 + f * 0.2);
+          M4.rotY(m, -45 * D);
+        } else {
+          const f1 = Math.sqrt(sw);
+          M4.translate(m, -0.4 * Math.sin(f1 * PI), 0.2 * Math.sin(f1 * PI * 2), -0.2 * Math.sin(sw * PI));
+          M4.translate(m, 0.56, -0.52 - eq * 0.6, -0.72);
+          const f = Math.sin(sw * sw * PI);
+          M4.rotY(m, (45 + f * -20) * D);
+          M4.rotZ(m, f * -20 * D * Math.sin(f1 * PI));
+          M4.rotX(m, Math.sin(f1 * PI) * -80 * D);
+          M4.rotY(m, -45 * D);
+        }
+        if (flat) {
+          M4.translate(m, 1.13 / 16, 3.2 / 16, 1.13 / 16);
+          M4.rotX(m, 0); M4.rotY(m, -90 * D); M4.rotZ(m, 25 * D);
+          M4.scale(m, 0.68, 0.68, 0.68);
+          M4.translate(m, -0.5, -0.5, 0);
+          let layer = b ? (def.flat ? T(def.flat) : b.tex[0]) : def.tex;
+          if (bowing) { const f = p.useT; layer = T(f >= 18 ? 'i_bow_pulling_2' : f >= 13 ? 'i_bow_pulling_1' : 'i_bow_pulling_0'); }
+          r.drawMesh(this.spriteMesh(layer), m, env2, lt);
+        } else {
+          M4.rotY(m, 45 * D);
+          M4.scale(m, 0.4, 0.4, 0.4);
+          M4.translate(m, -0.5, -0.5, -0.5);
+          let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1; if (b.hopper) meta = 2; if (b.piston) meta = 3; if (b.observer) meta = 5;
+          if (b.bed) { M4.translate(m, 0.25, 0.2, 0.5); M4.scale(m, 0.6, 0.6, 0.6); r.drawMesh(this.bedMesh || (this.bedMesh = Mesher.multi([[def.block, 0, 0, 0, 0], [def.block, 4, 0, 0, -1]])), m, env2, lt); }
+          else r.drawMesh(this.blockMesh(def.block, meta), m, env2, lt);
+        }
       }
-      if (flat) {
-        M4.translate(m, 1.13 / 16, 3.2 / 16, 1.13 / 16);
-        M4.rotX(m, 0); M4.rotY(m, -90 * D); M4.rotZ(m, 25 * D);
-        M4.scale(m, 0.68, 0.68, 0.68);
-        M4.translate(m, -0.5, -0.5, 0);
-        let layer = b ? (def.flat ? T(def.flat) : b.tex[0]) : def.tex;
-        if (bowing) { const f = p.useT; layer = T(f >= 18 ? 'i_bow_pulling_2' : f >= 13 ? 'i_bow_pulling_1' : 'i_bow_pulling_0'); }
-        r.drawMesh(this.spriteMesh(layer), m, env2, lt);
+    }
+    // Render offhand shield on left side of first-person view when equipped in slot 40
+    const oh = p.inv.offhand;
+    if (oh && ITEMS[oh.id] && ITEMS[oh.id].shield && r.models.shield) {
+      const mOff = M4.create();
+      if (this.settings.bobbing) {
+        const bob = lerp(p.prevBob, p.bob, a) * PI * 0.6, amt = lerp(p.prevBobAmt || 0, p.bobAmt, a);
+        M4.translate(mOff, Math.sin(bob) * amt * 0.5, -Math.abs(Math.cos(bob) * amt), 0);
+      }
+      const activeShield = p.getActiveShield && p.getActiveShield();
+      const blockingOff = activeShield && activeShield.hand === 'offhand';
+      if (blockingOff) {
+        M4.translate(mOff, -0.28, -0.24, -0.58);
+        M4.rotY(mOff, 195 * D);
+        M4.rotX(mOff, -8 * D);
       } else {
-        M4.rotY(m, 45 * D);
-        M4.scale(m, 0.4, 0.4, 0.4);
-        M4.translate(m, -0.5, -0.5, -0.5);
-        let meta = b.facing ? 5 : 0; if (b.stairs) meta = 1; if (b.hopper) meta = 2; if (b.piston) meta = 3; if (b.observer) meta = 5;
-        if (b.bed) { M4.translate(m, 0.25, 0.2, 0.5); M4.scale(m, 0.6, 0.6, 0.6); r.drawMesh(this.bedMesh || (this.bedMesh = Mesher.multi([[def.block, 0, 0, 0, 0], [def.block, 4, 0, 0, -1]])), m, env2, lt); }
-        else r.drawMesh(this.blockMesh(def.block, meta), m, env2, lt);
+        M4.translate(mOff, -0.54, -0.52, -0.72);
+        M4.rotY(mOff, 215 * D);
       }
+      M4.scale(mOff, 0.65, 0.65, 0.65);
+      r.drawModel('shield', 'shield', mOff, null, lt, env2, { vp: proj });
     }
     r.vp = savedVP; r.camPos = savedCam;
   }

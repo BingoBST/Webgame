@@ -327,6 +327,7 @@ const sandbox = vm.createContext({
   clearInterval,
   performance: { now: () => Date.now() },
   requestAnimationFrame: () => 1,
+  addEventListener: () => {},
   Uint8Array,
   Uint8ClampedArray,
   Uint16Array,
@@ -395,7 +396,7 @@ const sandbox = vm.createContext({
 sandbox.window = sandbox;
 
 for (const rel of scriptMatches) {
-  if (rel.endsWith('main.js')) continue; // Don't auto-run window.onload loop yet
+  // Load main.js too (window.addEventListener is mocked as no-op) so playerPreview & bookPreview are tested // Don't auto-run window.onload loop yet
   const code = fs.readFileSync(path.join(GAME_DIR, rel), 'utf8');
   vm.runInContext(code, sandbox, { filename: rel });
 }
@@ -438,13 +439,23 @@ for (const rel of scriptMatches) {
         525: 'cherry_door',
         526: 'cherry_fence',
         527: 'brewing_stand',
+        528: 'nether_portal',
+        529: 'netherrack',
+        530: 'soul_sand',
+        531: 'nether_quartz_ore',
+        532: 'nether_gold_ore',
+        533: 'nether_bricks',
+        534: 'nether_brick_fence',
+        535: 'nether_brick_stairs',
+        536: 'nether_wart_crop',
+        537: 'fire',
       };
       for (const [idStr, key] of Object.entries(expectedBlocks)) {
         const id = Number(idStr);
         if (!BLOCKS[id] || BLOCKS[id].key !== key) {
           throw new Error('Block ID mismatch at ' + id + ': expected ' + key + ', got ' + (BLOCKS[id] && BLOCKS[id].key));
         }
-        if (id !== 518 && (!ITEMS[id] || ITEMS[id].iconIdx >= 400)) {
+        if (id !== 518 && id !== 528 && id !== 536 && id !== 537 && (!ITEMS[id] || ITEMS[id].iconIdx >= 400)) {
           throw new Error('Compact iconIdx failed for block ' + id + ' (' + key + ')');
         }
       }
@@ -790,6 +801,7 @@ for (const rel of scriptMatches) {
       const importedMeta = await game.importWorldData(JSON.stringify(exported));
       if (!importedMeta || !importedMeta.id) throw new Error('World export/import round-trip failed');
       await game.loadWorld(importedMeta.id);
+      game.loadChunk(pcx, pcz);
       if (!game.player.hasEffect('fire_resistance') || !game.player.hasEffect('speed') || !game.player.hasEffect('night_vision')) {
         throw new Error('Player status effects failed to persist across loadWorld');
       }
@@ -818,7 +830,819 @@ for (const rel of scriptMatches) {
       game.player.inv.slots[39] = makeStack('diamond_boots', 1);
       game.renderer.drawPlayerArmor(game.player, M4.create(), {}, [1, 0], { day: 1, fogColor: [0,0,0], fogNear: 100, fogFar: 200, nightTint: [1,1,1] });
 
-      // ---- Test 10: Worker Fallback to Main Thread ----
+      // ---- Test 10: Step 6 Underwater Sprint Swimming Pose & Shield Blocking ----
+      // 10a. Underwater Sprint Swimming Pose + Pitch-Directed Ascent/Descent
+      const swx = bx + 2, swy = 105, swz = bz + 2;
+      for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 3; dy++) for (let dz = -2; dz <= 2; dz++) {
+        game.world.setBlock(swx + dx, swy + dy, swz + dz, WATER, 0);
+      }
+      game.player.pos = [swx + 0.5, swy + 0.5, swz + 0.5];
+      game.player.prev = [...game.player.pos];
+      game.player.vel = [0, 0, 0];
+      game.player.yaw = 0; // looking -Z
+      game.player.pitch = 0;
+      game.player.flying = false;
+      game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: true });
+      if (!game.player.inWater || !game.player.swimming) {
+        throw new Error('Player should enter swimming state when sprinting forward in water');
+      }
+      if (Math.abs(game.player.h - 0.6) > 1e-4 || Math.abs(game.player.eye() - 0.45) > 1e-4) {
+        throw new Error('Swimming player should have prone hitbox h=0.6 and eye=0.45');
+      }
+      for (let i = 0; i < 6; i++) game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: true });
+      const swimPose = game.playerPose(1);
+      if (!swimPose || swimPose.bodyPitch > -0.5) {
+        throw new Error('Third-person swimming pose should pitch body horizontally, got bodyPitch=' + (swimPose && swimPose.bodyPitch));
+      }
+      // Pitch UP (+0.65 rad) => should ascend (vel[1] > 0)
+      game.player.pos = [swx + 0.5, swy + 0.5, swz + 0.5];
+      game.player.vel = [0, 0, 0];
+      game.player.pitch = 0.65;
+      for (let i = 0; i < 3; i++) game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: true });
+      const ascendVy = game.player.vel[1];
+      if (ascendVy <= 0.04) throw new Error('Swimming while looking up should ascend (vel[1] > 0.04), got ' + ascendVy);
+
+      // Pitch DOWN (-0.65 rad) => should dive (vel[1] < 0)
+      game.player.pos = [swx + 0.5, swy + 1.2, swz + 0.5];
+      game.player.vel = [0, 0, 0];
+      game.player.pitch = -0.65;
+      for (let i = 0; i < 3; i++) game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: true });
+      const diveVy = game.player.vel[1];
+      if (diveVy >= -0.04) throw new Error('Swimming while looking down should dive (vel[1] < -0.04), got ' + diveVy);
+
+      // 10a-2. Official MC 1-block-high tunnel ceiling restriction:
+      // Place solid stone floor at swy-1, water at swy, and solid stone ceiling at swy+1 (1-block-high tunnel)
+      for (let dz = -2; dz <= 2; dz++) {
+        game.world.setBlock(swx, swy - 1, swz + dz, 1, 0);
+        game.world.setBlock(swx, swy, swz + dz, WATER, 0);
+        game.world.setBlock(swx, swy + 1, swz + dz, 1, 0);
+      }
+      game.player.pos = [swx + 0.5, swy + 0.05, swz + 0.5];
+      game.player.prev = [...game.player.pos];
+      game.player.vel = [0, 0, 0];
+      game.player.pitch = 0;
+      // Enter sprint-swimming in the 1-block tunnel
+      game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: true });
+      if (!game.player.swimming || !game.player.sprinting || Math.abs(game.player.h - 0.6) > 1e-4) {
+        throw new Error('Should sprint-swim inside 1-block tunnel');
+      }
+      // Release Sprint (sprint: false, fwd: 1) inside 1-block tunnel -> MUST stay prone (swimming=true, h=0.6, eye=0.45) in slow-swim mode (sprinting=false) and NOT clip into ceiling!
+      game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: false });
+      if (!game.player.swimming || game.player.sprinting || Math.abs(game.player.h - 0.6) > 1e-4 || Math.abs(game.player.eye() - 0.45) > 1e-4) {
+        throw new Error('Releasing sprint inside 1-block tunnel must keep swimming=true (h=0.6, eye=0.45) and switch to slow swim (sprinting=false)');
+      }
+      if (game.player.collides(game.player.box())) {
+        throw new Error('Player box collided with ceiling inside 1-block tunnel!');
+      }
+      // Also release Forward (sprint: false, fwd: 0) inside 1-block tunnel -> MUST still stay prone (h=0.6) under the ceiling!
+      game.player.tick({ fwd: 0, strafe: 0, jump: false, sneak: false, sprint: false });
+      if (!game.player.swimming || Math.abs(game.player.h - 0.6) > 1e-4) {
+        throw new Error('Stopping inside 1-block tunnel must keep h=0.6 and not stand up into ceiling');
+      }
+      // Remove ceiling block above (open water) with sprint: false -> should now stand up to h=1.8!
+      for (let dz = -2; dz <= 2; dz++) game.world.setBlock(swx, swy + 1, swz + dz, WATER, 0);
+      game.player.tick({ fwd: 1, strafe: 0, jump: false, sneak: false, sprint: false });
+      if (game.player.swimming || Math.abs(game.player.h - 1.8) > 1e-4) {
+        throw new Error('In open water without ceiling, releasing sprint should return to standing h=1.8');
+      }
+
+      // Clean up water pool
+      for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 3; dy++) for (let dz = -2; dz <= 2; dz++) {
+        game.world.setBlock(swx + dx, swy + dy, swz + dz, 0, 0);
+      }
+
+      // 10b. Shield Crafting Recipe (6 Planks + 1 Iron Ingot)
+      checkCraft(['oak_planks', 'iron_ingot', 'oak_planks', 'oak_planks', 'oak_planks', 'oak_planks', null, 'oak_planks', null], 'shield');
+      checkCraft(['cherry_planks', 'iron_ingot', 'cherry_planks', 'cherry_planks', 'cherry_planks', 'cherry_planks', null, 'cherry_planks', null], 'shield');
+      if (!game.renderer.models.shield || !game.renderer.entityTex.shield) {
+        throw new Error('Missing 3D shield model or entity texture');
+      }
+
+      // 10c. Mainhand & Offhand Right-Click Shield Blocking (Melee, Arrow, Creeper Explosion)
+      game.player.pos = [swx + 0.5, swy, swz + 0.5];
+      game.player.prev = [...game.player.pos];
+      game.player.vel = [0, 0, 0];
+      game.player.yaw = 0; // looking North (-Z)
+      game.player.pitch = 0;
+      game.player.swimming = false;
+      game.player.h = 1.8;
+      game.player.health = 20;
+      game.player.invuln = 0;
+      game.target = null;
+      game.targetEntity = null;
+
+      // Equip Shield in Mainhand and right-click (use)
+      game.player.inv.slots[0] = makeStack('shield', 1);
+      game.player.inv.sel = 0;
+      game.use();
+      if (!game.player.isBlocking() || game.player.getActiveShield().hand !== 'main') {
+        throw new Error('Right-clicking with shield in mainhand should activate mainhand shield blocking');
+      }
+      const sbBeforeMelee = Sound.shieldBlockCount || 0;
+      const attackerMob = { pos: [swx + 0.5, swy, swz - 1.2], vel: [0, 0, 0], onGround: true };
+      const meleeHurt = game.player.hurt(5, { type: 'mob', attacker: attackerMob, knockFrom: attackerMob.pos });
+      if (meleeHurt !== false || game.player.health !== 20 || (Sound.shieldBlockCount || 0) <= sbBeforeMelee) {
+        throw new Error('Mainhand shield should block frontal melee attack and play shieldBlock sound');
+      }
+      if (game.player.inv.slots[0].dmg <= 0) {
+        throw new Error('Blocking melee attack should consume shield durability');
+      }
+
+      // Move Shield to Offhand (slot 40) with Sword in Mainhand, right-click (use)
+      game.player.inv.slots[40] = game.player.inv.slots[0];
+      game.player.inv.slots[0] = makeStack('diamond_sword', 1);
+      game.player.usingItem = null;
+      game.player.blocking = false;
+      game.use();
+      if (!game.player.isBlocking() || game.player.getActiveShield().hand !== 'offhand') {
+        throw new Error('Right-clicking with sword in mainhand and shield in offhand should activate offhand shield blocking');
+      }
+
+      // Block Frontal Arrow with Offhand Shield
+      const sbBeforeArrow = Sound.shieldBlockCount || 0;
+      const testArrow = new Arrow(game, swx + 0.5, swy + 1.0, swz - 0.8, [0, 0, 0.9], null);
+      for (let t = 0; t < 4; t++) testArrow.tick();
+      if (game.player.health !== 20 || (Sound.shieldBlockCount || 0) <= sbBeforeArrow || testArrow.vel[2] >= 0) {
+        throw new Error('Offhand shield should block and deflect frontal arrow');
+      }
+
+      // Block Frontal Creeper Explosion with Offhand Shield
+      const sbBeforeExp = Sound.shieldBlockCount || 0;
+      game.explode(swx + 0.5, swy + 0.5, swz - 1.5, 3, { T: MOB_TYPES.creeper, pos: [swx + 0.5, swy, swz - 1.5] }, true);
+      if (game.player.health !== 20 || (Sound.shieldBlockCount || 0) <= sbBeforeExp) {
+        throw new Error('Offhand shield should block frontal creeper explosion damage');
+      }
+
+      // Rear Attack (+Z, behind player looking -Z) must NOT be blocked
+      const rearHurt = game.player.hurt(4, { type: 'mob', attacker: { pos: [swx + 0.5, swy, swz + 2.5], vel: [0, 0, 0] }, knockFrom: [swx + 0.5, swy, swz + 2.5] });
+      if (rearHurt !== true || game.player.health >= 20) {
+        throw new Error('Shield must NOT block attacks from behind the player');
+      }
+
+      // 10d. Verify third-person Shield 3D orientation in both IDLE and BLOCKING states
+      game.player.pos = [0, 0, 0];
+      game.player.yaw = 0;
+      game.player.pitch = 0;
+      game.player.swimAmt = 0;
+      game.player.prevSwimAmt = 0;
+      let capturedShieldMat = null;
+      const origDrawModel = game.renderer.drawModel.bind(game.renderer);
+      game.renderer.drawModel = function(name, texName, m, poses, light, env, opts) {
+        if (name === 'shield') capturedShieldMat = new Float32Array(m);
+        return origDrawModel(name, texName, m, poses, light, env, opts);
+      };
+      // Idle offhand shield (larm at x < 0): front normal (-z column = [-m[8], -m[9], -m[10]]) must point OUTWARD (-X), and handle (+z) must be closer to hand than plate (-z)
+      game.player.blocking = false;
+      game.player.usingItem = null;
+      game.drawMob(game.player, [0, 0, 0], 1, game.env(0), [1, 0]);
+      if (!capturedShieldMat) throw new Error('Shield model was not drawn in third-person');
+      const idleFrontNormX = -capturedShieldMat[8];
+      const idlePlateX = capturedShieldMat[12] + capturedShieldMat[8] * (-1.5 / 16);
+      const idleHandleX = capturedShieldMat[12] + capturedShieldMat[8] * (2.0 / 16);
+      if (idleFrontNormX > -0.5 || idleHandleX <= idlePlateX) {
+        throw new Error('Offhand idle shield is backwards! frontNormX=' + idleFrontNormX + ', handleX=' + idleHandleX + ', plateX=' + idlePlateX);
+      }
+      // Blocking offhand shield: must be centered in front of torso (|plateX| < 0.15, plateZ < -0.35) with front normal pointing FORWARD (-Z, frontNormZ < -0.6)
+      game.player.blocking = true;
+      game.player.usingItem = item('shield');
+      capturedShieldMat = null;
+      game.drawMob(game.player, [0, 0, 0], 1, game.env(0), [1, 0]);
+      const blkFrontNormZ = -capturedShieldMat[10];
+      const blkPlateX = capturedShieldMat[12] + capturedShieldMat[8] * (-1.5 / 16);
+      const blkPlateZ = capturedShieldMat[14] + capturedShieldMat[10] * (-1.5 / 16);
+      const blkHandleZ = capturedShieldMat[14] + capturedShieldMat[10] * (2.0 / 16);
+      if (Math.abs(blkPlateX) > 0.15 || blkPlateZ > -0.35 || blkFrontNormZ > -0.6 || blkHandleZ <= blkPlateZ) {
+        throw new Error('Blocking shield not protecting front of torso! plateX=' + blkPlateX + ', plateZ=' + blkPlateZ + ', frontNormZ=' + blkFrontNormZ);
+      }
+      game.renderer.drawModel = origDrawModel;
+      game.drawHand(1, game.env(0));
+
+      // ---- Test 11: W3 Phase 1 Nether Dimension, Obsidian Portal, Nether Fortress, Nether Mobs & Wither Effect ----
+      // 11a. Verify transitional W1 recipes for blaze_rod and nether_wart are removed, and genuine Nether recipes work
+      const tryCraft = (grid3x3) => matchRecipe(grid3x3.map(k => k ? { id: item(k), count: 1 } : null), 3);
+      if (tryCraft(['gold_ingot', null, null, 'magma_block', null, null, 'gold_ingot', null, null]) !== null) {
+        throw new Error('Transitional blaze_rod crafting recipe should have been removed!');
+      }
+      if (tryCraft(['red_mushroom', 'redstone', null, null, null, null, null, null, null]) !== null) {
+        throw new Error('Transitional nether_wart crafting recipe should have been removed!');
+      }
+      checkCraft(['quartz', 'quartz', null, 'quartz', 'quartz', null, null, null, null], 'quartz_block');
+      checkCraft([null, 'redstone_torch', null, 'redstone_torch', 'quartz', 'redstone_torch', 'stone', 'stone', 'stone'], 'comparator');
+      checkCraft(['cobblestone', 'cobblestone', 'cobblestone', 'redstone', 'redstone', 'quartz', 'cobblestone', 'cobblestone', 'cobblestone'], 'observer');
+      checkCraft(['nether_brick', 'nether_brick', null, 'nether_brick', 'nether_brick', null, null, null, null], 'nether_bricks');
+      checkCraft(['gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget', 'gold_nugget'], 'gold_ingot');
+
+      // 11b. Build a 4x5 Obsidian frame in Overworld, ignite with flint_and_steel, and verify cascade break
+      const opx = bx + 2, opy = 108, opz = bz + 2;
+      for (let dx = -2; dx <= 5; dx++) for (let dy = -1; dy <= 6; dy++) for (let dz = -2; dz <= 2; dz++) {
+        game.world.setBlock(opx + dx, opy + dy, opz + dz, 0, 0, 0);
+      }
+      for (let dx = 0; dx < 4; dx++) {
+        game.world.setBlock(opx + dx, opy, opz, 28, 0, 0);
+        game.world.setBlock(opx + dx, opy + 4, opz, 28, 0, 0);
+      }
+      for (let dy = 1; dy <= 3; dy++) {
+        game.world.setBlock(opx, opy + dy, opz, 28, 0, 0);
+        game.world.setBlock(opx + 3, opy + dy, opz, 28, 0, 0);
+      }
+      if (!game.tryIgnitePortal(opx + 1, opy + 1, opz)) {
+        throw new Error('tryIgnitePortal failed on valid 4x5 Obsidian frame');
+      }
+      for (let dy = 1; dy <= 3; dy++) for (let dx = 1; dx <= 2; dx++) {
+        if (game.world.getBlock(opx + dx, opy + dy, opz) !== 528) {
+          throw new Error('Portal interior not filled with nether_portal (528)');
+        }
+      }
+      // Verify nether_portal (528) is immovable by pistons (Guard Rule #4)
+      if (!Redstone.isImmovable(game, opx + 1, opy + 1, opz, 528, 0)) {
+        throw new Error('nether_portal (528) must be immovable in Piston blacklist');
+      }
+      // Break 1 frame obsidian block -> all 6 nether_portal blocks must cascade-shatter to air (0)!
+      game.breakBlock(opx + 1, opy + 4, opz, false, true);
+      for (let dy = 1; dy <= 3; dy++) for (let dx = 1; dx <= 2; dx++) {
+        if (game.world.getBlock(opx + dx, opy + dy, opz) !== 0) {
+          throw new Error('Breaking obsidian frame failed to cascade-shatter nether_portal at (' + (opx + dx) + ',' + (opy + dy) + ')');
+        }
+      }
+      // Rebuild top obsidian & re-ignite for portal travel test
+      game.world.setBlock(opx + 1, opy + 4, opz, 28, 0, 0);
+      if (!game.tryIgnitePortal(opx + 1, opy + 1, opz)) throw new Error('Re-igniting portal failed');
+
+      // 11c. Guard Rule #5 Single-Active-Dimension Switch to Nether & 8:1 Coordinate Scaling
+      // Place a marker block in Overworld at (bx, 82, bz) to verify Overworld state persists across Nether round-trip
+      game.world.setBlock(bx, 82, bz, 512, 0);
+      game.player.pos = [160.5, 72, -80.5];
+      game.player.prev = [...game.player.pos];
+      await game.switchDimension('nether');
+      if (game.world.dimension !== 'nether' || game.worker.dimension !== 'nether') {
+        throw new Error('World or Worker dimension did not switch to nether');
+      }
+      // 160 / 8 = 20, -80 / 8 = -10 => player should land near (20, y, -10) inside a constructed destination portal!
+      if (Math.hypot(game.player.pos[0] - 20.5, game.player.pos[2] - (-10.5)) > 16) {
+        throw new Error('8:1 coordinate scaling into Nether failed! Player at ' + JSON.stringify(game.player.pos));
+      }
+      // Verify Nether environment (crimson fog, no sun/stars, isNether=true)
+      const netherEnv = game.env(0);
+      if (!netherEnv.isNether || netherEnv.sunAlpha !== 0 || netherEnv.starBright !== 0) {
+        throw new Error('Nether env() should set isNether=true and disable sun/stars');
+      }
+
+      // 11d. Verify Nether Wastes terrain (Bedrock floor Y=0 & ceiling Y=127, Netherrack 529, Soul Sand 530, Glowstone 27, Quartz Ore 531)
+      const nch = game.loadChunk(0, 0);
+      if (nch.biome[0] !== BI.NETHER_WASTES) throw new Error('Nether chunk biome should be BI.NETHER_WASTES (13)');
+      if (game.world.getBlock(8, 0, 8) !== 6 || game.world.getBlock(8, 127, 8) !== 6) {
+        throw new Error('Nether chunk must have Bedrock (6) at Y=0 and Y=127');
+      }
+      let hasNetherrack = false, hasQuartzOre = false, hasGlowstone = false, hasSoulSand = false;
+      for (let i = 0; i < nch.blocks.length; i++) {
+        const bid = nch.blocks[i];
+        if (bid === 529) hasNetherrack = true;
+        else if (bid === 531) hasQuartzOre = true;
+        else if (bid === 27) hasGlowstone = true;
+        else if (bid === 530) hasSoulSand = true;
+      }
+      if (!hasNetherrack || !hasQuartzOre || !hasGlowstone || !hasSoulSand) {
+        throw new Error('Nether chunk missing expected blocks: ' + JSON.stringify({ hasNetherrack, hasQuartzOre, hasGlowstone, hasSoulSand }));
+      }
+
+      // 11e. Verify Nether Fortress at (cx=2, cz=2) with Nether Bricks (533), Soul Sand + Nether Wart (536), and Blaze Spawner (182, meta=1)
+      let hasFortBrick = false, hasFortWart = false, hasBlazeSpawner = false;
+      for (let fcz = 1; fcz <= 5; fcz++) {
+        for (let fcx = 1; fcx <= 5; fcx++) {
+          const fch = game.loadChunk(fcx, fcz);
+          for (let i = 0; i < fch.blocks.length; i++) {
+            const bid = fch.blocks[i];
+            if (bid === 533) hasFortBrick = true;
+            else if (bid === 536) hasFortWart = true;
+            else if (bid === 182 && fch.meta[i] === 1) hasBlazeSpawner = true;
+          }
+        }
+      }
+      if (!hasFortBrick || !hasFortWart || !hasBlazeSpawner) {
+        throw new Error('Nether Fortress missing expected features: ' + JSON.stringify({ hasFortBrick, hasFortWart, hasBlazeSpawner }));
+      }
+      if (!Structures.isInsideNetherFortress(40, 52, 40, game.world)) {
+        throw new Error('Structures.isInsideNetherFortress should return true at fortress center (40, 52, 40)');
+      }
+
+      // 11f. Verify Water Bucket immediately evaporates in Nether, and Bed triggers explosion in Nether
+      const ntx = 20, nty = Math.floor(game.player.pos[1]), ntz = -10;
+      game.world.setBlock(ntx, nty - 1, ntz - 2, 529, 0);
+      game.world.setBlock(ntx, nty, ntz - 2, 0, 0);
+      game.player.inv.slots[0] = makeStack('water_bucket', 1);
+      game.player.inv.sel = 0;
+      game.target = { pos: [ntx, nty - 1, ntz - 2], face: 3, id: 529, point: [ntx + 0.5, nty, ntz - 1.5] };
+      game.targetEntity = null;
+      game.use();
+      if (game.world.getBlock(ntx, nty, ntz - 2) === WATER || game.player.inv.slots[0].id !== item('bucket')) {
+        throw new Error('Water bucket in Nether must evaporate immediately without placing WATER block');
+      }
+      // Place a bed in the Nether and call trySleep -> must explode and destroy the bed!
+      game.world.setBlock(ntx + 4, nty, ntz, 118, 0);
+      game.world.setBlock(ntx + 4, nty, ntz - 1, 118, 4);
+      game.trySleep(ntx + 4, nty, ntz);
+      if (game.world.getBlock(ntx + 4, nty, ntz) === 118) {
+        throw new Error('Using a bed in the Nether must explode and destroy the bed');
+      }
+
+      // 11g. Verify Nether Mobs: Blaze, Wither Skeleton (+ Wither effect), Ghast (+ Fireball deflection), Zombified Piglin (+ group aggro), Enderman & Skeleton spawn weights
+      // 1) Blaze native drop of blaze_rod
+      game.entities = [];
+      const testBlaze = new Mob(game, 'blaze', ntx + 0.5, nty + 1, ntz + 0.5);
+      game.entities.push(testBlaze);
+      testBlaze.hurt(100, { type: 'player', attacker: game.player, player: true, looting: 1 });
+      const droppedRod = game.entities.find(e => e instanceof ItemEntity && e.stack.id === item('blaze_rod'));
+      if (!droppedRod || droppedRod.stack.count < 1) {
+        throw new Error('Killing Blaze must drop blaze_rod');
+      }
+
+      // 2) Wither Skeleton inflicts Wither effect (10s = 200 ticks, deals 1 HP every 40 ticks, renders black hearts) & drops coal/bone/stone_sword (NO skull)
+      game.player.clearEffects();
+      game.player.blocking = false;
+      game.player.usingItem = null;
+      game.player.pos = [ntx + 0.5, nty, ntz + 0.5];
+      game.player.prev = [...game.player.pos];
+      game.player.health = 20;
+      game.player.invuln = 0;
+      const testWitherSkel = new Mob(game, 'wither_skeleton', ntx + 0.5, nty, ntz - 0.4);
+      testWitherSkel.target = game.player;
+      testWitherSkel.attackCd = 0;
+      game.entities.push(testWitherSkel);
+      testWitherSkel.tick();
+      if (!game.player.hasEffect('wither')) {
+        throw new Error('Wither Skeleton melee hit must inflict wither status effect');
+      }
+      const hpAfterHit = game.player.health;
+      game.player.invuln = 0;
+      for (let t = 0; t < 45; t++) {
+        game.player.invuln = 0;
+        game.player.tickEffects();
+      }
+      if (game.player.health >= hpAfterHit) {
+        throw new Error('Wither status effect must deal periodic damage every 40 ticks');
+      }
+      // Draw HUD while withered to verify black hearts rendering
+      game.ui.draw();
+      // Kill Wither Skeleton with forceRareDrop to verify stone_sword drop and no skull item
+      testWitherSkel.invuln = 0;
+      testWitherSkel.hurt(100, { type: 'player', attacker: game.player, player: true, forceRareDrop: true });
+      const droppedStoneSword = game.entities.find(e => e instanceof ItemEntity && e.stack.id === item('stone_sword'));
+      if (!droppedStoneSword || ITEM_KEY.wither_skeleton_skull !== undefined) {
+        throw new Error('Wither Skeleton should drop stone_sword on rare roll and must NOT have wither_skeleton_skull registered');
+      }
+
+      // 3) Ghast & GhastFireball melee deflection (Return to Sender)
+      const testGhast = new Mob(game, 'ghast', ntx + 0.5, nty + 3, ntz - 8.5);
+      game.entities.push(testGhast);
+      const ghastFb = new GhastFireball(game, ntx + 0.5, nty + 1.2, ntz - 2.0, [0, 0, 0.5], testGhast);
+      game.entities.push(ghastFb);
+      game.player.yaw = 0; // looking -Z toward testGhast
+      game.player.pitch = 0.2;
+      game.attack(ghastFb);
+      if (!ghastFb.deflected || ghastFb.vel[2] >= 0) {
+        throw new Error('Attacking GhastFireball should deflect it back along player lookDir (-Z)');
+      }
+
+      // 4) Zombified Piglin neutral by default + 32-block group aggro when provoked
+      const piglin1 = new Mob(game, 'zombified_piglin', ntx + 2.5, nty, ntz + 2.5);
+      const piglin2 = new Mob(game, 'zombified_piglin', ntx + 8.5, nty, ntz + 4.5);
+      game.entities.push(piglin1, piglin2);
+      piglin1.tick();
+      piglin2.tick();
+      if (piglin1.target !== null || piglin2.target !== null) {
+        throw new Error('Zombified Piglin must be neutral (target === null) before being attacked');
+      }
+      piglin1.hurt(4, { type: 'player', attacker: game.player, player: true });
+      if (piglin1.target !== game.player || piglin2.target !== game.player || piglin2.angerTicks <= 0) {
+        throw new Error('Attacking one Zombified Piglin must aggro nearby Zombified Piglins within 32 blocks');
+      }
+
+      // 5) Verify Nether Wastes natural spawn table includes zombified_piglin, ghast, enderman (small), and skeleton (very small)
+      const wTypes = [0.1, 0.65, 0.88, 0.98].map(rv => game.pickNetherMobType(0, 50, 0, rv));
+      if (wTypes[0] !== 'zombified_piglin' || wTypes[1] !== 'ghast' || wTypes[2] !== 'enderman' || wTypes[3] !== 'skeleton') {
+        throw new Error('Nether Wastes spawn distribution mismatch: ' + JSON.stringify(wTypes));
+      }
+      const fTypes = [0.1, 0.5, 0.8, 0.95].map(rv => game.pickNetherMobType(40, 52, 40, rv));
+      if (fTypes[0] !== 'blaze' || fTypes[1] !== 'wither_skeleton' || fTypes[2] !== 'zombified_piglin' || fTypes[3] !== 'skeleton') {
+        throw new Error('Nether Fortress spawn distribution mismatch: ' + JSON.stringify(fTypes));
+      }
+
+      // 6) Verify Overworld grass/flower tiles & Nether mob WebGL textures (no missing tile fallback or villager skin fallback!)
+      for (const reqTile of ['grass_block_top', 'grass_block_side_overlay', 'grass_block_snow', 'cornflower', 'oxeye_daisy', 'azure_bluet', 'lily_of_the_valley', 'netherrack', 'nether_portal', 'nether_bricks']) {
+        if (!(ASSETS.tiles[reqTile] > 0)) {
+          throw new Error('Missing block tile in ASSETS.tiles: ' + reqTile);
+        }
+      }
+      for (const reqTex of ['blaze', 'wither_skeleton', 'ghast', 'ghast_shooting', 'zombified_piglin', 'enderman', 'enderman_eyes']) {
+        if (!game.renderer.entityTex[reqTex]) {
+          throw new Error('Missing WebGL entityTex for Nether mob: ' + reqTex);
+        }
+      }
+      // Render all 5 new Nether mobs (blaze, wither_skeleton, ghast, zombified_piglin, enderman) to verify 3D models & textures
+      for (const mType of ['blaze', 'wither_skeleton', 'ghast', 'zombified_piglin', 'enderman']) {
+        const mEnt = new Mob(game, mType, ntx + 0.5, nty, ntz + 0.5);
+        game.drawMob(mEnt, mEnt.pos, 1, netherEnv, [1, 1]);
+      }
+
+      // 11h. Switch back from Nether (20, y, -10) to Overworld -> verify 8:1 scaling (160, y, -80) and Overworld saved block (512 at bx, 82, bz) intact!
+      game.player.pos = [20.5, 64, -10.5];
+      await game.switchDimension('overworld');
+      if (game.world.dimension !== 'overworld') throw new Error('Failed to switch back to overworld');
+      if (Math.hypot(game.player.pos[0] - 160.5, game.player.pos[2] - (-80.5)) > 16) {
+        throw new Error('8:1 scaling from Nether back to Overworld failed: ' + JSON.stringify(game.player.pos));
+      }
+      game.loadChunk(pcx, pcz);
+      if (game.world.getBlock(bx, 82, bz) !== 512) {
+        throw new Error('Overworld modified block (512) was lost after Nether round-trip!');
+      }
+
+      // ---- Test 12: W3 Phase 2 Ender Pearl, Eye of Ender, Stronghold, The End & Ender Dragon Boss Fight ----
+      // 12a. Verify End assets, tiles, animations, Chinese names & WebGL entityTex
+      if (BLOCKS[534].cn !== '下界砖栅栏' || ITEMS[534].cn !== '下界砖栅栏' || BLOCKS[534].tex[0] !== T('nether_bricks')) {
+        throw new Error('nether_brick_fence (534) definition or texture corrupted: cn=' + BLOCKS[534].cn + ', tex=' + BLOCKS[534].tex[0]);
+      }
+      if (BLOCKS[542].cn !== '铁栏杆' || ITEMS[542].cn !== '铁栏杆' || BLOCKS[542].shape !== SH_MODEL) {
+        throw new Error('iron_bars (542) must be SH_MODEL with cn=铁栏杆');
+      }
+      if (!(ANIM_FRAMES[T('fire_0')] > 1) || !(ANIM_FRAMES[T('end_portal')] > 1)) {
+        throw new Error('fire_0 and end_portal must have animated multi-frame tiles in ANIM_FRAMES');
+      }
+      const fireMesh = Mesher.single(537, 0);
+      if (fireMesh.u8[30] !== ANIM_FRAMES[T('fire_0')]) {
+        throw new Error('Mesher.quadFlat failed to pass ANIM_FRAMES[fire_0] to vertex anim attribute (got ' + fireMesh.u8[30] + ')');
+      }
+      for (const reqTile of ['end_portal_frame_top', 'end_portal_frame_side', 'end_portal_frame_bottom', 'end_portal_frame_eye', 'end_portal', 'end_stone', 'end_stone_bricks', 'dragon_egg', 'iron_bars', 'i_ender_eye', 'i_end_crystal']) {
+        if (!(ASSETS.tiles[reqTile] > 0)) {
+          throw new Error('Missing End tile in ASSETS.tiles: ' + reqTile);
+        }
+      }
+      for (const reqTex of ['end_crystal', 'ender_dragon', 'dragon_eyes', 'dragon_fireball', 'end_beam']) {
+        if (!game.renderer.entityTex[reqTex]) {
+          throw new Error('Missing WebGL entityTex for End entity: ' + reqTex);
+        }
+      }
+      if (!game.renderer.models.end_crystal || !game.renderer.models.ender_dragon) {
+        throw new Error('Missing 3D model for end_crystal or ender_dragon');
+      }
+
+      // 12b. Verify W3 Phase 2 Crafting Recipes (eye_of_ender, end_stone_bricks, iron_bars, end_crystal)
+      checkCraft(['ender_pearl', 'blaze_powder', null, null, null, null, null, null, null], 'eye_of_ender');
+      checkCraft(['end_stone', 'end_stone', null, 'end_stone', 'end_stone', null, null, null, null], 'end_stone_bricks');
+      checkCraft(['iron_ingot', 'iron_ingot', 'iron_ingot', 'iron_ingot', 'iron_ingot', 'iron_ingot', null, null, null], 'iron_bars');
+      checkCraft(['glass', 'glass', 'glass', 'glass', 'eye_of_ender', 'glass', 'glass', 'ghast_tear', 'glass'], 'end_crystal');
+
+      // 12c. Ender Pearl throw, 20-tick cooldown & 5 HP fall damage teleportation
+      game.mode = 'survival';
+      game.player.creative = false;
+      game.player.clearEffects();
+      // Clear any lingering entities along the landing strip and remove armor
+      game.entities = [];
+      for (let s = 36; s < 40; s++) game.player.inv.slots[s] = null;
+      game.player.health = 20;
+      game.player.invuln = 0;
+      game.player.pearlCooldown = 0;
+      // Ensure chunks along landing strip are loaded
+      for (let cz = pcz - 1; cz <= pcz; cz++) game.loadChunk(pcx, cz);
+      // Build a flat stone landing strip at (bx + dx, 115, bz + dz)
+      for (let dz = -12; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+        game.world.setBlock(bx + dx, 114, bz + dz, 1, 0, 0);
+        for (let dy = 115; dy <= 122; dy++) game.world.setBlock(bx + dx, dy, bz + dz, 0, 0, 0);
+      }
+      game.player.pos = [bx + 0.5, 115, bz + 0.5];
+      game.player.prev = [...game.player.pos];
+      game.player.yaw = 0; // looking North (-Z)
+      game.player.pitch = -0.45; // angled downward toward floor ahead
+      game.target = null;
+      game.targetEntity = null;
+      game.player.inv.slots[0] = makeStack('ender_pearl', 4);
+      game.player.inv.sel = 0;
+      game.use();
+      if (game.player.pearlCooldown !== 20 || game.player.inv.slots[0].count !== 3) {
+        throw new Error('Throwing Ender Pearl should set 20-tick pearlCooldown and consume 1 pearl');
+      }
+      // Draw HUD while pearlCooldown > 0 to verify white cooldown overlay
+      game.ui.draw();
+      const pearlEnt = game.entities.find(e => e instanceof EnderPearlEntity && !e.dead);
+      if (!pearlEnt) throw new Error('EnderPearlEntity was not spawned');
+      for (let t = 0; t < 40 && !pearlEnt.dead; t++) pearlEnt.tick();
+      if (!pearlEnt.dead || game.player.pos[2] >= bz - 1.0 || game.player.health !== 15) {
+        throw new Error('Ender Pearl impact failed: pearlPos=' + JSON.stringify(pearlEnt.pos) + ', dead=' + pearlEnt.dead + ', playerPos=' + JSON.stringify(game.player.pos) + ', hp=' + game.player.health);
+      }
+
+      // 12d. Stronghold Locator & Eye of Ender flight
+      const locSh = Structures.locateNearest(game.world, 'stronghold', 0, 0);
+      if (!locSh || locSh.x !== 168 || locSh.z !== -157) {
+        throw new Error('Structures.locateNearest(stronghold) failed: ' + JSON.stringify(locSh));
+      }
+      game.player.pos = [0.5, 85, 0.5];
+      game.player.prev = [...game.player.pos];
+      game.target = null;
+      game.targetEntity = null;
+      game.player.inv.slots[0] = makeStack('eye_of_ender', 2);
+      game.player.inv.sel = 0;
+      game.use();
+      const eyeEnt = game.entities.find(e => e instanceof EyeOfEnderEntity && !e.dead);
+      if (!eyeEnt) throw new Error('EyeOfEnderEntity was not spawned on right-click');
+      eyeEnt.forceDrop = true;
+      for (let t = 0; t < 55 && !eyeEnt.dead; t++) eyeEnt.tick();
+      if (!eyeEnt.dead || eyeEnt.pos[0] <= 5 || eyeEnt.pos[2] >= -5) {
+        throw new Error('EyeOfEnderEntity did not fly toward Stronghold at (168, -157): pos=' + JSON.stringify(eyeEnt.pos));
+      }
+
+      // 12e. Stronghold Portal Room Generation, Comparator Frame Signal & 12-Eye End Portal Activation
+      for (let scz = -11; scz <= -9; scz++) {
+        for (let scx = 9; scx <= 11; scx++) {
+          game.loadChunk(scx, scz);
+        }
+      }
+      // Portal center is at (168, 31, -157)
+      const pCx = 168, pCy = 31, pCz = -157;
+      // Verify Spawner at (168, 30, -153)
+      if (game.world.getBlock(168, 30, -153) !== 182) {
+        throw new Error('Stronghold Portal Room missing Silverfish/Monster Spawner at staircase (168, 30, -153)');
+      }
+      // Verify all 12 End Portal Frames (538) around (168, 31, -157) and insert Eyes of Ender into empty ones
+      const frameCoords = [];
+      for (let i = -1; i <= 1; i++) {
+        frameCoords.push([pCx + i, pCy, pCz - 2], [pCx + i, pCy, pCz + 2], [pCx - 2, pCy, pCz + i], [pCx + 2, pCy, pCz + i]);
+      }
+      for (const [fx, fy, fz] of frameCoords) {
+        if (game.world.getBlock(fx, fy, fz) !== 538) {
+          throw new Error('Missing end_portal_frame (538) at (' + fx + ',' + fy + ',' + fz + '), got ' + game.world.getBlock(fx, fy, fz));
+        }
+      }
+      // Verify Comparator reading on end_portal_frame (0 when empty, 15 when filled with eye)
+      const [tfx, tfy, tfz] = frameCoords[0];
+      const origFrameMeta = game.world.getMeta(tfx, tfy, tfz);
+      game.world.setMeta(tfx, tfy, tfz, origFrameMeta & 3);
+      if (Redstone.getContainerSignal(game, tfx, tfy, tfz, 538) !== 0) {
+        throw new Error('Empty end_portal_frame must output comparator signal 0');
+      }
+      game.world.setMeta(tfx, tfy, tfz, (origFrameMeta & 3) | 4);
+      if (Redstone.getContainerSignal(game, tfx, tfy, tfz, 538) !== 15) {
+        throw new Error('Filled end_portal_frame must output comparator signal 15');
+      }
+      // Verify end_portal_frame (538) and end_portal (539) are immovable by pistons
+      if (!Redstone.isImmovable(game, tfx, tfy, tfz, 538, 0) || !Redstone.isImmovable(game, pCx, pCy, pCz, 539, 0)) {
+        throw new Error('end_portal_frame (538) and end_portal (539) must be in Piston immovable blacklist');
+      }
+      // Fill all 12 frames using Eye of Ender right-click interaction
+      for (const [fx, fy, fz] of frameCoords) {
+        if (!(game.world.getMeta(fx, fy, fz) & 4)) {
+          game.player.inv.slots[0] = makeStack('eye_of_ender', 1);
+          game.player.inv.sel = 0;
+          game.target = { pos: [fx, fy, fz], face: 3, id: 538, point: [fx + 0.5, fy + 0.8, fz + 0.5] };
+          game.targetEntity = null;
+          game.use();
+        }
+      }
+      // Verify all 9 interior blocks of the 3x3 ring are now end_portal (539)!
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (game.world.getBlock(pCx + dx, pCy, pCz + dz) !== 539) {
+            throw new Error('3x3 End Portal interior at (' + (pCx + dx) + ',' + pCy + ',' + (pCz + dz) + ') did not activate to end_portal (539)');
+          }
+        }
+      }
+
+      // 12f. Switch to The End Dimension ('end'), Verify Main Island, Obsidian Pillars, Cages, End Crystals & Ender Dragon Boss Fight
+      await game.triggerEndPortal();
+      if (game.world.dimension !== 'end' || game.worker.dimension !== 'end') {
+        throw new Error('Failed to switch to The End dimension');
+      }
+      // Player spawns on the 5x5 Obsidian Platform at (42.5, 50, 0.5)
+      if (Math.hypot(game.player.pos[0] - 42.5, game.player.pos[2] - 0.5) > 2 || game.world.getBlock(42, 49, 0) !== 28) {
+        throw new Error('Player did not spawn on 5x5 Obsidian platform in The End: pos=' + JSON.stringify(game.player.pos));
+      }
+      const endEnv = game.env(0);
+      if (!endEnv.isEnd || endEnv.sunAlpha !== 0) {
+        throw new Error('End env() should set isEnd=true and sunAlpha=0');
+      }
+      // Verify End Stone (540) main island & Central Bedrock Exit Portal pillar at (0, 59..62, 0)
+      if (game.world.getBlock(10, 55, 10) !== 540 || game.world.getBlock(0, 60, 0) !== 6) {
+        throw new Error('End Main Island missing end_stone (540) or central bedrock pillar (6)');
+      }
+      // Verify 8 EndCrystals and 1 EnderDragon spawned
+      const crystals = game.entities.filter(e => e instanceof EndCrystal && !e.dead);
+      const dragon = game.entities.find(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon');
+      if (crystals.length !== 8 || !dragon || dragon.health !== 200) {
+        throw new Error('Expected 8 EndCrystals and 200 HP EnderDragon, got crystals=' + crystals.length + ', dragon=' + (dragon && dragon.health));
+      }
+      // Verify Caged Pillar #1 has iron_bars (542)
+      const pil1 = game.world.getEndPillars()[1];
+      if (game.world.getBlock(pil1.x + 2, pil1.topY + 2, pil1.z) !== 542) {
+        throw new Error('Caged Obsidian Pillar #1 missing iron_bars (542) cage');
+      }
+      // Render EndEntities + Dynamic End Portal Starfield Shader + HUD Boss Bar
+      game.nearbyEndPortals = [[1, 59, 0], [-1, 59, 0]];
+      game.renderer.setCamera([0, 68, 25], 0, -0.2, 70);
+      game.drawEntities(1, endEnv);
+      game.ui.draw();
+
+      // Test Crystal Healing Link & 10 HP Backlash when Crystal is destroyed
+      dragon.health = 180;
+      dragon.pos = [crystals[0].pos[0] + 4, crystals[0].pos[1], crystals[0].pos[2]];
+      for (let t = 0; t < 12; t++) dragon.tick();
+      if (dragon.healingCrystal !== crystals[0] || dragon.health <= 180) {
+        throw new Error('EnderDragon failed to link and heal from nearby EndCrystal');
+      }
+      const hpBeforeCrystalBreak = dragon.health;
+      crystals[0].hurt(1, { type: 'arrow', attacker: game.player, player: true });
+      if (!crystals[0].dead || dragon.health !== hpBeforeCrystalBreak - 10) {
+        throw new Error('Destroying linked EndCrystal should deal 10 HP backlash to EnderDragon: before=' + hpBeforeCrystalBreak + ', after=' + dragon.health);
+      }
+
+      // Test Landing Approach Speed Cap: Dragon at (0.5, 75, 28.5) entering 'landing' must fly at <= 0.40 blocks/tick (no instant teleport!)
+      dragon.phase = 'landing';
+      dragon.phaseTicks = 0;
+      dragon.pos = [0.5, 75.0, 28.5];
+      dragon.prev = [...dragon.pos];
+      dragon.tick();
+      const landingStep = Math.hypot(dragon.pos[0] - dragon.prev[0], dragon.pos[1] - dragon.prev[1], dragon.pos[2] - dragon.prev[2]);
+      if (landingStep > 0.42 || landingStep < 0.25) {
+        throw new Error('Dragon landing approach speed out of bounds (expected ~0.38 blocks/tick, got ' + landingStep.toFixed(3) + ')');
+      }
+
+      // Test Perching Phase: Immune to Arrows, Vulnerable to Melee Sword
+      dragon.phase = 'perching';
+      dragon.phaseTicks = 0;
+      dragon.pos = [0.5, 63.0, 0.5];
+      dragon.invuln = 0;
+      const hpBeforeArrow = dragon.health;
+      const arrowRes = dragon.hurt(12, { type: 'arrow', attacker: game.player, player: true });
+      if (arrowRes !== false || dragon.health !== hpBeforeArrow) {
+        throw new Error('Perched EnderDragon must be immune to arrows per Minecraft Wiki');
+      }
+      const meleeRes = dragon.hurt(15, { type: 'player', attacker: game.player, player: true });
+      if (meleeRes !== true || dragon.health !== hpBeforeArrow - 15) {
+        throw new Error('Perched EnderDragon must take melee damage');
+      }
+
+      // Test Defeating the Ender Dragon -> +12,000 XP, Central Exit Portal Ignition (539), Dragon Egg (541) at (0, 63, 0) & Egg Teleportation
+      const xpBeforeKill = game.player.xp;
+      dragon.invuln = 0;
+      dragon.hurt(500, { type: 'player', attacker: game.player, player: true });
+      if (game.player.xp < xpBeforeKill + 12000) {
+        throw new Error('Defeating EnderDragon must award 12,000 XP');
+      }
+      if (game.world.getBlock(1, 59, 0) !== 539 || game.world.getBlock(-1, 59, 0) !== 539) {
+        throw new Error('Defeating EnderDragon must ignite Central Exit Portal with end_portal (539) at y=59');
+      }
+      if (game.world.getBlock(0, 63, 0) !== 541) {
+        throw new Error('Defeating EnderDragon must place dragon_egg (541) atop central bedrock pillar at (0, 63, 0)');
+      }
+      // Right-click Dragon Egg at (0, 63, 0) -> must teleport to a nearby End Stone block!
+      game.target = { pos: [0, 63, 0], face: 3, id: 541, point: [0.5, 63.5, 0.5] };
+      game.targetEntity = null;
+      game.use();
+      if (game.world.getBlock(0, 63, 0) === 541) {
+        throw new Error('Right-clicking dragon_egg (541) should teleport it away from (0, 63, 0)');
+      }
+
+      // P0-2 Verification: Collect Dragon's Breath from DragonBreathCloud using glass_bottle
+      const breathCloud = new DragonBreathCloud(game, game.player.pos[0] + 1, game.player.pos[1], game.player.pos[2], 140);
+      game.entities.push(breathCloud);
+      game.player.inv.slots[0] = makeStack('glass_bottle', 2);
+      game.player.inv.sel = 0;
+      game.target = null;
+      game.targetEntity = null;
+      game.use();
+      const hasBreath = game.player.inv.slots.some(s => s && s.id === item('dragon_breath'));
+      if (!hasBreath || game.player.inv.slots[0].count !== 1) {
+        throw new Error('P0-2: Collecting DragonBreathCloud with glass_bottle failed to yield dragon_breath item');
+      }
+
+      // P1-2 Verification: Perched EnderDragon multi-part subBoxes hittable from fountain rim in survival mode
+      const testDragon = new Mob(game, 'ender_dragon', 0.5, 63.0, 0.5);
+      testDragon.phase = 'perching';
+      testDragon.yaw = Math.PI; // facing +Z (South), so head is at z = 0.5 + 5.2 = 5.7
+      game.entities.push(testDragon);
+      game.mode = 'survival';
+      game.player.pos = [0.5, 60.0, 4.2]; // standing on South fountain rim looking North at dragon head/neck/chest
+      game.player.yaw = 0; // looking North (-Z)
+      game.player.pitch = 0.1; // nearly horizontal
+      game.updateTarget();
+      if (game.targetEntity !== testDragon) {
+        throw new Error('P1-2: Player on fountain rim failed to target perched EnderDragon head/body in survival mode');
+      }
+      testDragon.dead = true;
+
+      // P1-3 Verification: 4 EndCrystals placed around Exit Portal respawn EnderDragon, extinguish portal & restore 8 pillar crystals
+      for (const [rcx, rcz] of [[3, 0], [-3, 0], [0, 3], [0, -3]]) {
+        game.world.setBlock(rcx, 59, rcz, 6, 0, 0);
+        game.world.setBlock(rcx, 60, rcz, 0, 0, 0);
+        game.player.inv.slots[0] = makeStack('end_crystal', 1);
+        game.player.inv.sel = 0;
+        game.target = { pos: [rcx, 59, rcz], face: 3, id: 6, point: [rcx + 0.5, 60, rcz + 0.5] };
+        game.targetEntity = null;
+        game.use();
+      }
+      const respawnedDragon = game.entities.find(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon');
+      const restoredCrystals = game.entities.filter(e => e instanceof EndCrystal && !e.dead);
+      if (!respawnedDragon || restoredCrystals.length !== 8 || game.world.getBlock(1, 59, 0) === 539) {
+        throw new Error('P1-3: 4-Crystal respawn ritual failed: dragon=' + !!respawnedDragon + ', crystals=' + restoredCrystals.length + ', portalBlock=' + game.world.getBlock(1, 59, 0));
+      }
+
+      // P1-6 Verification: Explosion (e.g. Bed / TNT) destroys nearby EndCrystal
+      const targetCrystal = restoredCrystals[0];
+      game.explode(targetCrystal.pos[0] + 0.5, targetCrystal.pos[1], targetCrystal.pos[2], 4, null);
+      if (!targetCrystal.dead) {
+        throw new Error('P1-6: explode() failed to destroy nearby EndCrystal');
+      }
+
+      // P1-1 Verification: Saving & reloading via startWorld() while in The End preserves the live EnderDragon
+      respawnedDragon.health = 135;
+      await game.saveWorld(true);
+      game.state = 'title';
+      await game.loadWorld(game.worldMeta.id);
+      const reloadedDragon = game.entities.find(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon');
+      if (!reloadedDragon || reloadedDragon.health !== 135) {
+        throw new Error('P1-1: Reloading save in The End lost EnderDragon or its HP: ' + (reloadedDragon && reloadedDragon.health));
+      }
+      reloadedDragon.invuln = 0;
+      reloadedDragon.hurt(500, { type: 'player', attacker: game.player, player: true });
+
+      // Step into Exit Portal -> returns player to Overworld spawn!
+      await game.triggerEndPortal();
+      if (game.world.dimension !== 'overworld') {
+        throw new Error('Stepping into End Exit Portal should return player to Overworld');
+      }
+
+      // P0-1 Verification: Reloading modified Nether chunk via _buildChunkFromSaved does not throw w.netherBiomeAt error
+      await game.switchDimension('nether');
+      const nSaved = encodeChunk(game.world.getChunk(Math.floor(game.player.pos[0]) >> 4, Math.floor(game.player.pos[2]) >> 4));
+      const nRebuilt = game._buildChunkFromSaved(0, 0, nSaved);
+      if (nRebuilt.biome[0] !== BI.NETHER_WASTES) {
+        throw new Error('P0-1: _buildChunkFromSaved in Nether failed to set BI.NETHER_WASTES');
+      }
+      await game.switchDimension('overworld');
+
+      // P1-5 Verification: Placing end_portal_frame (538) while facing North (yaw=0, hdir=4) sets inward facing meta=2 (South)
+      game.world.setBlock(bx, 114, bz - 2, 1, 0, 0);
+      game.world.setBlock(bx, 115, bz - 2, 0, 0, 0);
+      game.player.pos = [bx + 0.5, 115, bz + 0.5];
+      game.player.yaw = 0; // looking North (-Z, hdir=4)
+      game.player.pitch = -0.3;
+      game.player.inv.slots[0] = makeStack('end_portal_frame', 1);
+      game.player.inv.sel = 0;
+      game.target = { pos: [bx, 114, bz - 2], face: 3, id: 1, point: [bx + 0.5, 115, bz - 1.5] };
+      game.targetEntity = null;
+      game.use();
+      if (game.world.getBlock(bx, 115, bz - 2) !== 538 || (game.world.getMeta(bx, 115, bz - 2) & 3) !== 2) {
+        throw new Error('P1-5: Placed end_portal_frame facing North should have inward meta=2, got ' + game.world.getMeta(bx, 115, bz - 2));
+      }
+
+      // P2-2 Verification: ASSETS.images.end_portal & entityTex.end_portal exist
+      if (!ASSETS.images.end_portal || !game.renderer.entityTex.end_portal) {
+        throw new Error('P2-2: Missing ASSETS.images.end_portal or entityTex.end_portal');
+      }
+
+      // ---- UI/UX & Performance Regression Tests (5 items) ----
+      // 1. Double-click item stack collection in ContainerScreen (collects partial stacks first onto ui.cursor)
+      Sound.init = () => {};
+      const invScreen = new CraftingScreen(game, 2);
+      game.ui.open(invScreen);
+      game.ui.cursor = null;
+      game.player.inv.slots.fill(null);
+      const plankId = item('birch_planks');
+      game.player.inv.slots[9] = { id: plankId, count: 2, dmg: 0 };
+      game.player.inv.slots[10] = { id: plankId, count: 64, dmg: 0 };
+      game.player.inv.slots[11] = { id: plankId, count: 5, dmg: 0 };
+      game.player.inv.slots[12] = { id: plankId, count: 10, dmg: 0 };
+      const slot9 = invScreen.slots.find(s => s.idx === 9);
+      const sx9 = invScreen.x + slot9.x + 4, sy9 = invScreen.y + slot9.y + 4;
+      // First click picks up 2 birch_planks onto ui.cursor
+      invScreen.mouseDown(game.ui, sx9, sy9, 0, false);
+      invScreen.mouseUp(game.ui, sx9, sy9, 0);
+      if (!game.ui.cursor || game.ui.cursor.count !== 2) {
+        throw new Error('First click should pick up 2 birch_planks onto cursor');
+      }
+      // Second click within 380ms gathers partial stacks (5 + 10) first -> 2 + 5 + 10 = 17, plus 47 from full stack -> 64 on cursor, leaving 17 in slot 10!
+      invScreen.mouseDown(game.ui, sx9, sy9, 0, false);
+      invScreen.mouseUp(game.ui, sx9, sy9, 0);
+      if (!game.ui.cursor || game.ui.cursor.id !== plankId || game.ui.cursor.count !== 64) {
+        throw new Error('Double-click should collect 64 birch_planks onto cursor, got ' + JSON.stringify(game.ui.cursor));
+      }
+      if (game.player.inv.slots[11] !== null || game.player.inv.slots[12] !== null || !game.player.inv.slots[10] || game.player.inv.slots[10].count !== 17) {
+        throw new Error('Double-click should drain partial stacks (slots 11 & 12) before full stack (slot 10)');
+      }
+      game.ui.cursor = null;
+      game.ui.close();
+
+      // 2. Player preview look direction & readPixels cache verification
+      game.ui.mouse.x = 300;
+      game.ui.mouse.y = 220;
+      const pvCv1 = game.renderer.playerPreview(game, game.ui, 100, 50, 49, 70);
+      const pvKey1 = game.renderer.pv.lastKey;
+      const pvCv2 = game.renderer.playerPreview(game, game.ui, 100, 50, 49, 70);
+      if (pvCv1 !== pvCv2 || !pvKey1) {
+        throw new Error('playerPreview should cache canvas when mouse and equipment are unchanged');
+      }
+      if (typeof World.prototype.propagateLocal !== 'function') {
+        throw new Error('Missing World.prototype.propagateLocal lighting optimization');
+      }
+
+      // ---- Test 13: Worker Fallback to Main Thread ----
       game.worker._enterFallback('manual test fallback');
       if (game.worker.isReady()) throw new Error('Worker should report not ready in fallback mode');
       game.world.setBlock(bx + 1, 80, bz + 1, 513, 2);
@@ -830,6 +1654,13 @@ for (const rel of scriptMatches) {
         smeltedCount: smeltedInChest.count,
         harvestedSugarCane: harvestedCane.count,
         activeEffects: Object.keys(game.player.effects),
+        shieldBlocks: Sound.shieldBlockCount,
+        ascendVy: Number(ascendVy.toFixed(3)),
+        diveVy: Number(diveVy.toFixed(3)),
+        netherVerified: true,
+        endVerified: true,
+        playerXpAfterDragon: game.player.xp,
+        netherMobs: wTypes.concat(fTypes.slice(0, 2)),
       };
     })()
   `;

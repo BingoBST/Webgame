@@ -32,6 +32,12 @@ function bindInput(g) {
       const h = p.inv.held;
       if (h) { const n = e.ctrlKey ? h.count : 1; g.dropFromPlayer({ ...h, count: n }); h.count -= n; if (!h.count) p.inv.slots[p.inv.sel] = null; p.swingT = 6; }
     }
+    if (code === 'KeyF') {
+      const tmp = p.inv.slots[p.inv.sel] || null;
+      p.inv.slots[p.inv.sel] = p.inv.slots[40] || null;
+      p.inv.slots[40] = tmp;
+      Sound.click();
+    }
     if (code === 'F1') ui.hideHud = !ui.hideHud;
     if (code === 'F3') ui.debug = !ui.debug;
     if (code === 'F5') g.perspective = (g.perspective + 1) % 3;
@@ -46,7 +52,7 @@ function bindInput(g) {
   });
   window.addEventListener('keyup', (e) => {
     g.keys[e.code] = false;
-    if (e.code === 'KeyW') g.sprintToggle = false;
+    if (e.code === 'KeyW' || e.code === 'ControlLeft' || e.code === 'ControlRight') g.sprintToggle = false;
   });
   window.addEventListener('blur', () => { g.keys = {}; g.mouseBtn = [false, false, false]; g.sprintToggle = false; });
   document.addEventListener('pointerlockchange', () => {
@@ -91,7 +97,7 @@ function bindInput(g) {
 
 // Player preview for the survival inventory
 Renderer.prototype.playerPreview = function (game, ui, x, y, w, h) {
-  const gl = this.gl, S = Math.max(2, ui.scale), W = w * S, H = h * S;
+  const gl = this.gl, S = 2, W = w * S, H = h * S;
   if (!this.pv || this.pv.W !== W || this.pv.H !== H) {
     if (this.pv) { gl.deleteFramebuffer(this.pv.fb); gl.deleteTexture(this.pv.tex); gl.deleteRenderbuffer(this.pv.rb); }
     const fb = gl.createFramebuffer(), tex = gl.createTexture(), rb = gl.createRenderbuffer();
@@ -101,22 +107,47 @@ Renderer.prototype.playerPreview = function (game, ui, x, y, w, h) {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-    this.pv = { fb, tex, rb, W, H, cv, ctx: cv.getContext('2d'), px: new Uint8Array(W * H * 4), img: cv.getContext('2d').createImageData(W, H) };
+    this.pv = { fb, tex, rb, W, H, cv, ctx: cv.getContext('2d'), px: new Uint8Array(W * H * 4), img: cv.getContext('2d').createImageData(W, H), lastKey: '' };
   }
   const pv = this.pv;
+  const mx = (ui.mouse.x - (x + w / 2)) / 40, my = (ui.mouse.y - (y + h * 0.25)) / 40;
+  const p = ui && ui.game && ui.game.player;
+  const inv = p && p.inv;
+  const eqKey = inv
+    ? `${Math.round(mx * 80)}:${Math.round(my * 80)}:${inv.held ? inv.held.id : 0}:${inv.offhand ? inv.offhand.id : 0}:${inv.slots[36] ? inv.slots[36].id : 0}:${inv.slots[37] ? inv.slots[37].id : 0}:${inv.slots[38] ? inv.slots[38].id : 0}:${inv.slots[39] ? inv.slots[39].id : 0}`
+    : `${Math.round(mx * 80)}:${Math.round(my * 80)}`;
+  if (pv.lastKey === eqKey) return pv.cv;
+  pv.lastKey = eqKey;
   gl.bindFramebuffer(gl.FRAMEBUFFER, pv.fb);
   gl.viewport(0, 0, W, H);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE);
   const vp = M4.create(); M4.ortho(vp, -0.7, 0.7, -0.05, 1.95, -5, 5);
-  const mx = (ui.mouse.x - (x + w / 2)) / 40, my = (ui.mouse.y - (y + h * 0.25)) / 40;
-  const m = M4.create(); M4.translate(m, 0, 0, 0); M4.rotY(m, Math.PI - Math.atan(mx) * 0.7);
+  const m = M4.create(); M4.translate(m, 0, 0, 0); M4.rotY(m, Math.PI + Math.atan(mx) * 0.35);
   M4.scale(m, 0.9375, 0.9375, 0.9375);
   const env = { day: 1, fogColor: [0, 0, 0], fogNear: 1e8, fogFar: 2e8, nightTint: [1, 1, 1] };
-  const poses = { head: { ry: -Math.atan(mx) * 0.5, rx: Math.atan(my) * 0.6 } };
+  const poses = { head: { ry: Math.atan(mx) * 0.4, rx: -Math.atan(my) * 0.4 } };
   const savedCam = this.camPos; this.camPos = [0, 0, 0];
-  this.drawModel('steve', 'steve', m, poses, [1, 0], env, { vp });
-  if (ui && ui.game && ui.game.player) this.drawPlayerArmor(ui.game.player, m, poses, [1, 0], env, { vp });
+  const attach = {};
+  if (p && p.inv) {
+    const addHand = (st, isLeft) => {
+      if (!st) return;
+      const def = ITEMS[st.id];
+      if (!def) return;
+      attach[isLeft ? 'larm' : 'rarm'] = (am) => {
+        if (def.shield && this.models.shield) {
+          M4.translate(am, isLeft ? -3 / 16 : 3 / 16, -9 / 16, 0);
+          M4.rotY(am, isLeft ? Math.PI / 2 : -Math.PI / 2);
+          M4.scale(am, 0.75, 0.75, 0.75);
+          this.drawModel('shield', 'shield', am, null, [1, 0], env, { vp });
+        }
+      };
+    };
+    addHand(p.inv.held, false);
+    addHand(p.inv.offhand, true);
+  }
+  this.drawModel('steve', 'steve', m, poses, [1, 0], env, { vp, attach });
+  if (p) this.drawPlayerArmor(p, m, poses, [1, 0], env, { vp });
   this.camPos = savedCam;
   gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pv.px);
   for (let r = 0; r < H; r++) pv.img.data.set(pv.px.subarray((H - 1 - r) * W * 4, (H - r) * W * 4), r * W * 4);
@@ -141,6 +172,8 @@ Renderer.prototype.bookPreview = function (hasOpts) {
   }
   const bpv = this.bpv;
   bpv.open += ((hasOpts ? 1 : 0) - bpv.open) * 0.18;
+  if (!hasOpts && bpv.open < 0.002 && bpv.renderedIdle) return bpv.cv;
+  bpv.renderedIdle = (!hasOpts && bpv.open < 0.002);
   gl.bindFramebuffer(gl.FRAMEBUFFER, bpv.fb);
   gl.viewport(0, 0, W, H);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);

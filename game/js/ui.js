@@ -221,6 +221,7 @@ class UI {
     if (d.tool) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
     else if (d.attack) lines.push({ text: `攻击伤害: ${d.attack + sharpBonus}`, color: '#00AA00' });
     if (d.armor) lines.push({ text: `护甲值: +${d.armor.points}`, color: '#5555FF' });
+    if (d.shield) lines.push({ text: '手持或副手右键: 正面格挡伤害', color: '#5588FF' });
     if (d.durability) lines.push({ text: `耐久度: ${d.durability - (stack.dmg || 0)} / ${d.durability}`, color: '#AAAAAA' });
     if (fuelValue(stack.id)) lines.push({ text: `燃料: ${(fuelValue(stack.id) / 200).toFixed(1)} 个物品`, color: '#777777' });
     if (this.game.settings.advTooltips) lines.push({ text: 'minecraft:' + d.key, color: '#555555' });
@@ -228,7 +229,7 @@ class UI {
   }
   button(b) {
     const hover = this.hit(b) && b.enabled !== false;
-    this.nine(b.enabled === false ? 'button_dis' : hover ? 'button_hl' : 'button', b.x, b.y, b.w, b.h, 3);
+    this.nine(b.enabled === false ? 'button_dis' : hover ? 'button_hl' : 'button', b.x, b.y, b.w, b.h, 4);
     Font.center(this.ctx, typeof b.label === 'function' ? b.label() : b.label, b.x + b.w / 2, b.y + (b.h - 8) / 2, b.enabled === false ? '#A0A0A0' : hover ? '#FFFFA0' : '#FFFFFF');
   }
   slider(s) {
@@ -264,7 +265,20 @@ class UI {
     const hx = Math.floor(W / 2 - 91), hy = H - 22;
     this.sprite('hotbar', hx, hy);
     this.sprite('hotbar_sel', hx - 1 + p.inv.sel * 20, hy - 1);
-    for (let i = 0; i < 9; i++) this.drawItem(p.inv.slots[i], hx + 3 + i * 20, hy + 3);
+    for (let i = 0; i < 9; i++) {
+      const st = p.inv.slots[i];
+      this.drawItem(st, hx + 3 + i * 20, hy + 3);
+      if (st && st.id === item('ender_pearl') && (p.pearlCooldown || 0) > 0) {
+        const ch = Math.ceil(16 * (p.pearlCooldown / 20));
+        c.fillStyle = 'rgba(255, 255, 255, 0.55)';
+        c.fillRect(hx + 3 + i * 20, hy + 3 + (16 - ch), 16, ch);
+      }
+    }
+    if (p.inv.offhand) {
+      if (this.img.hotbar_offhand_left) this.sprite('hotbar_offhand_left', hx - 29, hy - 1);
+      else { c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(hx - 28, hy, 22, 22); }
+      this.drawItem(p.inv.offhand, hx - 26, hy + 3);
+    }
     if (!p.creative) {
       // xp bar
       const xb = H - 29;
@@ -273,9 +287,12 @@ class UI {
       const pw = Math.floor(182 * clamp(prog, 0, 1));
       if (pw > 0) c.drawImage(this.img.xp_fg, 0, 0, pw, 5, hx, xb, pw, 5);
       if (lvl > 0) { const t = String(lvl), tx = Math.floor(W / 2 - Font.width(t) / 2); for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) Font.drawRaw(c, t, tx + ox, xb - 6 + oy, '#000000'); Font.drawRaw(c, t, tx, xb - 6, '#80FF20'); }
-      // hearts
+      // hearts (supports Wither black hearts when player has 'wither' status effect)
       const hy2 = H - 39;
       const blink = p.invuln > 10 && (p.invuln / 3 | 0) % 2 === 1;
+      const withered = !!(p.hasEffect && p.hasEffect('wither'));
+      const fullSprite = withered ? (blink ? 'heart_wither_full_blink' : 'heart_wither_full') : (blink ? 'heart_full_blink' : 'heart_full');
+      const halfSprite = withered ? (blink ? 'heart_wither_half_blink' : 'heart_wither_half') : (blink ? 'heart_half_blink' : 'heart_half');
       const low = p.health <= 4;
       for (let i = 0; i < 10; i++) {
         const x = hx + i * 8;
@@ -283,8 +300,8 @@ class UI {
         if (low) y += Math.round(Math.sin(g.tickCount * 1.7 + i * 3.1) * 1);
         this.sprite(blink ? 'heart_container_blink' : 'heart_container', x, y);
         const hpv = p.health - i * 2;
-        if (hpv >= 2) this.sprite(blink ? 'heart_full_blink' : 'heart_full', x, y);
-        else if (hpv >= 1) this.sprite(blink ? 'heart_half_blink' : 'heart_half', x, y);
+        if (hpv >= 2) this.sprite(fullSprite, x, y);
+        else if (hpv >= 1) this.sprite(halfSprite, x, y);
       }
       // armor
       const ap = p.inv.armorPoints();
@@ -323,14 +340,47 @@ class UI {
     }
     // action bar message
     if (this.actionBar && performance.now() - this.actionBar.t < 2500) Font.center(c, this.actionBar.text, W / 2, H - (p.creative ? 50 : 70), this.actionBar.color || '#FFFFFF');
+    this.drawBossBar();
     this.drawChat();
     this.drawToasts();
     this.drawStatusEffects();
     if (this.debug) this.drawDebug();
+    if (p && p.portalTime > 0) {
+      const pa = clamp(p.portalTime / 80, 0.08, 0.78);
+      c.fillStyle = `rgba(145, 25, 220, ${(pa * 0.55).toFixed(3)})`;
+      c.fillRect(0, 0, W, H);
+    }
     if (g.sleepFade > 0) { c.fillStyle = `rgba(10,10,20,${g.sleepFade})`; c.fillRect(0, 0, W, H); }
     if (!this.screen && g.state === 'play' && document.pointerLockElement !== g.canvas && !g.debugPause) {
       c.fillStyle = 'rgba(0,0,0,0.45)'; c.fillRect(0, H / 2 - 24, W, 20);
       Font.center(c, '点击屏幕继续游戏', W / 2, H / 2 - 18, '#FFFFFF');
+    }
+  }
+  drawBossBar() {
+    const g = this.game, c = this.ctx, W = this.w;
+    if (!g || !g.entities) return;
+    const dragon = g.entities.find(e => e instanceof Mob && !e.dead && !e.deathTime && e.type === 'ender_dragon');
+    if (!dragon) return;
+    const crystals = g.entities.filter(e => e instanceof EndCrystal && !e.dead).length;
+    const bw = 182, bh = 5;
+    const bx = Math.floor(W / 2 - bw / 2), by = 14;
+    const title = crystals > 0 ? `末影龙 (末影水晶: ${crystals})` : '末影龙';
+    Font.center(c, title, W / 2, 4, '#FF55FF');
+    if (this.img.boss_bar_bg) {
+      this.sprite('boss_bar_bg', bx, by, bw, bh);
+    } else {
+      c.fillStyle = '#3B0B3B';
+      c.fillRect(bx, by, bw, bh);
+    }
+    const frac = clamp(dragon.health / (dragon.maxHealth || 200), 0, 1);
+    const pw = Math.round(bw * frac);
+    if (pw > 0) {
+      if (this.img.boss_bar_fg) {
+        c.drawImage(this.img.boss_bar_fg, 0, 0, pw, bh, bx, by, pw, bh);
+      } else {
+        c.fillStyle = '#D836D8';
+        c.fillRect(bx, by, pw, bh);
+      }
     }
   }
   drawChat() {
@@ -589,21 +639,51 @@ class ContainerScreen {
     if (s.output) { this.takeOutput(ui, s, shift); return; }
     if (shift && button === 0) { this.quickMove(s); this.changed(); return; }
     const st = s.get();
-    // start drag distribution
     const sameMeta = (a, b) => !ITEMS[a.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(a, b));
+    const now = performance.now();
+    // Double-click gather (ClickType.PICKUP_ALL): collects all matching items in open container onto cursor up to maxStack
+    if (button === 0 && !shift && this.lastClick && (now - this.lastClick.t < 380)) {
+      if (!ui.cursor && st && !s.output && !s.creative && !s.trash) {
+        ui.cursor = st;
+        s.set(null);
+      } else if (!ui.cursor && !st && this.lastClick.stack) {
+        ui.cursor = this.lastClick.stack;
+      }
+      if (ui.cursor && !ITEMS[ui.cursor.id].durability && ui.cursor.count < maxStack(ui.cursor.id)) {
+        this.dragSlots = null;
+        this.collectToCursor(ui, sameMeta);
+        this.lastClick = null;
+        this.changed();
+        return;
+      }
+    }
+    // start drag distribution
     if (ui.cursor && (button === 0 || button === 2) && (!st || (st.id === ui.cursor.id && sameMeta(st, ui.cursor)))) {
       this.dragSlots = new Set([s]); this.dragButton = button; this.dragStart = s;
     }
-    const now = performance.now();
-    if (button === 0 && !ui.cursor && st == null && this.lastClick && now - this.lastClick.t < 300 && this.lastClick.id != null) {
-      // double click: gather
-      const id = this.lastClick.id; ui.cursor = this.lastClick.stack;
-      if (ui.cursor) for (const o of this.slots) { const os = o.get(); if (os && !o.output && os.id === id && sameMeta(os, ui.cursor) && ui.cursor.count < maxStack(id)) { const k = Math.min(os.count, maxStack(id) - ui.cursor.count); ui.cursor.count += k; os.count -= k; if (!os.count) o.set(null); } }
-      this.lastClick = null; this.changed(); return;
-    }
     if (this.dragSlots) return; // resolved on mouseUp
     this.clickSlot(ui, s, button);
-    this.lastClick = { t: now, id: ui.cursor ? ui.cursor.id : null, stack: ui.cursor };
+    this.lastClick = { t: now, id: ui.cursor ? ui.cursor.id : (s.get() ? s.get().id : null), stack: ui.cursor };
+  }
+  collectToCursor(ui, sameMeta) {
+    if (!ui.cursor) return;
+    const id = ui.cursor.id, cap = maxStack(id);
+    if (ITEMS[id].durability || ui.cursor.count >= cap) return;
+    const match = sameMeta || ((a, b) => !ITEMS[a.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(a, b)));
+    // Pass 0: partial stacks first (< cap), Pass 1: full stacks (=== cap), matching vanilla Minecraft
+    for (let pass = 0; pass < 2 && ui.cursor.count < cap; pass++) {
+      for (const o of this.slots) {
+        if (ui.cursor.count >= cap) break;
+        if (o.output || o.creative || o.trash) continue;
+        const os = o.get();
+        if (!os || os.id !== id || !match(os, ui.cursor)) continue;
+        if (pass === 0 && os.count >= cap) continue;
+        const k = Math.min(os.count, cap - ui.cursor.count);
+        ui.cursor.count += k;
+        os.count -= k;
+        if (os.count <= 0) o.set(null);
+      }
+    }
   }
   clickSlot(ui, s, button) {
     const st = s.get();
@@ -631,7 +711,14 @@ class ContainerScreen {
   mouseUp(ui, mx, my, button) {
     if (!this.dragSlots) return;
     const set = [...this.dragSlots]; this.dragSlots = null;
-    if (set.length === 1) { this.clickSlot(ui, set[0], this.dragButton); return; }
+    if (set.length === 1) {
+      this.clickSlot(ui, set[0], this.dragButton);
+      if (this.dragButton === 0) {
+        const cur = ui.cursor || set[0].get();
+        this.lastClick = { t: performance.now(), id: cur ? cur.id : null, stack: ui.cursor };
+      }
+      return;
+    }
     if (!ui.cursor) return;
     const per = this.dragButton === 2 ? 1 : Math.floor(ui.cursor.count / set.length);
     if (per < 1) return;
@@ -656,6 +743,10 @@ class ContainerScreen {
     if (ITEMS[st.id].armor && (s.group === 'main' || s.group === 'hotbar')) {
       const a = this.slots.find(o => o.armorSlot === ITEMS[st.id].armor.slot && !o.get());
       if (a) { a.set(st); s.set(null); return; }
+    }
+    if (ITEMS[st.id].shield && (s.group === 'main' || s.group === 'hotbar')) {
+      const oh = this.slots.find(o => o.offhandSlot && !o.get());
+      if (oh) { oh.set(st); s.set(null); return; }
     }
     targets = targets.filter(t => this.canPlace(t, st));
     for (const t of targets) { const ts = t.get(); if (ts && ts.id === st.id && !ITEMS[st.id].durability && (typeof Enchant === 'undefined' || Enchant.sameStackMeta(ts, st))) { const k = Math.min(st.count, this.maxIn(t, st) - ts.count); ts.count += k; st.count -= k; if (!st.count) { s.set(null); return; } } }
@@ -687,6 +778,15 @@ class ContainerScreen {
         const inv = this.game.player.inv, i = +k - 1;
         const a = s.get(), b = inv.slots[i];
         if (!b || this.canPlace(s, b)) { s.set(b); inv.slots[i] = a; this.changed(); }
+      }
+      return true;
+    }
+    if (k === 'f' || k === 'F') {
+      const s = this.slotAt(ui.mouse.x, ui.mouse.y);
+      if (s && !s.output) {
+        const inv = this.game.player.inv;
+        const a = s.get(), b = inv.slots[40] || null;
+        if (!b || this.canPlace(s, b)) { s.set(b); inv.slots[40] = a; this.changed(); }
       }
       return true;
     }
@@ -722,6 +822,7 @@ class CraftingScreen extends ContainerScreen {
       const inv = game.player.inv;
       const icons = ['slot_helmet', 'slot_chestplate', 'slot_leggings', 'slot_boots'];
       for (let i = 0; i < 4; i++) this.slots.push({ x: 8, y: 8 + i * 18, armorSlot: i, emptyIcon: icons[i], get: () => inv.slots[36 + i], set: (s) => { inv.slots[36 + i] = s; }, accept: (st) => ITEMS[st.id].armor && ITEMS[st.id].armor.slot === i, max: 1, group: 'armor' });
+      this.slots.push({ x: 77, y: 62, offhandSlot: true, emptyIcon: 'slot_shield', get: () => inv.slots[40], set: (s) => { inv.slots[40] = s; }, group: 'offhand', idx: 40 });
     }
     this.addPlayerSlots(84, 142);
   }
@@ -741,6 +842,10 @@ class CraftingScreen extends ContainerScreen {
   bookRecipes() {
     const n = this.size * this.size;
     const inv = this.game.player.inv;
+    let sig = this.onlyCraftable ? '1:' : '0:';
+    for (let i = 0; i < 36; i++) { const s = inv.slots[i]; if (s) sig += i + '=' + s.id + 'x' + s.count + ','; }
+    for (let i = 0; i < this.grid.length; i++) { const s = this.grid[i]; if (s) sig += 'g' + i + '=' + s.id + 'x' + s.count + ','; }
+    if (this._bookSig === sig && this._cachedBookList) return this._cachedBookList;
     const avail = new Map();
     for (let i = 0; i < 36; i++) { const s = inv.slots[i]; if (s) avail.set(s.id, (avail.get(s.id) || 0) + s.count); }
     for (const s of this.grid) if (s) avail.set(s.id, (avail.get(s.id) || 0) + s.count);
@@ -752,6 +857,8 @@ class CraftingScreen extends ContainerScreen {
       list.push({ r, plan });
     }
     list.sort((a, b) => (b.plan ? 1 : 0) - (a.plan ? 1 : 0));
+    this._bookSig = sig;
+    this._cachedBookList = list;
     return list;
   }
   fillRecipe(entry, max) {
@@ -779,9 +886,10 @@ class CraftingScreen extends ContainerScreen {
     c.fillStyle = '#FFFFFF'; c.fillRect(P.x, P.y, P.w - 1, 1); c.fillRect(P.x, P.y, 1, P.h - 1);
     c.fillStyle = '#555555'; c.fillRect(P.x + 1, P.y + P.h - 1, P.w - 1, 1); c.fillRect(P.x + P.w - 1, P.y + 1, 1, P.h - 1);
     Font.draw(c, '配方书', P.x + 8, P.y + 7, '#404040', false);
-    this.filterBtn = { x: P.x + 82, y: P.y + 4, w: 58, h: 14 };
-    ui.nine(ui.hit(this.filterBtn) ? 'button_hl' : 'button', this.filterBtn.x, this.filterBtn.y, this.filterBtn.w, this.filterBtn.h, 3);
-    Font.center(c, this.onlyCraftable ? '仅可合成' : '全部配方', this.filterBtn.x + 29, this.filterBtn.y + 3, '#FFFFFF');
+    this.filterBtn = { x: P.x + 80, y: P.y + 4, w: 60, h: 15 };
+    const fHov = ui.hit(this.filterBtn);
+    ui.nine(fHov ? 'button_hl' : 'button', this.filterBtn.x, this.filterBtn.y, this.filterBtn.w, this.filterBtn.h, 4);
+    Font.center(c, this.onlyCraftable ? '仅可合成' : '全部配方', this.filterBtn.x + 30, this.filterBtn.y + 4, fHov ? '#FFFFA0' : '#FFFFFF');
     const list = this.bookRecipes();
     const per = 20, pages = Math.max(1, Math.ceil(list.length / per));
     this.page = clamp(this.page, 0, pages - 1);

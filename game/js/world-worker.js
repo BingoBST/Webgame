@@ -71,8 +71,8 @@ class WorldWorker {
       item, itemDef, makeStack, maxStack, logTex, stairBoxes, doorBoxes,
       ladderBoxes, buttonBoxes, leverBoxes, repeaterModel, comparatorModel,
       observerTex, pistonBoxes, pistonModel, pistonHeadBoxes, pistonHeadModel,
-      pinkPetalsModel, brewingStandModel, fenceBoxes, railModel, anvilModel,
-      bellModel, hopperModel, hopperBoxes, initAnimTable
+      pinkPetalsModel, brewingStandModel, netherPortalBoxes, netherWartTex, endPortalFrameBoxes, endPortalFrameModel, dragonEggModel, ironBarsBoxes, ironBarsModel,
+      fenceBoxes, railModel, anvilModel, bellModel, hopperModel, hopperBoxes, initAnimTable
     ];
 
     const lines = [
@@ -87,6 +87,7 @@ class WorldWorker {
       `const SLAB_BOXES = ${JSON.stringify(SLAB_BOXES)};`,
       `const FLOWER_IDS = ${JSON.stringify(FLOWER_IDS)};`,
       `const WHEAT_TEX = ${JSON.stringify(WHEAT_TEX)};`,
+      `const NETHER_WART_TEX = ${JSON.stringify(NETHER_WART_TEX)};`,
       `const BIOMES = ${JSON.stringify(BIOMES)};`,
       `const BI = ${JSON.stringify(BI)};`,
       `const FACE_SHADE = ${JSON.stringify(FACE_SHADE)};`,
@@ -173,6 +174,8 @@ class WorldWorker {
             b.texFn = function(face, meta) { return face === 3 ? (meta ? T('farmland_moist') : T('farmland')) : this.tex[face]; };
           } else if (b.key === 'wheat') {
             b.texFn = function(face, meta) { return T(WHEAT_TEX[meta & 7]); };
+          } else if (b.key === 'nether_wart_crop') {
+            b.texFn = netherWartTex;
           } else if (b.key === 'oak_door') {
             b.texFn = function(face, meta) { return (meta & 8) ? T('oak_door_top') : T('oak_door_bottom'); };
           } else if (b.key === 'cherry_door') {
@@ -188,6 +191,7 @@ class WorldWorker {
           else if (b.ladder) b.boxes = ladderBoxes;
           else if (b.button) b.boxes = buttonBoxes;
           else if (b.lever) b.boxes = leverBoxes;
+          else if (b.key === 'iron_bars') { b.model = ironBarsModel; b.boxes = ironBarsBoxes; }
           else if (b.fence) b.boxes = fenceBoxes;
           else if (b.plate) b.boxes = (m) => [[1, 0, 1, 15, (m & 1) ? 0.5 : 1, 15]];
           else if (b.trapdoor) b.boxes = (m) => (m & 4) ? [[0, 0, 13, 16, 16, 16]] : (m & 8 ? [[0, 13, 0, 16, 16, 16]] : [[0, 0, 0, 16, 3, 16]]);
@@ -203,6 +207,10 @@ class WorldWorker {
           else if (b.key === 'piston_head') { b.model = pistonHeadModel; b.boxes = pistonHeadBoxes; }
           else if (b.key === 'pink_petals') { b.model = pinkPetalsModel; b.boxes = () => [[0, 0, 0, 16, 2, 16]]; }
           else if (b.key === 'brewing_stand') { b.model = brewingStandModel; b.boxes = () => [[1, 0, 1, 15, 2, 15], [7, 0, 7, 9, 14, 9]]; }
+          else if (b.key === 'nether_portal') { b.boxes = netherPortalBoxes; }
+          else if (b.key === 'end_portal_frame') { b.model = endPortalFrameModel; b.boxes = endPortalFrameBoxes; }
+          else if (b.key === 'end_portal') { b.boxes = () => [[0, 0, 0, 16, 12, 16]]; }
+          else if (b.key === 'dragon_egg') { b.model = dragonEggModel; b.boxes = () => [[1, 0, 1, 15, 16, 15]]; }
           else if (b.key === 'rail') { b.model = railModel; b.boxes = () => [[0, 0, 0, 16, 2, 16]]; }
           else if (b.key === 'bell') { b.model = bellModel; b.boxes = () => [[0, 0, 4, 16, 16, 12]]; }
           else if (b.key === 'enchanting_table') { b.boxes = () => [[0, 0, 0, 16, 12, 16]]; }
@@ -274,7 +282,9 @@ class WorldWorker {
               sectionCount: ch.sectionCount,
               hasSurfaceStructure: !!ch.hasSurfaceStructure,
               village: ch.village || null,
-              dungeon: ch.dungeon || null
+              dungeon: ch.dungeon || null,
+              fortress: ch.fortress || null,
+              stronghold: ch.stronghold || null
             }, transfer);
             return;
           }
@@ -722,6 +732,8 @@ class WorldWorker {
       ch.hasSurfaceStructure = !!msg.hasSurfaceStructure;
       if (msg.village) ch.village = msg.village;
       if (msg.dungeon) ch.dungeon = msg.dungeon;
+      if (msg.fortress) ch.fortress = msg.fortress;
+      if (msg.stronghold) ch.stronghold = msg.stronghold;
       g._mountLoadedChunk(msg.cx, msg.cz, ch, false);
       if (doneTask && doneTask.resolve) doneTask.resolve(ch);
       this._pump();

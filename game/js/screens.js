@@ -316,7 +316,7 @@ class ChatScreen extends MenuScreen {
     const v = el.value, parts = v.split(' ');
     if (parts[0] === '/give' && parts.length === 2) { const m = Object.keys(ITEM_KEY).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/give ' + m[0]; }
     else if (parts[0] === '/summon' && parts.length === 2) { const m = Object.keys(MOB_TYPES).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/summon ' + m[0]; }
-    else if (parts[0] === '/locate' && parts.length === 2) { const m = ['village', 'desert_pyramid', 'mineshaft'].filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/locate ' + m[0]; }
+    else if (parts[0] === '/locate' && parts.length === 2) { const m = ['stronghold', 'nether_fortress', 'village', 'desert_pyramid', 'mineshaft'].filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/locate ' + m[0]; }
     else if (parts[0] === '/enchant' && parts.length === 2 && typeof ENCHANTS !== 'undefined') { const m = Object.keys(ENCHANTS).filter(k => k.startsWith(parts[1])); if (m.length) el.value = '/enchant ' + m[0]; }
     else if (parts.length === 1) { const m = ['/enchant', '/locate', '/gamemode', '/time', '/weather', '/give', '/tp', '/summon', '/kill', '/spawnpoint', '/seed', '/clear', '/xp', '/help'].filter(k => k.startsWith(v)); if (m.length) el.value = m[0] + ' '; }
   }
@@ -351,10 +351,10 @@ function runCommand(g, text) {
       }
       case 'locate': {
         const target = (a[0] === 'structure' ? a[1] : a[0] || '').replace('minecraft:', '');
-        if (!target) return err('用法: /locate village|desert_pyramid|mineshaft');
+        if (!target) return err('用法: /locate stronghold|nether_fortress|village|desert_pyramid|mineshaft');
         if (typeof Structures === 'undefined') return err('结构生成器未加载');
         const res = Structures.locateNearest(g.world, target, Math.floor(p.pos[0]), Math.floor(p.pos[2]));
-        if (!res) return err('未找到结构: ' + target + '（可用: village / desert_pyramid / mineshaft）');
+        if (!res) return err('未找到结构: ' + target + '（可用: stronghold / nether_fortress / village / desert_pyramid / mineshaft）');
         ui.message(`最近的 ${res.cn} 位于 [${res.x}, ${res.y}, ${res.z}]（距离 ${res.dist} 格，可输入 /tp ${res.x} ${res.y} ${res.z} 传送）`, '#55FF55');
         break;
       }

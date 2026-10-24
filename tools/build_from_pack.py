@@ -1,112 +1,227 @@
-# Builds game/js/assets.js from a Minecraft resource pack (e.g. Pixel Perfection Legacy)
-# with automatic fallback to original vanilla assets for any missing textures.
-
-import base64
+import zipfile
 import io
 import json
-import os
-import sys
-import zipfile
+import re
+import base64
 from PIL import Image
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-HTG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
-DEFAULT_PACK = os.path.join(HTG_DIR, 'Pixel Perfection Legacy 13.21.2.zip')
-if not os.path.exists(DEFAULT_PACK):
-    DEFAULT_PACK = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'Pixel Perfection Legacy 13.21.2.zip'))
-PACK_ZIP = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PACK
-FALLBACK_JS = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.vanilla.js')
-OUT_JS = os.path.join(SCRIPT_DIR, '..', 'game', 'js', 'assets.js')
+import glob
+_zip_candidates = glob.glob('/working_dir/*/user_uploaded_files/ttl=63d/user_uploaded/Pixel Perfection Legacy 13.21.2.zip')
+ZIP_PATH = _zip_candidates[0] if _zip_candidates else '/working_dir/c_6d0795a50601cd28/user_uploaded_files/ttl=63d/user_uploaded/Pixel Perfection Legacy 13.21.2.zip'
+ORIG_JS = 'game/js/assets.vanilla.js'
+OUT_JS = 'game/js/assets.js'
 
-print(f"Loading resource pack: {PACK_ZIP}")
-if not os.path.exists(PACK_ZIP):
-    sys.exit(f"Error: Resource pack not found at {PACK_ZIP}")
-
-if not os.path.exists(FALLBACK_JS):
-    sys.exit(f"Error: Fallback assets not found at {FALLBACK_JS}")
-
-# Load Fallback Assets
-with open(FALLBACK_JS, 'r', encoding='utf-8') as f:
-    orig_text = f.read()
-
-orig_assets = json.loads(orig_text.split('window.ASSETS = ', 1)[1].rstrip(';\r\n'))
-orig_strip_b64 = orig_assets['strip'].split(',', 1)[1]
-orig_strip = Image.open(io.BytesIO(base64.b64decode(orig_strip_b64))).convert('RGBA')
-orig_tiles = orig_assets['tiles']      # name -> index
-orig_anims = orig_assets['anims']      # name -> frame count
-orig_images = orig_assets['images']    # name -> data URI
+# Load original assets as fallback
+with open(ORIG_JS, 'r', encoding='utf-8') as f:
+    text = f.read()
+m = re.search(r'window\.ASSETS\s*=\s*(\{.*\});', text, re.S)
+orig_assets = json.loads(m.group(1))
+orig_b64 = orig_assets['strip'].split(',', 1)[1]
+orig_strip = Image.open(io.BytesIO(base64.b64decode(orig_b64))).convert('RGBA')
+orig_tiles = orig_assets['tiles']
+orig_anims = orig_assets['anims']
+orig_images = orig_assets['images']
 
 def get_orig_tile_frames(name):
     if name not in orig_tiles:
-        return [Image.new('RGBA', (16, 16), (255, 255, 255, 255))]
+        return [Image.new('RGBA', (16, 16), (255, 0, 255, 255))]
     idx = orig_tiles[name]
     cnt = orig_anims.get(name, 1)
-    return [orig_strip.crop((0, (idx + f) * 16, 16, (idx + f + 1) * 16)) for f in range(cnt)]
+    frames = []
+    for i in range(cnt):
+        y = (idx + i) * 16
+        frames.append(orig_strip.crop((0, y, 16, y + 16)))
+    return frames
 
-z = zipfile.ZipFile(PACK_ZIP)
+z = zipfile.ZipFile(ZIP_PATH, 'r')
 namelist = set(z.namelist())
-T = 'assets/minecraft/textures/'
 
+# Path mappings from modern names to legacy/pack names in Pixel Perfection
 ALIASES = {
-    'block/wheat_stage7': ['block/wheat_stage7', 'block/wheat_stage_full_7'],
-    'environment/celestial/sun': ['environment/celestial/sun', 'environment/sun'],
+    # Blocks
+    'block/grass_block_top': ['block/grass_block_top', 'blocks/grass_top'],
+    'block/grass_block_side': ['block/grass_block_side', 'blocks/grass_side'],
+    'block/grass_block_snow': ['block/grass_block_snow', 'blocks/grass_side_snowed'],
+    'block/grass_block_side_overlay': ['block/grass_block_side_overlay', 'blocks/grass_side_overlay'],
+    'block/azure_bluet': ['block/azure_bluet', 'blocks/flower_houstonia'],
+    'block/orange_tulip': ['block/orange_tulip', 'blocks/flower_tulip_orange'],
+    'block/oxeye_daisy': ['block/oxeye_daisy', 'blocks/flower_oxeye_daisy'],
+    'block/cornflower': ['block/cornflower'],
+    'block/lily_of_the_valley': ['block/lily_of_the_valley'],
+    'block/netherrack': ['block/netherrack', 'blocks/netherrack'],
+    'block/short_grass': ['block/short_grass', 'block/grass', 'blocks/tallgrass'],
+    'block/dandelion': ['block/dandelion', 'blocks/flower_dandelion'],
+    'block/poppy': ['block/poppy', 'blocks/flower_rose'],
+    'block/blue_orchid': ['block/blue_orchid', 'blocks/flower_blue_orchid'],
+    'block/allium': ['block/allium', 'blocks/flower_allium'],
+    'block/red_tulip': ['block/red_tulip', 'blocks/flower_tulip_red'],
+    'block/dead_bush': ['block/dead_bush', 'blocks/deadbush'],
+    'block/sugar_cane': ['block/sugar_cane', 'block/reeds', 'blocks/reeds'],
+    'block/lily_pad': ['block/lily_pad', 'blocks/waterlily'],
+    'block/torch': ['block/torch', 'blocks/torch_on'],
+    'block/redstone_torch': ['block/redstone_torch', 'blocks/redstone_torch_on'],
+    'block/redstone_torch_off': ['block/redstone_torch_off', 'blocks/redstone_torch_off'],
+    'block/redstone_lamp': ['block/redstone_lamp', 'blocks/redstone_lamp_off'],
+    'block/redstone_lamp_on': ['block/redstone_lamp_on', 'blocks/redstone_lamp_on'],
+    'block/repeater': ['block/repeater', 'blocks/repeater_off'],
+    'block/repeater_on': ['block/repeater_on', 'blocks/repeater_on'],
+    'block/comparator': ['block/comparator', 'blocks/comparator_off'],
+    'block/comparator_on': ['block/comparator_on', 'blocks/comparator_on'],
+    'block/observer_front': ['block/observer_front', 'blocks/observer_front'],
+    'block/observer_back': ['block/observer_back', 'blocks/observer_back'],
+    'block/observer_back_on': ['block/observer_back_on', 'blocks/observer_back_lit', 'blocks/observer_back_on'],
+    'block/observer_side': ['block/observer_side', 'blocks/observer_side'],
+    'block/observer_top': ['block/observer_top', 'blocks/observer_top'],
+    'block/piston_bottom': ['block/piston_bottom', 'blocks/piston_bottom'],
+    'block/piston_inner': ['block/piston_inner', 'blocks/piston_inner'],
+    'block/piston_side': ['block/piston_side', 'blocks/piston_side'],
+    'block/piston_top': ['block/piston_top', 'block/piston_top_normal', 'blocks/piston_top_normal'],
+    'block/piston_top_sticky': ['block/piston_top_sticky', 'blocks/piston_top_sticky'],
+    'block/brewing_stand': ['block/brewing_stand', 'blocks/brewing_stand'],
+    'block/brewing_stand_base': ['block/brewing_stand_base', 'blocks/brewing_stand_base'],
+    'block/cherry_log': ['block/cherry_log'],
+    'block/cherry_log_top': ['block/cherry_log_top'],
+    'block/cherry_leaves': ['block/cherry_leaves'],
+    'block/cherry_sapling': ['block/cherry_sapling'],
+    'block/pink_petals': ['block/pink_petals', 'item/pink_petals'],
+    'block/cherry_door_top': ['block/cherry_door_top'],
+    'block/cherry_door_bottom': ['block/cherry_door_bottom'],
+    'block/farmland': ['block/farmland', 'blocks/farmland_dry'],
+    'block/farmland_moist': ['block/farmland_moist', 'blocks/farmland_wet'],
+    'block/cobweb': ['block/cobweb', 'blocks/web'],
+    'block/spawner': ['block/spawner', 'blocks/mob_spawner'],
+    'block/dirt_path_top': ['block/dirt_path_top', 'block/grass_path_top', 'blocks/grass_path_top'],
+    'block/dirt_path_side': ['block/dirt_path_side', 'block/grass_path_side', 'blocks/grass_path_side'],
+    'block/terracotta': ['block/terracotta', 'blocks/hardened_clay'],
+    'block/orange_terracotta': ['block/orange_terracotta', 'blocks/hardened_clay_stained_orange'],
+    'block/blue_terracotta': ['block/blue_terracotta', 'blocks/hardened_clay_stained_blue'],
+    'block/quartz_block_side': ['block/quartz_block_side', 'blocks/quartz_block_side'],
+    'block/quartz_block_top': ['block/quartz_block_top', 'blocks/quartz_block_top'],
+    'block/smooth_stone': ['block/smooth_stone', 'blocks/stone_slab_top'],
+    'block/smooth_stone_slab_side': ['block/smooth_stone_slab_side', 'blocks/stone_slab_side'],
+    'block/bricks': ['block/bricks', 'blocks/brick'],
+    'block/stone_bricks': ['block/stone_bricks', 'blocks/stonebrick'],
+    'block/mossy_stone_bricks': ['block/mossy_stone_bricks', 'blocks/stonebrick_mossy'],
+    'block/cracked_stone_bricks': ['block/cracked_stone_bricks', 'blocks/stonebrick_cracked'],
+    'block/nether_portal': ['block/nether_portal', 'blocks/portal'],
+    'block/soul_sand': ['block/soul_sand', 'blocks/soul_sand'],
+    'block/nether_quartz_ore': ['block/nether_quartz_ore', 'blocks/quartz_ore'],
+    'block/nether_gold_ore': ['block/nether_gold_ore'],
+    'block/nether_bricks': ['block/nether_bricks', 'blocks/nether_brick'],
+    'block/nether_wart_stage0': ['block/nether_wart_stage0', 'blocks/nether_wart_stage_0'],
+    'block/nether_wart_stage1': ['block/nether_wart_stage1', 'blocks/nether_wart_stage_1'],
+    'block/nether_wart_stage2': ['block/nether_wart_stage2', 'blocks/nether_wart_stage_2'],
+    'block/end_portal_frame_top': ['block/end_portal_frame_top', 'blocks/endframe_top'],
+    'block/end_portal_frame_side': ['block/end_portal_frame_side', 'blocks/endframe_side'],
+    'block/end_portal_frame_bottom': ['block/end_portal_frame_bottom', 'block/end_stone', 'blocks/end_stone'],
+    'block/end_portal_frame_eye': ['block/end_portal_frame_eye', 'blocks/endframe_eye'],
+    'block/end_stone': ['block/end_stone', 'blocks/end_stone'],
+    'block/end_stone_bricks': ['block/end_stone_bricks', 'blocks/end_bricks'],
+    'block/dragon_egg': ['block/dragon_egg', 'blocks/dragon_egg'],
+    'block/iron_bars': ['block/iron_bars', 'blocks/iron_bars'],
+    'item/ender_eye': ['item/ender_eye', 'items/ender_eye'],
+    'item/end_crystal': ['item/end_crystal', 'items/end_crystal'],
+    'item/dragon_breath': ['item/dragon_breath', 'items/dragon_breath'],
+    # Items
+    'item/wooden_pickaxe': ['item/wooden_pickaxe', 'items/wood_pickaxe'],
+    'item/wooden_axe': ['item/wooden_axe', 'items/wood_axe'],
+    'item/wooden_shovel': ['item/wooden_shovel', 'items/wood_shovel'],
+    'item/wooden_sword': ['item/wooden_sword', 'items/wood_sword'],
+    'item/wooden_hoe': ['item/wooden_hoe', 'items/wood_hoe'],
+    'item/golden_pickaxe': ['item/golden_pickaxe', 'items/gold_pickaxe'],
+    'item/golden_axe': ['item/golden_axe', 'items/gold_axe'],
+    'item/golden_shovel': ['item/golden_shovel', 'items/gold_shovel'],
+    'item/golden_sword': ['item/golden_sword', 'items/gold_sword'],
+    'item/golden_hoe': ['item/golden_hoe', 'items/gold_hoe'],
+    'item/golden_apple': ['item/golden_apple', 'items/apple_golden'],
+    'item/golden_carrot': ['item/golden_carrot', 'items/carrot_golden'],
+    'item/porkchop': ['item/porkchop', 'items/porkchop_raw'],
+    'item/cooked_porkchop': ['item/cooked_porkchop', 'items/porkchop_cooked'],
+    'item/beef': ['item/beef', 'items/beef_raw'],
+    'item/cooked_beef': ['item/cooked_beef', 'items/beef_cooked'],
+    'item/mutton': ['item/mutton', 'items/mutton_raw'],
+    'item/cooked_mutton': ['item/cooked_mutton', 'items/mutton_cooked'],
+    'item/chicken': ['item/chicken', 'items/chicken_raw'],
+    'item/cooked_chicken': ['item/cooked_chicken', 'items/chicken_cooked'],
+    'item/cod': ['item/cod', 'items/fish_cod_raw'],
+    'item/cooked_cod': ['item/cooked_cod', 'items/fish_cod_cooked'],
+    'item/wheat_seeds': ['item/wheat_seeds', 'items/seeds_wheat'],
+    'item/sugar_cane': ['item/sugar_cane', 'items/reeds'],
+    'item/melon_slice': ['item/melon_slice', 'items/melon'],
+    'item/slime_ball': ['item/slime_ball', 'items/slimeball'],
+    'item/redstone': ['item/redstone', 'items/redstone_dust'],
+    'item/oak_door': ['item/oak_door', 'items/door_wood'],
+    'item/spruce_door': ['item/spruce_door', 'items/door_spruce'],
+    # Entities
     'entity/pig/pig_temperate': ['entity/pig/pig_temperate', 'entity/pig/pig'],
     'entity/cow/cow_temperate': ['entity/cow/cow_temperate', 'entity/cow/cow'],
-    'entity/chicken/chicken_temperate': ['entity/chicken/chicken_temperate', 'entity/chicken/chicken', 'entity/chicken'],
-    'entity/sheep/sheep_wool': ['entity/sheep/sheep_wool', 'entity/sheep/sheep_fur'],
-    'entity/spider/spider_eyes': ['entity/spider/spider_eyes', 'entity/spider_eyes'],
-    'gui/sprites/container/slot/helmet': ['gui/sprites/container/slot/helmet', 'item/empty_armor_slot_helmet'],
-    'gui/sprites/container/slot/chestplate': ['gui/sprites/container/slot/chestplate', 'item/empty_armor_slot_chestplate'],
-    'gui/sprites/container/slot/leggings': ['gui/sprites/container/slot/leggings', 'item/empty_armor_slot_leggings'],
-    'gui/sprites/container/slot/boots': ['gui/sprites/container/slot/boots', 'item/empty_armor_slot_boots'],
-    'gui/sprites/hud/air_empty': ['gui/sprites/hud/air_empty', 'gui/sprites/hud/air_bursting', 'gui/sprites/hud/air'],
+    'entity/chicken/chicken_temperate': ['entity/chicken/chicken_temperate', 'entity/chicken'],
+    'entity/player/wide/steve': ['entity/player/wide/steve', 'entity/steve'],
+    'entity/projectiles/arrow': ['entity/projectiles/arrow', 'entity/arrow'],
+    'entity/enchanting_table_book': ['entity/enchanting_table_book'],
+    'entity/blaze': ['entity/blaze'],
+    'entity/skeleton/wither_skeleton': ['entity/skeleton/wither_skeleton'],
+    'entity/ghast/ghast': ['entity/ghast/ghast'],
+    'entity/ghast/ghast_shooting': ['entity/ghast/ghast_shooting'],
+    'entity/zombie_pigman': ['entity/zombie_pigman', 'entity/piglin/zombified_piglin'],
+    'entity/enderman/enderman': ['entity/enderman/enderman'],
+    'entity/enderman/enderman_eyes': ['entity/enderman/enderman_eyes'],
+    # Environment
+    'environment/celestial/sun': ['environment/celestial/sun', 'environment/sun'],
+    'gui/title/edition': ['gui/title/edition'],
 }
 
-def resolve_path(path):
-    candidates = ALIASES.get(path, [path])
+def resolve_path(p):
+    candidates = [p]
+    if p in ALIASES:
+        candidates = ALIASES[p] + [p]
+    if p.startswith('block/'):
+        name = p[6:]
+        candidates.append('blocks/' + name)
+    elif p.startswith('item/'):
+        name = p[5:]
+        candidates.append('items/' + name)
     for c in candidates:
-        full = T + c + '.png'
+        full = 'assets/minecraft/textures/' + c + '.png'
         if full in namelist:
             return full
     return None
 
-def load_img(path):
-    rp = resolve_path(path)
-    if rp:
-        return Image.open(io.BytesIO(z.read(rp))).convert('RGBA')
-    return None
+def load_img(p):
+    full = resolve_path(p)
+    if not full:
+        return None
+    return Image.open(io.BytesIO(z.read(full))).convert('RGBA')
 
-def load_meta(path):
-    rp = resolve_path(path)
-    if rp:
-        meta_name = rp + '.mcmeta'
-        if meta_name in namelist:
-            try:
-                return json.loads(z.read(meta_name))
-            except Exception:
-                return None
+def load_meta(p):
+    full = resolve_path(p)
+    if not full:
+        return None
+    meta_full = full + '.mcmeta'
+    if meta_full in namelist:
+        try:
+            return json.loads(z.read(meta_full).decode('utf-8'))
+        except Exception:
+            return None
     return None
 
 def to16(im):
-    if im.size == (16, 16):
-        return im
-    if im.size[0] < 16:
-        return im.resize((16, 16), Image.NEAREST)
-    return im.resize((16, 16), Image.BOX)
+    return im if im.size == (16, 16) else im.resize((16, 16), Image.NEAREST)
 
 def uri(im):
     b = io.BytesIO()
     im.save(b, 'PNG', optimize=True)
     return 'data:image/png;base64,' + base64.b64encode(b.getvalue()).decode()
 
-BLOCK_TEX = '''stone cobblestone dirt grass_block_top grass_block_side grass_block_side_overlay grass_block_snow
-bedrock sand gravel sandstone sandstone_top sandstone_bottom red_sand
-oak_log oak_log_top oak_planks oak_leaves birch_log birch_log_top birch_planks birch_leaves
-spruce_log spruce_log_top spruce_planks spruce_leaves glass
-coal_ore iron_ore gold_ore diamond_ore redstone_ore lapis_ore emerald_ore copper_ore
+BLOCK_TEX = '''stone dirt grass_block_top grass_block_side grass_block_side_overlay grass_block_snow cobblestone bedrock sand red_sand gravel clay
+oak_log oak_log_top birch_log birch_log_top spruce_log spruce_log_top
+oak_planks birch_planks spruce_planks
+oak_leaves birch_leaves spruce_leaves
+glass water_still lava_still snow ice packed_ice
+coal_ore iron_ore gold_ore diamond_ore redstone_ore lapis_ore emerald_ore
 deepslate deepslate_top deepslate_coal_ore deepslate_iron_ore deepslate_gold_ore deepslate_diamond_ore deepslate_redstone_ore
-water_still lava_still snow ice packed_ice clay cactus_side cactus_top cactus_bottom sugar_cane dead_bush short_grass fern
-dandelion poppy cornflower oxeye_daisy azure_bluet allium blue_orchid red_tulip orange_tulip lily_of_the_valley
+sandstone sandstone_top sandstone_bottom cactus_side cactus_top cactus_bottom dead_bush sugar_cane
+short_grass fern dandelion poppy blue_orchid allium azure_bluet red_tulip orange_tulip oxeye_daisy cornflower lily_of_the_valley
 crafting_table_front crafting_table_side crafting_table_top furnace_front furnace_front_on furnace_side furnace_top
 torch bricks stone_bricks mossy_stone_bricks cracked_stone_bricks mossy_cobblestone bookshelf tnt_side tnt_top tnt_bottom
 glowstone obsidian iron_block gold_block diamond_block coal_block emerald_block lapis_block redstone_block
@@ -127,9 +242,11 @@ dark_oak_planks jungle_planks acacia_planks cherry_planks mangrove_planks
 red_bed_head_up red_bed_head_east red_bed_head_west red_bed_foot_up red_bed_foot_south red_bed_foot_east red_bed_foot_west bed_head_north bed_down
 redstone_dust_dot redstone_dust_line0 redstone_dust_line1 redstone_torch redstone_torch_off redstone_lamp redstone_lamp_on lever repeater repeater_on target_side target_top chiseled_sandstone cut_sandstone smooth_sandstone orange_terracotta blue_terracotta cobweb rail dirt_path_top dirt_path_side spawner bell_side bell_top bell_bottom enchanting_table_top enchanting_table_side enchanting_table_bottom anvil anvil_base anvil_side anvil_top hopper_top hopper_outside hopper_inside
 comparator comparator_on observer_front observer_back observer_back_on observer_side observer_top piston_bottom piston_inner piston_side piston_top piston_top_sticky brewing_stand brewing_stand_base
-cherry_log cherry_log_top cherry_leaves cherry_sapling pink_petals cherry_door_top cherry_door_bottom'''.split()
+cherry_log cherry_log_top cherry_leaves cherry_sapling pink_petals cherry_door_top cherry_door_bottom
+nether_portal soul_sand nether_quartz_ore nether_gold_ore nether_bricks nether_wart_stage0 nether_wart_stage1 nether_wart_stage2
+end_portal_frame_top end_portal_frame_side end_portal_frame_bottom end_portal_frame_eye end_stone end_stone_bricks dragon_egg iron_bars'''.split()
 
-TRANSLUCENT_BLOCKS = {'water_still', 'ice'} | {
+TRANSLUCENT_BLOCKS = {'water_still', 'ice', 'nether_portal'} | {
     n for n in BLOCK_TEX if 'stained_glass' in n or 'destroy_stage' in n
 }
 
@@ -145,6 +262,10 @@ def sanitize_tile_alpha(im, name, is_block=True):
         if name == 'ice':
             out = im.copy()
             out.putdata([(min(255, r + 12), min(255, g + 8), min(255, b + 6), max(a, 210)) for r, g, b, a in out.getdata()])
+            return out
+        if name == 'nether_portal':
+            out = im.copy()
+            out.putdata([(min(255, int(r * 1.25 + 25)), min(255, int(g * 1.15 + 10)), min(255, int(b * 1.3 + 35)), max(a, 185) if a > 0 else 0) for r, g, b, a in out.getdata()])
             return out
         return im
     out = im.copy()
@@ -184,7 +305,8 @@ iron_helmet iron_chestplate iron_leggings iron_boots diamond_helmet diamond_ches
 leather_helmet leather_chestplate leather_leggings leather_boots emerald lapis_lazuli redstone repeater pumpkin_pie
 cooked_cod cod baked_potato potato carrot golden_carrot mushroom_stew bowl
 pig_spawn_egg cow_spawn_egg sheep_spawn_egg chicken_spawn_egg zombie_spawn_egg skeleton_spawn_egg creeper_spawn_egg spider_spawn_egg bell enchanted_book hopper
-comparator brewing_stand cherry_door pink_petals glass_bottle blaze_rod blaze_powder nether_wart glistering_melon_slice magma_cream'''.split()
+comparator brewing_stand cherry_door pink_petals glass_bottle blaze_rod blaze_powder nether_wart glistering_melon_slice magma_cream
+quartz gold_nugget ghast_tear ender_pearl ender_eye end_crystal dragon_breath nether_brick fire_charge'''.split()
 
 PARTICLES = ['generic_%d' % i for i in range(8)] + ['big_smoke_%d' % i for i in range(12)] + \
     ['explosion_%d' % i for i in range(16)] + ['flame', 'lava', 'splash_0', 'splash_1', 'splash_2', 'splash_3',
@@ -220,7 +342,7 @@ for n in BLOCK_TEX:
             order = m_anim.get('frames')
             if order:
                 order = [f['index'] if isinstance(f, dict) else f for f in order]
-                frames = [frames[i] for i in order]
+                frames = [frames[i] for i in order if 0 <= i < len(frames)] or frames
             add_tile_frames(n, frames, is_block=True)
         else:
             add_tile_frames(n, [im], is_block=True)
@@ -281,6 +403,44 @@ for p_key, (tr, tg, tb) in POTION_TINTS:
     else:
         add_tile_frames('i_' + p_key, [Image.new('RGBA', (16, 16), (tr, tg, tb, 255))], is_block=False)
 
+# Compose tinted spawn egg icons for Nether & Villager mobs from item/spawn_egg + item/spawn_egg_overlay
+egg_base = load_img('item/spawn_egg')
+egg_overlay = load_img('item/spawn_egg_overlay')
+SPAWN_EGG_TINTS = [
+    ('villager_spawn_egg', (86, 60, 51), (189, 139, 114)),
+    ('blaze_spawn_egg', (246, 178, 1), (255, 248, 126)),
+    ('wither_skeleton_spawn_egg', (20, 20, 20), (71, 77, 77)),
+    ('ghast_spawn_egg', (249, 249, 249), (188, 188, 188)),
+    ('zombified_piglin_spawn_egg', (234, 147, 147), (76, 113, 41)),
+    ('enderman_spawn_egg', (22, 22, 22), (204, 0, 250)),
+]
+for egg_key, (br, bg, bb), (sr, sg, sb) in SPAWN_EGG_TINTS:
+    if egg_base and egg_overlay:
+        comp = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+        b_im = to16(egg_base).copy()
+        o_im = to16(egg_overlay).copy()
+        b_im.putdata([(0, 0, 0, 0) if a < 20 else (min(255, int(r * br / 255 * 1.1)), min(255, int(g * bg / 255 * 1.1)), min(255, int(b * bb / 255 * 1.1)), 255) for r, g, b, a in b_im.getdata()])
+        o_im.putdata([(0, 0, 0, 0) if a < 20 else (min(255, int(r * sr / 255 * 1.1)), min(255, int(g * sg / 255 * 1.1)), min(255, int(b * sb / 255 * 1.1)), 255) for r, g, b, a in o_im.getdata()])
+        comp = Image.alpha_composite(comp, b_im)
+        comp = Image.alpha_composite(comp, o_im)
+        add_tile_frames('i_' + egg_key, [comp], is_block=False)
+        stat_pack += 1
+    else:
+        add_tile_frames('i_' + egg_key, [Image.new('RGBA', (16, 16), (br, bg, bb, 255))], is_block=False)
+
+# Compose 16x16 i_shield icon from entity/shield_base_nopattern front plate (12x22 at x=1..13, y=1..23)
+shield_ent = load_img('entity/shield_base_nopattern') or load_img('entity/shield_base')
+if shield_ent:
+    front_plate = shield_ent.crop((1, 1, 13, 23))
+    scaled_plate = front_plate.resize((10, 16), Image.NEAREST)
+    sh_icon = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    sh_icon.paste(scaled_plate, (3, 0))
+    add_tile_frames('i_shield', [sh_icon], is_block=False)
+    stat_pack += 1
+else:
+    add_tile_frames('i_shield', [Image.new('RGBA', (16, 16), (160, 120, 70, 255))], is_block=False)
+    stat_fallback += 1
+
 # 3. Particles
 print("Processing particles...")
 for n in PARTICLES:
@@ -335,6 +495,34 @@ else:
     add_tile_frames('grass_side_base', get_orig_tile_frames('grass_side_base'), is_block=True)
     stat_fallback += 1
 
+# Compose 8-frame animated starry void end_portal tile from entity/end_portal (used as fallback/particle & animated tile)
+ep_im = load_img('entity/end_portal')
+if ep_im:
+    ep_frames = []
+    for f_idx in range(8):
+        ep_crop = Image.new('RGBA', (16, 16), (3, 9, 14, 255))
+        ep_px = []
+        for y_px in range(16):
+            for x_px in range(16):
+                # Sample multiple drifted layers from the 256x256 starfield
+                s1 = ep_im.getpixel(((x_px * 7 + f_idx * 13) % 256, (y_px * 7 + f_idx * 9) % 256))[0]
+                s2 = ep_im.getpixel(((x_px * 11 - f_idx * 7) % 256, (y_px * 11 + f_idx * 17) % 256))[0]
+                s3 = ep_im.getpixel(((x_px * 17 + f_idx * 5) % 256, (y_px * 17 - f_idx * 11) % 256))[0]
+                r_c = min(255, int(4 + s1 * 0.35 + s2 * 0.85 + s3 * 0.25))
+                g_c = min(255, int(10 + s1 * 0.95 + s2 * 0.35 + s3 * 1.15))
+                b_c = min(255, int(16 + s1 * 1.15 + s2 * 1.05 + s3 * 1.45))
+                ep_px.append((r_c, g_c, b_c, 255))
+        ep_crop.putdata(ep_px)
+        ep_frames.append(ep_crop)
+    add_tile_frames('end_portal', ep_frames, is_block=True)
+    stat_pack += 1
+else:
+    add_tile_frames('end_portal', [Image.new('RGBA', (16, 16), (12, 16, 32, 255))], is_block=True)
+    stat_fallback += 1
+
+if 'i_ender_eye' in index:
+    index['i_eye_of_ender'] = index['i_ender_eye']
+
 add_tile_frames('white', [Image.new('RGBA', (16, 16), (255, 255, 255, 255))], is_block=True)
 
 # 5. Build Strip
@@ -353,6 +541,10 @@ IMAGES = {
     'heart_full': 'gui/sprites/hud/heart/full', 'heart_half': 'gui/sprites/hud/heart/half',
     'heart_full_blink': 'gui/sprites/hud/heart/full_blinking', 'heart_half_blink': 'gui/sprites/hud/heart/half_blinking',
     'heart_poison_full': 'gui/sprites/hud/heart/poisoned_full',
+    'heart_wither_full': 'gui/sprites/hud/heart/withered_full',
+    'heart_wither_half': 'gui/sprites/hud/heart/withered_half',
+    'heart_wither_full_blink': 'gui/sprites/hud/heart/withered_full_blinking',
+    'heart_wither_half_blink': 'gui/sprites/hud/heart/withered_half_blinking',
     'food_empty': 'gui/sprites/hud/food_empty', 'food_full': 'gui/sprites/hud/food_full', 'food_half': 'gui/sprites/hud/food_half',
     'food_empty_hunger': 'gui/sprites/hud/food_empty_hunger', 'food_full_hunger': 'gui/sprites/hud/food_full_hunger', 'food_half_hunger': 'gui/sprites/hud/food_half_hunger',
     'armor_empty': 'gui/sprites/hud/armor_empty', 'armor_full': 'gui/sprites/hud/armor_full', 'armor_half': 'gui/sprites/hud/armor_half',
@@ -382,6 +574,7 @@ IMAGES = {
     'eff_fire_resistance': 'mob_effect/fire_resistance',
     'eff_speed': 'mob_effect/speed',
     'eff_night_vision': 'mob_effect/night_vision',
+    'eff_wither': 'mob_effect/wither',
     'anvil_error': 'gui/sprites/container/anvil/error',
     'anvil_field': 'gui/sprites/container/anvil/text_field',
     'anvil_field_dis': 'gui/sprites/container/anvil/text_field_disabled',
@@ -393,6 +586,9 @@ IMAGES = {
     'burn_progress': 'gui/sprites/container/furnace/burn_progress', 'lit_progress': 'gui/sprites/container/furnace/lit_progress',
     'slot_helmet': 'gui/sprites/container/slot/helmet', 'slot_chestplate': 'gui/sprites/container/slot/chestplate',
     'slot_leggings': 'gui/sprites/container/slot/leggings', 'slot_boots': 'gui/sprites/container/slot/boots',
+    'slot_shield': 'item/empty_armor_slot_shield',
+    'hotbar_offhand_left': 'gui/sprites/hud/hotbar_offhand_left',
+    'shield': 'entity/shield_base_nopattern',
     'button': 'gui/sprites/widget/button', 'button_hl': 'gui/sprites/widget/button_highlighted', 'button_dis': 'gui/sprites/widget/button_disabled',
     'slider': 'gui/sprites/widget/slider', 'slider_handle': 'gui/sprites/widget/slider_handle', 'slider_handle_hl': 'gui/sprites/widget/slider_handle_highlighted',
     'text_field': 'gui/sprites/widget/text_field', 'text_field_hl': 'gui/sprites/widget/text_field_highlighted',
@@ -406,6 +602,21 @@ IMAGES = {
     'sheep_wool': 'entity/sheep/sheep_wool', 'chicken': 'entity/chicken/chicken_temperate',
     'zombie': 'entity/zombie/zombie', 'skeleton': 'entity/skeleton/skeleton', 'creeper': 'entity/creeper/creeper',
     'spider': 'entity/spider/spider', 'spider_eyes': 'entity/spider/spider_eyes', 'steve': 'entity/player/wide/steve',
+    'blaze': 'entity/blaze',
+    'wither_skeleton': 'entity/skeleton/wither_skeleton',
+    'ghast': 'entity/ghast/ghast',
+    'ghast_shooting': 'entity/ghast/ghast_shooting',
+    'zombified_piglin': 'entity/zombie_pigman',
+    'enderman': 'entity/enderman/enderman',
+    'enderman_eyes': 'entity/enderman/enderman_eyes',
+    'end_crystal': 'entity/end_crystal/end_crystal',
+    'ender_dragon': 'entity/enderdragon/dragon',
+    'dragon_eyes': 'entity/enderdragon/dragon_eyes',
+    'dragon_fireball': 'entity/enderdragon/dragon_fireball',
+    'end_beam': 'entity/end_gateway_beam',
+    'end_portal': 'entity/end_portal',
+    'boss_bar_bg': 'gui/sprites/boss_bar/pink_background',
+    'boss_bar_fg': 'gui/sprites/boss_bar/pink_progress',
     'arrow_entity': 'entity/projectiles/arrow',
     'shadow': 'misc/shadow', 'vignette': 'misc/vignette', 'underwater': 'misc/underwater', 'pumpkinblur': 'misc/pumpkinblur',
 }
@@ -428,7 +639,47 @@ def sanitize_image(im, key, path):
         out.paste(page_patch, (19, 11))
         out.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in out.getdata()])
         return out
-    if path.startswith('entity/') and key != 'spider_eyes':
+    if key == 'shield':
+        out = im.copy()
+        w, h = out.size
+        px = out.load()
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a < 20 or (x >= 26 and r == 0 and g == 0 and b == 0):
+                    px[x, y] = (0, 0, 0, 0)
+                else:
+                    px[x, y] = (r, g, b, 255)
+        return out
+    if key in ('button', 'button_hl'):
+        out = im.copy()
+        w, h = out.size
+        px = out.load()
+        for y in range(4, h - 4):
+            for x in range(4, w - 4):
+                r, g, b, a = px[x, y]
+                if a < 200:
+                    if key == 'button':
+                        px[x, y] = (86, 72, 62, 255) if y == 4 else ((52, 42, 36, 255) if y == h - 5 else (68, 56, 48, 255))
+                    else:
+                        px[x, y] = (110, 122, 148, 255) if y == 4 else ((68, 76, 96, 255) if y == h - 5 else (88, 98, 122, 255))
+        return out
+    if key == 'toast':
+        out = Image.new('RGBA', im.size, (94, 89, 87, 255))
+        w, h = out.size
+        px = out.load()
+        for y in range(h):
+            for x in range(w):
+                if x == 0 or x == w - 1 or y == 0 or y == h - 1:
+                    px[x, y] = (142, 140, 136, 255)
+                elif x == 1 or x == w - 2 or y == 1 or y == h - 2:
+                    px[x, y] = (89, 78, 71, 255)
+                else:
+                    px[x, y] = (94, 89, 87, 255)
+        for cx, cy in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+            px[cx, cy] = (0, 0, 0, 0)
+        return out
+    if path.startswith('entity/') and key not in ('spider_eyes', 'enderman_eyes', 'dragon_eyes'):
         out = im.copy()
         out.putdata([(0, 0, 0, 0) if a < 20 else (r, g, b, 255) for r, g, b, a in out.getdata()])
         return out

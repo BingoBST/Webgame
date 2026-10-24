@@ -187,13 +187,14 @@ var Redstone = window.Redstone = {
 
   // ---- Comparator Container Reading & Signal Calculation (ID 514) -----------
   isContainerBlock(id) {
-    return id === 52 || id === 20 || id === 117 || id === 513 || id === 527;
+    return id === 52 || id === 20 || id === 117 || id === 513 || id === 527 || id === 538;
   },
 
   getContainerSignal(game, x, y, z, id) {
     if (!game || !game.blockEntities) return 0;
     const bid = id || game.world.getBlock(x, y, z);
     if (!this.isContainerBlock(bid)) return 0;
+    if (bid === 538) return (game.world.getMeta(x, y, z) & 4) ? 15 : 0;
     const type = bid === 52 ? 'chest' : bid === 513 ? 'hopper' : bid === 527 ? 'brewing' : 'furnace';
     const be = game.blockEntities.get(`${x},${y},${z}`) || game.getBlockEntity(x, y, z, type);
     if (!be) return 0;
@@ -333,8 +334,8 @@ var Redstone = window.Redstone = {
     if (game.blockEntities && game.blockEntities.has(`${x},${y},${z}`)) return true;
     // BlockEntity containers & spawner: chest(52), furnace(20/117), hopper(513), spawner(182), brewing_stand(527)
     if (id === 52 || id === 20 || id === 117 || id === 513 || id === 182 || id === 527) return true;
-    // Enchanting table(185), anvil(186), obsidian(28), bedrock(6)
-    if (id === 185 || id === 186 || id === 28 || id === 6) return true;
+    // Enchanting table(185), anvil(186), obsidian(28), bedrock(6), nether_portal(528)
+    if (id === 185 || id === 186 || id === 28 || id === 6 || id === 528 || id === 538 || id === 539) return true;
     // Doors, beds, piston_head, and already-extended pistons
     if (b.door || b.bed || id === 518) return true;
     if ((id === 516 || id === 517) && (meta & 8)) return true;
@@ -348,7 +349,7 @@ var Redstone = window.Redstone = {
     if (!b) return false;
     if (b.needsSupport || b.ladder || b.web || b.repeater || b.comparator || b.button || b.lever || b.plate) return true;
     if (b.shape === SH_CROSS || b.shape === SH_CROP || b.shape === SH_TORCH || b.shape === SH_WIRE) return true;
-    if (id === 53 || id === 54 || id === 55) return true; // pumpkin, jack_o_lantern, melon
+    if (id === 53 || id === 54 || id === 55 || id === 541) return true; // pumpkin, jack_o_lantern, melon
     return false;
   },
 

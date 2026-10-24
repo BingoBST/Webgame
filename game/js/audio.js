@@ -103,6 +103,17 @@ const Sound = {
   burp(pos) { this.tone(pos, { freq: 120, freqEnd: 80, dur: 0.3, vol: 0.4, type: 'sawtooth' }); },
   bow(pos) { this.tone(pos, { freq: 300, freqEnd: 900, dur: 0.15, vol: 0.3, type: 'triangle' }); this.noise(pos, { freq: 2000, dur: 0.15, vol: 0.2 }); },
   arrowHit(pos) { this.noise(pos, { freq: 800, dur: 0.08, vol: 0.4, q: 2 }); },
+  shieldBlock(pos) {
+    this.lastShieldBlockAt = Date.now();
+    this.shieldBlockCount = (this.shieldBlockCount || 0) + 1;
+    this.noise(pos, { type: 'bandpass', freq: 420, q: 2.2, dur: 0.14, vol: 0.65 });
+    this.tone(pos, { freq: 240, freqEnd: 110, dur: 0.12, vol: 0.45, type: 'triangle' });
+    this.tone(pos, { freq: 920, freqEnd: 540, dur: 0.07, vol: 0.25, type: 'sine', delay: 0.01 });
+  },
+  shieldBreak(pos) {
+    this.block('break', 'wood', pos);
+    this.tone(pos, { freq: 380, freqEnd: 140, dur: 0.2, vol: 0.45, type: 'sawtooth' });
+  },
   door(pos, open) { this.tone(pos, { freq: open ? 200 : 160, freqEnd: open ? 140 : 100, dur: 0.18, vol: 0.4, type: 'triangle' }); this.noise(pos, { freq: 500, q: 3, dur: 0.15, vol: 0.3 }); },
   levelup() { [0, 4, 7, 12].forEach((n, i) => this.tone(null, { freq: 523 * Math.pow(2, n / 12), dur: 0.35, vol: 0.18, type: 'triangle', delay: i * 0.09 })); },
   toast() { [0, 7].forEach((n, i) => this.tone(null, { freq: 880 * Math.pow(2, n / 12), dur: 0.3, vol: 0.15, type: 'sine', delay: i * 0.12 })); },
@@ -119,6 +130,11 @@ const Sound = {
       case 'skeleton': for (let i = 0; i < 4; i++) this.noise(pos, { freq: 2500, q: 5, dur: 0.05, vol: 0.35, delay: i * 0.07 }); break;
       case 'creeper': this.fuse(pos); break;
       case 'spider': this.noise(pos, { freq: 1200, q: 4, dur: 0.3, vol: 0.3 }); this.tone(pos, { freq: 90, dur: 0.3, vol: 0.2, type: 'sawtooth' }); break;
+      case 'blaze': this.tone(pos, { freq: 340 + r * 80, freqEnd: 520, dur: 0.35, vol: 0.3, type: 'triangle' }); this.noise(pos, { freq: 1800, q: 3, dur: 0.25, vol: 0.25 }); break;
+      case 'wither_skeleton': for (let i = 0; i < 4; i++) this.noise(pos, { freq: 1500, q: 4, dur: 0.06, vol: 0.4, delay: i * 0.08 }); break;
+      case 'ghast': this.tone(pos, { freq: 580 + r * 140, freqEnd: 310, dur: 0.75, vol: 0.4, type: 'sine', attack: 0.1 }); break;
+      case 'zombified_piglin': this.tone(pos, { freq: 170 + r * 40, freqEnd: 115, dur: 0.45, vol: 0.38, type: 'sawtooth' }); break;
+      case 'enderman': this.tone(pos, { freq: 190 + r * 90, freqEnd: 410, dur: 0.35, vol: 0.32, type: 'sine' }); break;
     }
     if (kind === 'hurt') this.tone(pos, { freq: 500, freqEnd: 250, dur: 0.12, vol: 0.2, type: 'square' });
   },

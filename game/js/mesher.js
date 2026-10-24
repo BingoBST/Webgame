@@ -240,13 +240,16 @@ const Mesher = {
   },
 
   // Flat-lit quad from explicit corners (array of 4 [x,y,z,u,v])
-  quadFlat(buf, pts, layer, overlay, r, g, bl, shade, light, anim = 0) {
+  quadFlat(buf, pts, layer, overlay, r, g, bl, shade, light, anim) {
+    const a = anim !== undefined ? anim : ANIM_FRAMES[layer];
     const s = Math.round((light >> 4) * 17), k = Math.round((light & 15) * 17), sh = Math.round(shade * 255);
-    for (const p of pts) buf.v(p[0], p[1], p[2], p[3], p[4], layer, overlay, r, g, bl, sh, s, k, anim);
+    for (const p of pts) buf.v(p[0], p[1], p[2], p[3], p[4], layer, overlay, r, g, bl, sh, s, k, a);
   },
 
   cross(b, meta, x, y, z, ox, oy, oz, single) {
-    const buf = this.opaqueBuf, light = this.lights[this.P(x, y, z)];
+    const buf = this.opaqueBuf;
+    let light = this.lights[this.P(x, y, z)];
+    if (b.light > 0 && (light & 15) < b.light) light = (light & 0xF0) | b.light;
     const layer = this.texOf(b, 0, meta);
     const t = b.tint ? this.tintOf(b, x, z) : [255, 255, 255];
     let jx = 0, jz = 0;
@@ -390,6 +393,7 @@ const Mesher = {
           if (SOLIDCUBE[nid]) light = own;
         }
         if (b.slab && (meta & 3) === 2 && !onEdge) continue;
+        if (b.light > 0 && (light & 15) < b.light) light = (light & 0xF0) | b.light;
         if (single) light = 0xF0;
         const layer = (b.lever && bi === 1) ? T((meta & 8) ? 'redstone_block' : 'oak_planks') : this.texOf(b, f, meta);
         const pts = FACES[f].c.map(c => {
@@ -405,7 +409,15 @@ const Mesher = {
   modelShape(b, meta, x, y, z, ox, oy, oz, single) {
     const buf = this.opaqueBuf, ids = this.ids, lights = this.lights;
     const own = lights[this.P(x, y, z)];
-    const { els, rot } = b.model(meta);
+    let effMeta = meta;
+    if (b.fence) {
+      if (single) effMeta = 12;
+      else {
+        const conn = (nx, nz) => { const nid = ids[this.P(nx, y, nz)]; return SOLIDCUBE[nid] || (BLOCKS[nid] && BLOCKS[nid].fence); };
+        effMeta = (conn(x, z - 1) ? 1 : 0) | (conn(x, z + 1) ? 2 : 0) | (conn(x - 1, z) ? 4 : 0) | (conn(x + 1, z) ? 8 : 0);
+      }
+    }
+    const { els, rot } = b.model(effMeta);
     const FN = { west: 0, east: 1, down: 2, up: 3, north: 4, south: 5 };
     const rotDir = [[0, 1, 2, 3, 4, 5], [4, 5, 2, 3, 1, 0], [1, 0, 2, 3, 5, 4], [5, 4, 2, 3, 0, 1]][rot]; // model face -> world face
     const rp = (px, pz) => { // rotate point around block centre, clockwise seen from above

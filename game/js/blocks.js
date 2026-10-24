@@ -692,6 +692,267 @@ defBlock(527, 'brewing_stand', '酿造台', {
   flatIcon: 'i_brewing_stand', brewing: true
 });
 
+// ---- W3 Phase 1: Nether Dimension, Portal & Fortress Blocks (IDs 528..537) -
+function netherPortalBoxes(m) {
+  return (m & 1) ? [[6, 0, 0, 10, 16, 16]] : [[0, 0, 6, 16, 16, 10]];
+}
+const NETHER_WART_TEX = ['nether_wart_stage0', 'nether_wart_stage1', 'nether_wart_stage1', 'nether_wart_stage2'];
+function netherWartTex(face, meta) {
+  return T(NETHER_WART_TEX[meta & 3]);
+}
+
+defBlock(528, 'nether_portal', '下界传送门', {
+  shape: SH_BOXES, boxes: netherPortalBoxes,
+  tex: 'nether_portal', render: 'translucent', solid: false, opaque: false,
+  light: 11, hardness: -1, sound: 'glass', noItem: true, cullSame: true, drops: nothing
+});
+defBlock(529, 'netherrack', '下界岩', {
+  tex: 'netherrack', hardness: 0.4, tool: 'pickaxe', level: 0, needsTool: true, sound: 'stone'
+});
+defBlock(530, 'soul_sand', '灵魂沙', {
+  tex: 'soul_sand', hardness: 0.5, tool: 'shovel', sound: 'sand', slip: 0.6
+});
+defBlock(531, 'nether_quartz_ore', '下界石英矿石', {
+  tex: 'nether_quartz_ore', hardness: 3, tool: 'pickaxe', level: 0, needsTool: true,
+  sound: 'stone', drops: drop('quartz')
+});
+defBlock(532, 'nether_gold_ore', '下界金矿石', {
+  tex: 'nether_gold_ore', hardness: 3, tool: 'pickaxe', level: 0, needsTool: true,
+  sound: 'stone', drops: (m, r) => [['gold_nugget', 2 + ((r() * 5) | 0)]]
+});
+defBlock(533, 'nether_bricks', '下界砖块', {
+  tex: 'nether_bricks', hardness: 2, tool: 'pickaxe', level: 0, needsTool: true, sound: 'stone'
+});
+defBlock(534, 'nether_brick_fence', '下界砖栅栏', {
+  shape: SH_BOXES, boxes: fenceBoxes, tex: 'nether_bricks',
+  render: 'opaque', opaque: false, hardness: 2, tool: 'pickaxe', needsTool: true, sound: 'stone', fence: true
+});
+defBlock(535, 'nether_brick_stairs', '下界砖楼梯', {
+  shape: SH_BOXES, boxes: stairBoxes, tex: 'nether_bricks',
+  render: 'opaque', hardness: 2, tool: 'pickaxe', needsTool: true, sound: 'stone', stairs: true
+});
+defBlock(536, 'nether_wart_crop', '下界疣', {
+  shape: SH_CROP, tex: 'nether_wart_stage0', texFn: netherWartTex,
+  solid: false, hardness: 0, sound: 'grass', noItem: true, needsSupport: true,
+  drops: (m, r) => [['nether_wart', (m & 3) === 3 ? 2 + ((r() * 3) | 0) : 1]]
+});
+defBlock(537, 'fire', '火', {
+  shape: SH_CROSS, tex: 'fire_0', render: 'cutout',
+  solid: false, opaque: false, replaceable: true, light: 15, hardness: 0,
+  sound: 'wood', noItem: true, drops: nothing
+});
+
+// ---- W3 Phase 2: Stronghold, End Portal, The End & Dragon Egg (IDs 538..543) -
+function endPortalFrameBoxes(meta) {
+  return (meta & 4) ? [[0, 0, 0, 16, 13, 16], [4, 13, 4, 12, 16, 12]] : [[0, 0, 0, 16, 13, 16]];
+}
+function endPortalFrameModel(meta) {
+  const tTop = T('end_portal_frame_top'), tBot = T('end_portal_frame_bottom'), tSide = T('end_portal_frame_side'), tEye = T('end_portal_frame_eye');
+  // When empty, recess the 8x8 central socket (from y=9..13) as in the Pixel Perfection 3D block model
+  if (!(meta & 4)) {
+    const els = [
+      {
+        from: [0, 0, 0], to: [16, 9, 16],
+        faces: {
+          down: [0, 0, 16, 16, tBot],
+          up: [0, 0, 16, 16, tTop],
+          north: [0, 7, 16, 16, tSide],
+          south: [0, 7, 16, 16, tSide],
+          west: [0, 7, 16, 16, tSide],
+          east: [0, 7, 16, 16, tSide],
+        }
+      },
+      {
+        from: [0, 9, 0], to: [4, 13, 16],
+        faces: {
+          up: [0, 0, 4, 16, tTop],
+          north: [12, 3, 16, 7, tSide],
+          south: [0, 3, 4, 7, tSide],
+          west: [0, 3, 16, 7, tSide],
+          east: [4, 3, 12, 7, tSide],
+        }
+      },
+      {
+        from: [12, 9, 0], to: [16, 13, 16],
+        faces: {
+          up: [12, 0, 16, 16, tTop],
+          north: [0, 3, 4, 7, tSide],
+          south: [12, 3, 16, 7, tSide],
+          west: [4, 3, 12, 7, tSide],
+          east: [0, 3, 16, 7, tSide],
+        }
+      },
+      {
+        from: [4, 9, 0], to: [12, 13, 4],
+        faces: {
+          up: [4, 0, 12, 4, tTop],
+          north: [4, 3, 12, 7, tSide],
+          south: [4, 3, 12, 7, tSide],
+        }
+      },
+      {
+        from: [4, 9, 12], to: [12, 13, 16],
+        faces: {
+          up: [4, 12, 12, 16, tTop],
+          north: [4, 3, 12, 7, tSide],
+          south: [4, 3, 12, 7, tSide],
+        }
+      },
+    ];
+    return { rot: meta & 3, els };
+  }
+  const els = [
+    {
+      from: [0, 0, 0], to: [16, 13, 16],
+      faces: {
+        up: [0, 0, 16, 16, tTop],
+        down: [0, 0, 16, 16, tBot],
+        north: [0, 3, 16, 16, tSide],
+        south: [0, 3, 16, 16, tSide],
+        west: [0, 3, 16, 16, tSide],
+        east: [0, 3, 16, 16, tSide],
+      }
+    },
+    {
+      from: [4, 9, 4], to: [12, 16, 12],
+      faces: {
+        up: [4, 4, 12, 12, tEye],
+        north: [4, 0, 12, 3, tEye],
+        south: [4, 0, 12, 3, tEye],
+        west: [4, 0, 12, 3, tEye],
+        east: [4, 0, 12, 3, tEye],
+      }
+    }
+  ];
+  return { rot: meta & 3, els };
+}
+
+function ironBarsBoxes(m) {
+  const b = [[7, 0, 7, 9, 16, 9]];
+  if (m & 1) b.push([7, 0, 0, 9, 16, 7]);
+  if (m & 2) b.push([7, 0, 9, 9, 16, 16]);
+  if (m & 4) b.push([0, 0, 7, 7, 16, 9]);
+  if (m & 8) b.push([9, 0, 7, 16, 16, 9]);
+  return b;
+}
+
+function ironBarsModel(meta) {
+  const t = T('iron_bars');
+  const els = [
+    {
+      from: [7, 0, 7], to: [9, 16, 9],
+      faces: {
+        north: [7, 0, 9, 16, t],
+        south: [7, 0, 9, 16, t],
+        west: [7, 0, 9, 16, t],
+        east: [7, 0, 9, 16, t],
+        up: [7, 7, 9, 9, t],
+        down: [7, 7, 9, 9, t],
+      }
+    }
+  ];
+  if (meta & 1) { // north (-z)
+    els.push({
+      from: [7.8, 0, 0], to: [8.2, 16, 8],
+      faces: {
+        west: [0, 0, 8, 16, t],
+        east: [8, 0, 0, 16, t],
+        north: [7, 0, 9, 16, t],
+        up: [7, 0, 9, 8, t],
+        down: [7, 0, 9, 8, t],
+      }
+    });
+  }
+  if (meta & 2) { // south (+z)
+    els.push({
+      from: [7.8, 0, 8], to: [8.2, 16, 16],
+      faces: {
+        west: [8, 0, 16, 16, t],
+        east: [16, 0, 8, 16, t],
+        south: [7, 0, 9, 16, t],
+        up: [7, 8, 9, 16, t],
+        down: [7, 8, 9, 16, t],
+      }
+    });
+  }
+  if (meta & 4) { // west (-x)
+    els.push({
+      from: [0, 0, 7.8], to: [8, 16, 8.2],
+      faces: {
+        north: [8, 0, 16, 16, t],
+        south: [0, 0, 8, 16, t],
+        west: [7, 0, 9, 16, t],
+        up: [0, 7, 8, 9, t],
+        down: [0, 7, 8, 9, t],
+      }
+    });
+  }
+  if (meta & 8) { // east (+x)
+    els.push({
+      from: [8, 0, 7.8], to: [16, 16, 8.2],
+      faces: {
+        north: [0, 0, 8, 16, t],
+        south: [8, 0, 16, 16, t],
+        east: [7, 0, 9, 16, t],
+        up: [8, 7, 16, 9, t],
+        down: [8, 7, 16, 9, t],
+      }
+    });
+  }
+  return { rot: 0, els };
+}
+function dragonEggModel() {
+  const t = T('dragon_egg');
+  const box = (x0, y0, z0, x1, y1, z1) => ({
+    from: [x0, y0, z0], to: [x1, y1, z1],
+    faces: {
+      up: [x0, z0, x1, z1, t],
+      down: [x0, z0, x1, z1, t],
+      north: [x0, 16 - y1, x1, 16 - y0, t],
+      south: [x0, 16 - y1, x1, 16 - y0, t],
+      west: [z0, 16 - y1, z1, 16 - y0, t],
+      east: [z0, 16 - y1, z1, 16 - y0, t],
+    }
+  });
+  return {
+    rot: 0,
+    els: [
+      box(3, 0, 3, 13, 2, 13),
+      box(2, 2, 2, 14, 7, 14),
+      box(3, 7, 3, 13, 11, 13),
+      box(4, 11, 4, 12, 14, 12),
+      box(6, 14, 6, 10, 16, 10),
+    ]
+  };
+}
+
+defBlock(538, 'end_portal_frame', '末地传送门框架', {
+  shape: SH_MODEL, model: endPortalFrameModel, boxes: endPortalFrameBoxes,
+  tex: { top: 'end_portal_frame_top', bottom: 'end_portal_frame_bottom', side: 'end_portal_frame_side' },
+  render: 'cutout', solid: true, opaque: false, light: 1, hardness: -1, sound: 'stone', drops: nothing
+});
+defBlock(539, 'end_portal', '末地传送门', {
+  shape: SH_BOXES, boxes: () => [[0, 0, 0, 16, 12, 16]],
+  tex: 'end_portal', render: 'opaque', solid: false, opaque: false,
+  light: 15, hardness: -1, sound: 'glass', noItem: true, cullSame: true, drops: nothing
+});
+defBlock(540, 'end_stone', '末地石', {
+  tex: 'end_stone', hardness: 3, tool: 'pickaxe', level: 0, needsTool: true, sound: 'stone'
+});
+defBlock(541, 'dragon_egg', '龙蛋', {
+  shape: SH_MODEL, model: dragonEggModel, boxes: () => [[1, 0, 1, 15, 16, 15]],
+  tex: 'dragon_egg', render: 'cutout', solid: true, opaque: false,
+  light: 1, hardness: 3, sound: 'stone', gravity: true, onUse: 'dragon_egg'
+});
+defBlock(542, 'iron_bars', '铁栏杆', {
+  shape: SH_MODEL, model: ironBarsModel, boxes: ironBarsBoxes, tex: 'iron_bars',
+  render: 'cutout', solid: true, opaque: false, hardness: 5, tool: 'pickaxe', level: 0, needsTool: true,
+  sound: 'metal', fence: true, flatIcon: 'iron_bars'
+});
+defBlock(543, 'end_stone_bricks', '末地石砖', {
+  tex: 'end_stone_bricks', hardness: 3, tool: 'pickaxe', level: 0, needsTool: true, sound: 'stone'
+});
+
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------
@@ -744,6 +1005,7 @@ defItem('bone', '骨头');
 defItem('bone_meal', '骨粉');
 defItem('arrow', '箭');
 defItem('bow', '弓', { stack: 1, durability: 384 });
+defItem('shield', '盾牌', { stack: 1, durability: 336, shield: true, texKey: 'shield' });
 defItem('string', '线');
 defItem('gunpowder', '火药');
 defItem('feather', '羽毛');
@@ -779,15 +1041,24 @@ for (const mat of ['leather', 'iron', 'diamond']) {
   });
 }
 
-for (const [m, cn] of [['pig', '猪'], ['cow', '牛'], ['sheep', '羊'], ['chicken', '鸡'], ['zombie', '僵尸'], ['skeleton', '骷髅'], ['creeper', '苦力怕'], ['spider', '蜘蛛']]) defItem(m + '_spawn_egg', cn + '刷怪蛋', { spawnEgg: m });
-defItem('villager_spawn_egg', '村民刷怪蛋', { spawnEgg: 'villager', texKey: 'pig_spawn_egg' });
+for (const [m, cn] of [['pig', '猪'], ['cow', '牛'], ['sheep', '羊'], ['chicken', '鸡'], ['zombie', '僵尸'], ['skeleton', '骷髅'], ['creeper', '苦力怕'], ['spider', '蜘蛛'], ['villager', '村民'], ['blaze', '烈焰人'], ['wither_skeleton', '凋零骷髅'], ['ghast', '恶魂'], ['zombified_piglin', '僵尸猪人'], ['enderman', '末影人']]) defItem(m + '_spawn_egg', cn + '刷怪蛋', { spawnEgg: m });
 
 // ---- Brewing Ingredients & 4 Core Potions (1024+) -------------------------
 defItem('golden_carrot', '金胡萝卜', { food: [6, 14.4] });
 defItem('glass_bottle', '玻璃瓶', { stack: 64 });
 defItem('blaze_rod', '烈焰棒', { fuel: 2400 });
 defItem('blaze_powder', '烈焰粉');
-defItem('nether_wart', '下界疣');
+defItem('nether_wart', '下界疣', { places: 'nether_wart_crop' });
+defItem('quartz', '下界石英');
+defItem('gold_nugget', '金粒');
+defItem('ghast_tear', '恶魂之泪');
+defItem('ender_pearl', '末影珍珠', { stack: 16 });
+defItem('eye_of_ender', '末影之眼', { texKey: 'ender_eye' });
+ITEM_KEY.ender_eye = ITEM_KEY.eye_of_ender;
+defItem('end_crystal', '末影水晶', { texKey: 'end_crystal' });
+defItem('dragon_breath', '龙息', { texKey: 'dragon_breath' });
+defItem('nether_brick', '下界砖');
+defItem('fire_charge', '火焰弹');
 defItem('glistering_melon_slice', '闪烁的西瓜片');
 defItem('magma_cream', '岩浆膏');
 defItem('water_bottle', '水瓶', { stack: 1, potion: 'water', texKey: 'water_bottle' });
@@ -825,6 +1096,7 @@ const STATUS_EFFECTS = {
   fire_resistance: { id: 'fire_resistance', cn: '抗火', icon: 'eff_fire_resistance', color: '#E49A3A' },
   speed: { id: 'speed', cn: '迅捷', icon: 'eff_speed', color: '#7CAFC6' },
   night_vision: { id: 'night_vision', cn: '夜视', icon: 'eff_night_vision', color: '#3F5FFF' },
+  wither: { id: 'wither', cn: '凋零', icon: 'eff_wither', color: '#352A27' },
 };
 
 function item(key) { const id = ITEM_KEY[key]; if (id === undefined) throw new Error('no item ' + key); return id; }
@@ -933,6 +1205,7 @@ for (const [m, X] of [['leather', 'leather'], ['iron', 'iron_ingot'], ['diamond'
   shaped(m + '_boots', 1, ['X X', 'X X'], { X });
 }
 shaped('bow', 1, [' #S', '# S', ' #S'], { '#': 'stick', S: 'string' });
+shaped('shield', 1, ['W#W', 'WWW', ' W '], { W: 'planks', '#': 'iron_ingot' });
 shaped('arrow', 4, ['F', '#', 'E'], { F: 'flint', '#': 'stick', E: 'feather' });
 shaped('bucket', 1, ['X X', ' X '], { X: 'iron_ingot' });
 shaped('shears', 1, [' X', 'X '], { X: 'iron_ingot' });
@@ -982,11 +1255,15 @@ shapeless('bone_meal', 3, ['bone']);
 shaped('golden_apple', 1, ['GGG', 'GAG', 'GGG'], { G: 'gold_ingot', A: 'apple' });
 shapeless('pumpkin_pie', 1, ['pumpkin', 'sugar', 'egg']);
 shaped('mossy_cobblestone', 1, ['#M'], { '#': 'cobblestone', M: 'moss_block' });
-shaped('glowstone', 1, ['RG', 'GR'], { R: 'redstone', G: 'glass' });
 shaped('sea_lantern', 1, ['LGL', 'GGG', 'LGL'], { L: 'lapis_lazuli', G: 'glass' });
 shaped('note_block', 1, ['###', '#R#', '###'], { '#': 'planks', R: 'redstone' });
-shaped('quartz_block', 1, ['##', '##'], { '#': 'diorite' });
-// Redstone & Automation Trio recipes
+shaped('quartz_block', 1, ['##', '##'], { '#': 'quartz' });
+shaped('nether_bricks', 1, ['##', '##'], { '#': 'nether_brick' });
+shaped('nether_brick_stairs', 4, ['#  ', '## ', '###'], { '#': 'nether_bricks' });
+shaped('nether_brick_fence', 6, ['B#B', 'B#B'], { B: 'nether_bricks', '#': 'nether_brick' });
+shaped('gold_ingot', 1, ['###', '###', '###'], { '#': 'gold_nugget' });
+shapeless('gold_nugget', 9, ['gold_ingot']);
+// Redstone & Automation Trio recipes (using genuine Nether Quartz)
 shaped('redstone_torch', 1, ['R', '#'], { R: 'redstone', '#': 'stick' });
 shaped('lever', 1, ['#', 'S'], { '#': 'stick', S: 'cobblestone' });
 shapeless('stone_button', 1, ['stone']);
@@ -995,27 +1272,32 @@ shaped('stone_pressure_plate', 1, ['##'], { '#': 'stone' });
 shaped('oak_pressure_plate', 1, ['##'], { '#': 'planks' });
 shaped('redstone_lamp', 1, [' R ', 'RGR', ' R '], { R: 'redstone', G: 'glowstone' });
 shaped('repeater', 1, ['TRT', 'SSS'], { T: 'redstone_torch', R: 'redstone', S: 'stone' });
+shaped('comparator', 1, [' T ', 'TQT', 'SSS'], { T: 'redstone_torch', Q: 'quartz', S: 'stone' });
 shaped('comparator', 1, [' T ', 'TQT', 'SSS'], { T: 'redstone_torch', Q: 'quartz_block', S: 'stone' });
-shaped('comparator', 1, [' T ', 'TRT', 'SSS'], { T: 'redstone_torch', R: 'redstone', S: 'smooth_stone' });
+shaped('observer', 1, ['###', 'RRQ', '###'], { '#': 'cobblestone', R: 'redstone', Q: 'quartz' });
 shaped('observer', 1, ['###', 'RRQ', '###'], { '#': 'cobblestone', R: 'redstone', Q: 'quartz_block' });
-shaped('observer', 1, ['###', 'RRF', '###'], { '#': 'cobblestone', R: 'redstone', F: 'flint' });
 shaped('piston', 1, ['PPP', '#I#', '#R#'], { P: 'planks', '#': 'cobblestone', I: 'iron_ingot', R: 'redstone' });
 shapeless('sticky_piston', 1, ['piston', 'magma_cream']);
 shapeless('sticky_piston', 1, ['piston', 'clay_ball']);
 shaped('target', 1, [' R ', 'RHR', ' R '], { R: 'redstone', H: 'hay_block' });
 
-// Brewing Stand & Brewing Ingredients recipes
+// Brewing Stand & Brewing Ingredients recipes (blaze_rod & nether_wart come from Nether Fortress!)
 shaped('glass_bottle', 3, ['# #', ' # '], { '#': 'glass' });
 shaped('brewing_stand', 1, [' B ', '###'], { B: 'blaze_rod', '#': 'cobblestone' });
-shaped('blaze_rod', 1, ['G', 'M', 'G'], { G: 'gold_ingot', M: 'magma_block' });
 shapeless('blaze_powder', 2, ['blaze_rod']);
-shapeless('nether_wart', 2, ['red_mushroom', 'redstone']);
+shaped('glistering_melon_slice', 1, ['###', '#M#', '###'], { '#': 'gold_nugget', M: 'melon_slice' });
 shaped('glistering_melon_slice', 1, ['GGG', 'GMG', 'GGG'], { G: 'gold_ingot', M: 'melon_slice' });
 shapeless('glistering_melon_slice', 1, ['melon_slice', 'gold_ingot']);
+shaped('golden_carrot', 1, ['###', '#C#', '###'], { '#': 'gold_nugget', C: 'carrot' });
 shaped('golden_carrot', 1, ['GGG', 'GCG', 'GGG'], { G: 'gold_ingot', C: 'carrot' });
 shapeless('golden_carrot', 1, ['carrot', 'gold_ingot']);
 shapeless('magma_cream', 1, ['blaze_powder', 'clay_ball']);
 shapeless('magma_cream', 2, ['magma_block']);
+shapeless('fire_charge', 3, ['blaze_powder', 'coals', 'gunpowder']);
+shapeless('eye_of_ender', 1, ['ender_pearl', 'blaze_powder']);
+shaped('end_stone_bricks', 4, ['##', '##'], { '#': 'end_stone' });
+shaped('iron_bars', 16, ['###', '###'], { '#': 'iron_ingot' });
+shaped('end_crystal', 1, ['GGG', 'GEG', 'GTG'], { G: 'glass', E: 'eye_of_ender', T: 'ghast_tear' });
 
 // Match a crafting grid (array of stacks|null, width w) against recipes
 function matchRecipe(grid, w) {
@@ -1063,6 +1345,9 @@ smelt('porkchop', 'cooked_porkchop', 0.35); smelt('beef', 'cooked_beef', 0.35); 
 smelt('stone_bricks', 'cracked_stone_bricks'); smelt('cactus', 'green_concrete' in ITEM_KEY ? 'green_concrete' : 'lime_concrete');
 smelt('carrot', 'baked_potato', 0.35);
 smelt('sandstone', 'smooth_sandstone', 0.1);
+smelt('netherrack', 'nether_brick', 0.1);
+smelt('nether_quartz_ore', 'quartz', 0.2);
+smelt('nether_gold_ore', 'gold_ingot', 1.0);
 shaped('cut_sandstone', 4, ['##', '##'], { '#': 'sandstone' });
 shaped('chiseled_sandstone', 1, ['#', '#'], { '#': 'sandstone_slab' });
 shaped('sandstone_slab', 6, ['###'], { '#': 'sandstone' });
@@ -1079,24 +1364,24 @@ function fuelValue(id) { const d = ITEMS[id]; return d ? (d.fuel || (BLOCKS[id] 
 const CREATIVE_TABS = [
   { name: '建筑方块', icon: 'bricks', items: ['stone', 'cobblestone', 'mossy_cobblestone', 'smooth_stone', 'stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'andesite', 'polished_andesite', 'diorite', 'polished_diorite', 'granite', 'polished_granite', 'deepslate',
     'oak_planks', 'birch_planks', 'spruce_planks', 'dark_oak_planks', 'jungle_planks', 'acacia_planks', 'cherry_planks', 'oak_log', 'birch_log', 'spruce_log', 'cherry_log',
-    'bricks', 'mud_bricks', 'sandstone', 'chiseled_sandstone', 'cut_sandstone', 'smooth_sandstone', 'terracotta', 'orange_terracotta', 'blue_terracotta', 'quartz_block', 'prismarine', 'prismarine_bricks', 'sea_lantern', 'glowstone', 'obsidian', 'bone_block',
-    'smooth_stone_slab', 'oak_slab', 'spruce_slab', 'birch_slab', 'cherry_slab', 'cobblestone_slab', 'stone_brick_slab', 'sandstone_slab', 'oak_stairs', 'spruce_stairs', 'cherry_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs', 'sandstone_stairs', 'oak_fence', 'spruce_fence', 'cherry_fence',
+    'bricks', 'mud_bricks', 'nether_bricks', 'sandstone', 'chiseled_sandstone', 'cut_sandstone', 'smooth_sandstone', 'terracotta', 'orange_terracotta', 'blue_terracotta', 'quartz_block', 'prismarine', 'prismarine_bricks', 'sea_lantern', 'glowstone', 'obsidian', 'end_stone', 'end_stone_bricks', 'bone_block',
+    'smooth_stone_slab', 'oak_slab', 'spruce_slab', 'birch_slab', 'cherry_slab', 'cobblestone_slab', 'stone_brick_slab', 'sandstone_slab', 'oak_stairs', 'spruce_stairs', 'cherry_stairs', 'cobblestone_stairs', 'stone_brick_stairs', 'brick_stairs', 'nether_brick_stairs', 'sandstone_stairs', 'oak_fence', 'spruce_fence', 'cherry_fence', 'nether_brick_fence', 'iron_bars',
     'glass', ...SGLASS.map(s => s[0] + '_stained_glass'), ...WOOLS.map(w => w[0] + '_wool'), ...CONCRETE.map(c => c[0] + '_concrete'),
     'iron_block', 'gold_block', 'diamond_block', 'emerald_block', 'lapis_block', 'redstone_block', 'coal_block', 'hay_block'] },
-  { name: '自然方块', icon: 'grass_block', items: ['grass_block', 'dirt', 'dirt_path', 'farmland', 'sand', 'red_sand', 'gravel', 'clay', 'snow_block', 'snow', 'ice', 'packed_ice', 'moss_block', 'magma_block',
-    'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_gold_ore', 'deepslate_diamond_ore', 'deepslate_redstone_ore',
+  { name: '自然方块', icon: 'grass_block', items: ['grass_block', 'dirt', 'dirt_path', 'farmland', 'sand', 'red_sand', 'gravel', 'clay', 'snow_block', 'snow', 'ice', 'packed_ice', 'moss_block', 'netherrack', 'soul_sand', 'magma_block',
+    'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_gold_ore', 'deepslate_diamond_ore', 'deepslate_redstone_ore', 'nether_quartz_ore', 'nether_gold_ore',
     'oak_leaves', 'birch_leaves', 'spruce_leaves', 'cherry_leaves', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'cherry_sapling', 'pink_petals', 'short_grass', 'fern', 'dead_bush', ...FLOWERS.map(f => f[0]),
-    'red_mushroom', 'brown_mushroom', 'cactus', 'sugar_cane', 'pumpkin', 'melon', 'bedrock'] },
+    'red_mushroom', 'brown_mushroom', 'nether_wart', 'cactus', 'sugar_cane', 'pumpkin', 'melon', 'bedrock'] },
   { name: '功能方块', icon: 'crafting_table', items: ['crafting_table', 'furnace', 'chest', 'hopper', 'brewing_stand', 'red_bed', 'torch', 'jack_o_lantern', 'bookshelf', 'ladder', 'oak_door', 'cherry_door', 'oak_trapdoor', 'tnt', 'note_block',
-    'redstone', 'redstone_torch', 'redstone_block', 'repeater', 'comparator', 'observer', 'piston', 'sticky_piston', 'lever', 'stone_button', 'oak_button', 'stone_pressure_plate', 'oak_pressure_plate', 'redstone_lamp', 'target', 'rail', 'enchanting_table', 'anvil', 'bell', 'cobweb', 'spawner'] },
+    'redstone', 'redstone_torch', 'redstone_block', 'repeater', 'comparator', 'observer', 'piston', 'sticky_piston', 'lever', 'stone_button', 'oak_button', 'stone_pressure_plate', 'oak_pressure_plate', 'redstone_lamp', 'target', 'rail', 'enchanting_table', 'anvil', 'bell', 'cobweb', 'spawner', 'end_portal_frame', 'dragon_egg', 'end_crystal'] },
   { name: '工具与战斗', icon: 'diamond_pickaxe', items: [] },
   { name: '食物与材料', icon: 'apple', items: [] },
-  { name: '刷怪蛋', icon: 'creeper_spawn_egg', items: ['pig_spawn_egg', 'cow_spawn_egg', 'sheep_spawn_egg', 'chicken_spawn_egg', 'zombie_spawn_egg', 'skeleton_spawn_egg', 'creeper_spawn_egg', 'spider_spawn_egg', 'villager_spawn_egg'] },
+  { name: '刷怪蛋', icon: 'creeper_spawn_egg', items: ['pig_spawn_egg', 'cow_spawn_egg', 'sheep_spawn_egg', 'chicken_spawn_egg', 'zombie_spawn_egg', 'skeleton_spawn_egg', 'creeper_spawn_egg', 'spider_spawn_egg', 'villager_spawn_egg', 'blaze_spawn_egg', 'wither_skeleton_spawn_egg', 'ghast_spawn_egg', 'zombified_piglin_spawn_egg', 'enderman_spawn_egg'] },
 ];
 for (const m of ['wooden', 'stone', 'iron', 'golden', 'diamond']) for (const t of ['pickaxe', 'axe', 'shovel', 'hoe', 'sword']) CREATIVE_TABS[3].items.push(m + '_' + t);
-CREATIVE_TABS[3].items.push('bow', 'arrow', 'shears', 'flint_and_steel', 'bucket', 'water_bucket', 'lava_bucket');
+CREATIVE_TABS[3].items.push('shield', 'bow', 'arrow', 'shears', 'flint_and_steel', 'bucket', 'water_bucket', 'lava_bucket');
 for (const m of ['leather', 'iron', 'diamond']) for (const p of ['helmet', 'chestplate', 'leggings', 'boots']) CREATIVE_TABS[3].items.push(m + '_' + p);
 CREATIVE_TABS[3].items.push('potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
 CREATIVE_TABS[4].items.push('apple', 'golden_apple', 'golden_carrot', 'bread', 'porkchop', 'cooked_porkchop', 'beef', 'cooked_beef', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken', 'rotten_flesh', 'melon_slice', 'cookie', 'pumpkin_pie', 'baked_potato', 'carrot',
   'wheat_seeds', 'wheat', 'egg', 'sugar', 'stick', 'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'diamond', 'emerald', 'lapis_lazuli', 'redstone', 'flint', 'bone', 'bone_meal', 'string', 'feather', 'gunpowder', 'leather', 'snowball', 'clay_ball', 'brick', 'paper', 'book', 'enchanted_book',
-  'glass_bottle', 'water_bottle', 'awkward_potion', 'blaze_rod', 'blaze_powder', 'nether_wart', 'glistering_melon_slice', 'magma_cream', 'potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
+  'quartz', 'gold_nugget', 'nether_brick', 'ghast_tear', 'ender_pearl', 'eye_of_ender', 'end_crystal', 'dragon_breath', 'fire_charge', 'glass_bottle', 'water_bottle', 'awkward_potion', 'blaze_rod', 'blaze_powder', 'nether_wart', 'glistering_melon_slice', 'magma_cream', 'potion_healing', 'potion_fire_resistance', 'potion_swiftness', 'potion_night_vision');
