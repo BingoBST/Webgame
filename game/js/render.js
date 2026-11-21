@@ -11,7 +11,7 @@ layout(location=4) in vec2 a_light;
 layout(location=5) in uint a_anim;
 uniform mat4 u_vp; uniform mat4 u_model;
 uniform vec3 u_cam; uniform float u_tick; uniform vec3 u_lightOv; // x>=0: override sky/block
-out vec2 v_uv; flat out uint v_layer; flat out uint v_overlay; out vec4 v_col; out vec2 v_light; out float v_dist;
+out vec2 v_uv; flat out uint v_layer; flat out uint v_overlay; out vec4 v_col; out vec2 v_light; out vec2 v_relXZ; out float v_absRelY;
 void main(){
   vec4 wp = u_model * vec4(a_pos,1.0);
   gl_Position = u_vp * wp;
@@ -21,18 +21,20 @@ void main(){
   v_layer = layer; v_overlay = a_tex.y;
   v_col = a_col;
   v_light = u_lightOv.z > 0.5 ? u_lightOv.xy : a_light;
-  v_dist = length(wp.xz - u_cam.xz);
-  float dy = abs(wp.y - u_cam.y); v_dist = max(v_dist, dy * 0.5);
+  v_relXZ = wp.xz - u_cam.xz;
+  v_absRelY = abs(wp.y - u_cam.y) * 0.5;
 }`;
 const CHUNK_FS = `#version 300 es
 precision highp float; precision highp sampler2DArray;
 uniform sampler2DArray u_tex;
 uniform float u_day; uniform vec3 u_fogColor; uniform vec2 u_fog; uniform float u_alphaTest; uniform vec4 u_colorMul;
-uniform float u_gamma; uniform vec3 u_nightTint;
-in vec2 v_uv; flat in uint v_layer; flat in uint v_overlay; in vec4 v_col; in vec2 v_light; in float v_dist;
+uniform float u_gamma; uniform vec3 u_nightTint; uniform vec2 u_clipFade;
+in vec2 v_uv; flat in uint v_layer; flat in uint v_overlay; in vec4 v_col; in vec2 v_light; in vec2 v_relXZ; in float v_absRelY;
 out vec4 o;
 float bright(float x){ float a = x / (4.0 - 3.0 * x); float b = 1.0 - pow(1.0 - x, 3.0); return mix(a, b, u_gamma); }
 void main(){
+  float hDist = length(v_relXZ);
+  if (u_clipFade.y > 0.0 && hDist > u_clipFade.y) discard;
   vec4 t = texture(u_tex, vec3(v_uv, float(v_layer)));
   vec3 c;
   if (v_overlay > 0u) {
@@ -47,7 +49,8 @@ void main(){
   vec3 L = max(skyC, blkC);
   L = max(L, vec3(mix(0.03, 0.14, u_gamma)));
   c *= L * v_col.a;
-  float f = clamp((v_dist - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);
+  float dist = max(hDist, v_absRelY);
+  float f = clamp((dist - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);
   c = mix(c, u_fogColor, f);
   o = vec4(c, t.a) * u_colorMul;
 }`;
@@ -87,14 +90,14 @@ out vec2 v_p;
 void main(){ v_p = P[gl_VertexID]; gl_Position = vec4(P[gl_VertexID], 0.9999, 1.0); }`;
 const SKY_FS = `#version 300 es
 precision highp float;
-uniform mat4 u_invVP; uniform vec3 u_sky; uniform vec3 u_fogColor; uniform vec3 u_sunDir; uniform vec4 u_sunset; uniform vec3 u_void;
+uniform mat4 u_invVP; uniform vec3 u_sky; uniform vec3 u_fogColor; uniform vec3 u_sunDir; uniform vec4 u_sunset; uniform vec3 u_void; uniform float u_dhActive;
 in vec2 v_p; out vec4 o;
 void main(){
   vec4 a = u_invVP * vec4(v_p, 1.0, 1.0);
   vec3 d = normalize(a.xyz / a.w);
   float h = d.y;
   vec3 c = mix(u_fogColor, u_sky, smoothstep(0.0, 0.45, h));
-  if (h < 0.0) c = mix(u_fogColor, u_void, smoothstep(-0.12, -0.6, h));
+  if (h < 0.0) c = mix(u_fogColor, u_void, smoothstep(u_dhActive > 0.5 ? -0.45 : -0.12, u_dhActive > 0.5 ? -0.92 : -0.6, h));
   // sunrise / sunset glow
   vec3 sd = normalize(vec3(u_sunDir.x, 0.0, u_sunDir.z) + vec3(0.0001));
   float g = pow(max(dot(normalize(vec3(d.x, 0.0, d.z)), sd), 0.0), 3.0) * (1.0 - smoothstep(0.0, 0.5, abs(h - 0.05)));
@@ -179,6 +182,144 @@ void main(){
   o = vec4(mix(col, u_fogColor, f), 1.0);
 }`;
 
+
+// ---------------------------------------------------------------------------
+// Distant Horizons (DH-Web) 16-Byte Compact Terrain Shaders (Ported from DH 3.3.4)
+// ---------------------------------------------------------------------------
+const LOD_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 a_pos;
+layout(location=1) in uint a_meta;
+layout(location=2) in vec4 a_col;
+layout(location=3) in vec4 a_light;
+
+uniform mat4 u_vp;
+uniform vec3 u_secOrigin;
+uniform vec3 u_cam;
+uniform float u_microScale;
+uniform float u_earthCurve;
+uniform float u_isTranslucent;
+uniform vec2 u_clipFade;
+
+out vec3 v_wp;
+out vec4 v_col;
+out vec4 v_light;
+out vec2 v_relXZ;
+out float v_absRelY;
+flat out uint v_mat;
+flat out uint v_dir;
+
+void main() {
+  uint dir = a_meta & 7u;
+  uint matId = (a_meta >> 4u) & 15u;
+  vec3 wp = u_secOrigin + a_pos;
+  // Water (matId == 5u) is stored at integer wY = 63 in Int16Array; offset in float32 to 62.888
+  // matching near-chunk water surface height (62 + 0.889 - 0.001 = 62.888) seamlessly
+  if (matId == 5u) {
+    wp.y -= 0.112;
+  } else if (u_isTranslucent > 0.5) {
+    wp.y -= 0.001;
+  }
+  vec3 rel = wp - u_cam;
+  if (u_earthCurve > 0.0) {
+    float hDistSq = dot(rel.xz, rel.xz);
+    wp.y -= hDistSq * u_earthCurve;
+    rel.y = wp.y - u_cam.y;
+  }
+
+  gl_Position = u_vp * vec4(wp, 1.0);
+  v_wp = wp;
+  v_col = a_col;
+  v_light = a_light;
+  v_relXZ = rel.xz;
+  v_absRelY = abs(rel.y) * 0.5;
+  v_mat = matId;
+  v_dir = dir;
+}`;
+
+const LOD_FS = `#version 300 es
+precision highp float;
+
+uniform float u_day;
+uniform float u_gamma;
+uniform vec3 u_nightTint;
+uniform vec3 u_fogColor;
+uniform vec2 u_lodFog;
+uniform vec2 u_clipFade;
+uniform vec3 u_noiseParams;
+uniform float u_isTranslucent;
+uniform sampler2D u_nearMask;
+
+in vec3 v_wp;
+in vec4 v_col;
+in vec4 v_light;
+in vec2 v_relXZ;
+in float v_absRelY;
+flat in uint v_mat;
+flat in uint v_dir;
+out vec4 o;
+
+float bright(float x) {
+  float a = x / (4.0 - 3.0 * x);
+  float b = 1.0 - pow(1.0 - x, 3.0);
+  return mix(a, b, u_gamma);
+}
+
+float hash31(vec3 p) {
+  p = fract(p * vec3(443.897, 441.423, 437.195));
+  p += dot(p, p.yzx + 19.19);
+  return fract((p.x + p.y) * p.z);
+}
+
+vec3 applyDhNoise(vec3 col, vec3 wp, float dist, float noiseW) {
+  float steps = u_noiseParams.x;
+  vec3 qPos = vec3(floor(wp.xz * steps) / steps, floor(wp.y + 0.5));
+  float n = (hash31(qPos) * 2.0 - 1.0) * u_noiseParams.y * noiseW;
+  float atten = clamp(1.0 - dist / u_noiseParams.z, 0.15, 1.0);
+  return clamp(col + col * (n * atten), 0.0, 1.0);
+}
+
+bool isNearChunkLoaded(vec2 xz) {
+  ivec2 c = ivec2(floor(xz / 16.0)) & 63;
+  return texelFetch(u_nearMask, c, 0).r > 0.5;
+}
+
+bool isNearInterior(vec2 xz) {
+  return isNearChunkLoaded(xz + vec2(-0.25, -0.25)) &&
+         isNearChunkLoaded(xz + vec2( 0.25, -0.25)) &&
+         isNearChunkLoaded(xz + vec2(-0.25,  0.25)) &&
+         isNearChunkLoaded(xz + vec2( 0.25,  0.25));
+}
+
+void main() {
+  float hDist = length(v_relXZ);
+  if (u_isTranslucent > 0.5) {
+    // Exact per-fragment complement of CHUNK_FS:
+    // discard ONLY when inside clipEnd AND the underlying 16x16 near chunk has all sections uploaded!
+    if (hDist <= u_clipFade.y && isNearChunkLoaded(v_wp.xz)) discard;
+  } else if (v_dir == 3u || v_mat == 4u) {
+    // Horizontal top faces (+Y) and tree crowns clip only inside ready near chunks
+    if (hDist < u_clipFade.y - 0.15 && isNearInterior(v_wp.xz)) discard;
+  } else {
+    // Vertical side skirts (+X, -X, +Z, -Z) seal vertical step-downs behind near chunks
+    if (hDist < u_clipFade.x && isNearInterior(v_wp.xz)) discard;
+  }
+
+  float dist = max(hDist, v_absRelY);
+  vec3 c = applyDhNoise(v_col.rgb, v_wp, dist, v_light.w);
+  float sky = bright(v_light.x * u_day);
+  float blk = bright(v_light.y);
+  vec3 skyC = mix(u_nightTint, vec3(1.0), u_day) * sky;
+  vec3 blkC = vec3(1.0, 0.88, 0.7) * blk * 1.05;
+  vec3 L = max(skyC, blkC);
+  L = max(L, vec3(mix(0.03, 0.14, u_gamma)));
+  c *= L * v_light.z;
+
+  float f = clamp((dist - u_lodFog.x) / (u_lodFog.y - u_lodFog.x), 0.0, 1.0);
+  c = mix(c, u_fogColor, f);
+  o = vec4(c, v_col.a);
+}`;
+
 function compile(gl, vs, fs) {
   const mk = (type, src) => {
     const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -212,11 +353,24 @@ class Renderer {
     this.progTex = compile(gl, TEX_VS, TEX_FS);
     this.progCol = compile(gl, COL_VS, COL_FS);
     this.progEndPortal = compile(gl, END_PORTAL_VS, END_PORTAL_FS);
+    this.progLod = compile(gl, LOD_VS, LOD_FS);
+    this.lodEnabled = true;
+    this.lodRenderDist = 64;
+    this.earthCurve = 0;
     this.proj = M4.create(); this.view = M4.create(); this.vp = M4.create();
     this.identity = M4.create();
     this.fov = 70; this.renderDist = 8;
     this.camPos = [0, 0, 0];
     this.sections = new Map(); // key -> {vao, n, transVao, tn, x,y,z}
+    this.chunkUploadedMask = new Map(); // ckey(cx,cz) -> 16-bit mask of meshed sections
+    this.nearMaskData = new Uint8Array(64 * 64);
+    this.nearMaskTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.nearMaskTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, 64, 64);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     this.emptyVao = gl.createVertexArray();
     this.gamma = 0.5;
     this.entityTex = {};
@@ -239,6 +393,7 @@ class Renderer {
     _spriteAlpha = new Uint8Array(n * 256);
     for (let i = 0; i < n * 256; i++) _spriteAlpha[i] = data[i * 4 + 3];
     this.tileData = data;
+    if (typeof buildBlockLodPalette === 'function') buildBlockLodPalette(data);
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
     const levels = 5;
@@ -345,6 +500,37 @@ class Renderer {
     gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 2, gl.UNSIGNED_BYTE, true, VSTRIDE, 28);
     gl.enableVertexAttribArray(5); gl.vertexAttribIPointer(5, 1, gl.UNSIGNED_BYTE, VSTRIDE, 30);
   }
+  setupLodAttribs() {
+    const gl = this.gl, S = typeof LOD_VSTRIDE !== 'undefined' ? LOD_VSTRIDE : 16;
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.SHORT, false, S, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_SHORT, S, 6);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, S, 8);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, S, 12);
+  }
+  makeLodVao(data) {
+    const gl = this.gl;
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    this.setupLodAttribs();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.quadIdx);
+    gl.bindVertexArray(null);
+    return { vao, buf };
+  }
+  uploadLodNode(node, res) {
+    this.freeLodNode(node);
+    node.n = res.nOpaque || 0;
+    node.tn = res.nTrans || 0;
+    if (res.opaque && node.n > 0) node.o = this.makeLodVao(res.opaque);
+    if (res.trans && node.tn > 0) node.t = this.makeLodVao(res.trans);
+  }
+  freeLodNode(node) {
+    if (!node) return;
+    const gl = this.gl;
+    if (node.o) { gl.deleteVertexArray(node.o.vao); gl.deleteBuffer(node.o.buf); node.o = null; }
+    if (node.t) { gl.deleteVertexArray(node.t.vao); gl.deleteBuffer(node.t.buf); node.t = null; }
+    node.n = 0; node.tn = 0;
+  }
   makeVao(data) {
     const gl = this.gl;
     const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
@@ -378,7 +564,8 @@ class Renderer {
   }
 
   setSection(key, cx, sy, cz, res) {
-    const gl = this.gl;
+    const ck = ckey(cx, cz);
+    this.chunkUploadedMask.set(ck, (this.chunkUploadedMask.get(ck) || 0) | (1 << sy));
     const old = this.sections.get(key);
     if (old) this.freeSection(old);
     if (!res.opaque && !res.trans) { this.sections.delete(key); return; }
@@ -393,10 +580,41 @@ class Renderer {
     if (s.t) { gl.deleteVertexArray(s.t.vao); gl.deleteBuffer(s.t.buf); }
   }
   dropChunk(cx, cz) {
+    this.chunkUploadedMask.delete(ckey(cx, cz));
     for (let sy = 0; sy < SECTIONS; sy++) {
       const k = (ckey(cx, cz) * 16) + sy;
       const s = this.sections.get(k);
       if (s) { this.freeSection(s); this.sections.delete(k); }
+    }
+  }
+
+  isChunkRenderReady(ch) {
+    if (!ch || !ch.lit) return false;
+    const need = ch.nonEmptyMask;
+    if (!need) return true;
+    const have = this.chunkUploadedMask.get(ckey(ch.cx, ch.cz)) || 0;
+    return (have & need) === need;
+  }
+
+  updateNearMask() {
+    const mask = this.nearMaskData;
+    mask.fill(0);
+    const w = this.world || (typeof window !== "undefined" && window.game && window.game.world);
+    if (!w || !w.chunks) return;
+    const cam = this.camPos, maxD = (this.renderDist + 1.5) * 16, maxDSq = maxD * maxD;
+    for (const ch of w.chunks.values()) {
+      const dx = ch.cx * 16 + 8 - cam[0], dz = ch.cz * 16 + 8 - cam[2];
+      if (dx * dx + dz * dz > maxDSq) continue;
+      if (this.isChunkRenderReady(ch)) {
+        mask[((ch.cz & 63) << 6) | (ch.cx & 63)] = 255;
+      }
+    }
+    if (this.nearMaskTex) {
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.nearMaskTex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 64, 64, gl.RED, gl.UNSIGNED_BYTE, mask);
+      gl.activeTexture(gl.TEXTURE0);
     }
   }
 
@@ -740,7 +958,10 @@ class Renderer {
   // ---- frame ---------------------------------------------------------------------------
   setCamera(pos, yaw, pitch, fovDeg, extra) {
     const w = this.canvas.width, h = this.canvas.height;
-    M4.perspective(this.proj, fovDeg * Math.PI / 180, w / h, 0.05, Math.max(256, this.renderDist * 16 * 1.6 + 64));
+    const farPlane = this.lodEnabled
+      ? Math.max(512, (this.lodRenderDist || 64) * 16 * 1.45 + 128)
+      : Math.max(256, this.renderDist * 16 * 1.6 + 64);
+    M4.perspective(this.proj, fovDeg * Math.PI / 180, w / h, 0.12, farPlane);
     const v = M4.identity(this.view);
     if (extra) extra(v);
     M4.rotX(v, -pitch); M4.rotY(v, -yaw);
@@ -748,6 +969,12 @@ class Renderer {
     M4.mul(this.vp, this.proj, v);
     this.camPos = pos;
     this.planes = frustumPlanes(this.vp);
+  }
+
+  getLodClipFade() {
+    const clipEnd = Math.max(26.0, (this.renderDist - 0.35) * 16.0);
+    const clipStart = clipEnd - 0.8;
+    return [clipStart, clipEnd];
   }
 
   useChunkProg(env) {
@@ -765,6 +992,7 @@ class Renderer {
     gl.uniform3f(P.u.u_lightOv, 0, 0, 0);
     gl.uniform1f(P.u.u_gamma, this.gamma);
     gl.uniform3fv(P.u.u_nightTint, env.nightTint);
+    if (P.u.u_clipFade !== undefined) gl.uniform2f(P.u.u_clipFade, 0.0, -1.0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texArray);
     return P;
@@ -782,6 +1010,7 @@ class Renderer {
     gl.uniform3fv(S.u.u_sunDir, env.sunDir);
     gl.uniform4fv(S.u.u_sunset, env.sunset);
     gl.uniform3fv(S.u.u_void, env.voidColor);
+    if (S.u.u_dhActive !== undefined) gl.uniform1f(S.u.u_dhActive, this.lodEnabled ? 1.0 : 0.0);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (!env.isNether) {
@@ -824,14 +1053,25 @@ class Renderer {
 
   drawTerrain(env) {
     const gl = this.gl;
+    this.updateNearMask();
     const P = this.useChunkProg(env);
+    const filterByMask = !!(this.lodEnabled && this.hasActiveLod);
+    if (filterByMask && P.u.u_clipFade !== undefined) {
+      const [clipStart, clipEnd] = this.getLodClipFade();
+      gl.uniform2f(P.u.u_clipFade, clipStart, clipEnd);
+    }
     gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
     gl.disable(gl.BLEND);
-    const cam = this.camPos, maxD = (this.renderDist + 1) * 16;
+    const cam = this.camPos, maxD = (this.renderDist + 1.5) * 16, maxDSq = maxD * maxD;
+    const mask = this.nearMaskData;
     const vis = [];
     for (const s of this.sections.values()) {
       const dx = s.x + 8 - cam[0], dz = s.z + 8 - cam[2];
-      if (dx * dx + dz * dz > maxD * maxD) continue;
+      if (dx * dx + dz * dz > maxDSq) continue;
+      if (filterByMask) {
+        const cx = s.x >> 4, cz = s.z >> 4;
+        if (!mask[((cz & 63) << 6) | (cx & 63)]) continue;
+      }
       if (!aabbInFrustum(this.planes, s.x, s.y, s.z, s.x + 16, s.y + 16, s.z + 16)) continue;
       s.d = dx * dx + dz * dz + (s.y + 8 - cam[1]) ** 2;
       vis.push(s);
@@ -839,15 +1079,119 @@ class Renderer {
     vis.sort((a, b) => a.d - b.d);
     let tris = 0;
     for (const s of vis) if (s.o) { gl.bindVertexArray(s.o.vao); gl.drawElements(gl.TRIANGLES, s.n * 1.5, gl.UNSIGNED_INT, 0); tris += s.n / 2; }
+    if (P.u.u_clipFade !== undefined) gl.uniform2f(P.u.u_clipFade, 0.0, -1.0);
     this.visSections = vis;
     this.stats = { sections: vis.length, tris };
+  }
+
+  useLodProg(env) {
+    const gl = this.gl, P = this.progLod;
+    gl.useProgram(P.p);
+    gl.uniformMatrix4fv(P.u.u_vp, false, this.vp);
+    gl.uniform3fv(P.u.u_cam, this.camPos);
+    gl.uniform1f(P.u.u_day, env.day);
+    gl.uniform1f(P.u.u_gamma, this.gamma);
+    gl.uniform3fv(P.u.u_nightTint, env.nightTint);
+    gl.uniform3fv(P.u.u_fogColor, env.fogColor);
+    const lodMax = Math.max((this.renderDist + 16) * 16, (this.lodRenderDist || 64) * 16);
+    const lodFogNear = env.lodFogNear !== undefined ? env.lodFogNear : (env.fogNear !== undefined ? env.fogNear : lodMax * 0.48);
+    const lodFogFar = env.lodFogFar !== undefined ? env.lodFogFar : (env.fogFar !== undefined ? env.fogFar : lodMax * 0.96);
+    gl.uniform2f(P.u.u_lodFog, lodFogNear, lodFogFar);
+    // Complementary Bayer 4x4 dither-fade boundary shared 1-for-1 with CHUNK_FS
+    const [clipStart, clipEnd] = this.getLodClipFade();
+    gl.uniform2f(P.u.u_clipFade, clipStart, clipEnd);
+    gl.uniform3f(P.u.u_noiseParams, 2.0, 0.018, 640.0);
+    gl.uniform1f(P.u.u_earthCurve, this.earthCurve || 0.0);
+    if (this.nearMaskTex && P.u.u_nearMask !== undefined) {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.nearMaskTex);
+      gl.uniform1i(P.u.u_nearMask, 2);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    return P;
+  }
+
+  drawLodTerrain(env, lodNodes) {
+    if (!this.lodEnabled || !lodNodes || !lodNodes.length) {
+      this.visLodNodes = [];
+      return;
+    }
+    const gl = this.gl;
+    const P = this.useLodProg(env);
+    if (P.u.u_isTranslucent !== undefined) gl.uniform1f(P.u.u_isTranslucent, 0.0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    // Disable back-face culling on LOD terrain so any hill or tree intersected by the seam clip plane is sealed from behind
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1.0, 2.0);
+
+    const vis = [];
+    for (let i = 0; i < lodNodes.length; i++) {
+      const node = lodNodes[i];
+      if (!node.o && !node.t) continue;
+      if (!aabbInFrustum(this.planes, node.x - 16, -64, node.z - 16, node.x + node.span + 16, 320, node.z + node.span + 16)) continue;
+      vis.push(node);
+    }
+    vis.sort((a, b) => a.d - b.d);
+
+    let lodTris = 0;
+    for (let i = 0; i < vis.length; i++) {
+      const node = vis[i];
+      if (!node.o || !node.n) continue;
+      gl.uniform3f(P.u.u_secOrigin, node.x, 0, node.z);
+      gl.uniform1f(P.u.u_microScale, 0.0);
+      gl.bindVertexArray(node.o.vao);
+      gl.drawElements(gl.TRIANGLES, node.n * 1.5, gl.UNSIGNED_INT, 0);
+      lodTris += node.n * 0.5;
+    }
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    gl.enable(gl.CULL_FACE);
+    this.visLodNodes = vis;
+    if (this.stats) {
+      this.stats.lodSections = vis.length;
+      this.stats.lodTris = lodTris;
+    }
+  }
+
+  drawLodTranslucent(env) {
+    if (!this.lodEnabled || !this.visLodNodes || !this.visLodNodes.length) return;
+    const gl = this.gl;
+    const P = this.useLodProg(env);
+    if (P.u.u_isTranslucent !== undefined) gl.uniform1f(P.u.u_isTranslucent, 1.0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(true);
+    gl.disable(gl.CULL_FACE);
+
+    const vis = this.visLodNodes;
+    for (let i = vis.length - 1; i >= 0; i--) {
+      const node = vis[i];
+      if (!node.t || !node.tn) continue;
+      gl.uniform3f(P.u.u_secOrigin, node.x, 0, node.z);
+      gl.uniform1f(P.u.u_microScale, 0.0);
+      gl.bindVertexArray(node.t.vao);
+      gl.drawElements(gl.TRIANGLES, node.tn * 1.5, gl.UNSIGNED_INT, 0);
+    }
+    gl.depthMask(true);
+    gl.enable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.depthFunc(gl.LESS);
   }
 
   drawTranslucent(env) {
     const gl = this.gl;
     const P = this.useChunkProg(env);
+    if (this.lodEnabled && this.hasActiveLod && P.u.u_clipFade !== undefined) {
+      const [clipStart, clipEnd] = this.getLodClipFade();
+      gl.uniform2f(P.u.u_clipFade, clipStart, clipEnd);
+    }
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+    // Keep depthMask(false) so near-chunk multi-layer glass/ice/water blend cleanly; LOD_FS already discards loaded near chunks
     gl.depthMask(false);
     gl.uniform1f(P.u.u_alphaTest, 0.01);
     const vis = this.visSections || [];
@@ -855,6 +1199,7 @@ class Renderer {
       const s = vis[i];
       if (s.t) { gl.bindVertexArray(s.t.vao); gl.drawElements(gl.TRIANGLES, s.tn * 1.5, gl.UNSIGNED_INT, 0); }
     }
+    if (P.u.u_clipFade !== undefined) gl.uniform2f(P.u.u_clipFade, 0.0, -1.0);
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.disable(gl.BLEND);

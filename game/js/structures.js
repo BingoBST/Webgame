@@ -1372,8 +1372,8 @@ const Structures = {
     }
 
     // 3. Villages (check 16x16 regions overlapping +-3 chunks around (cx, cz))
-    const vrx0 = Math.floor((cx - 3) / 16), vrx1 = Math.floor((cx + 3) / 16);
-    const vrz0 = Math.floor((cz - 3) / 16), vrz1 = Math.floor((cz + 3) / 16);
+    const vrx0 = Math.floor((cx - 7) / 16), vrx1 = Math.floor((cx + 7) / 16);
+    const vrz0 = Math.floor((cz - 7) / 16), vrz1 = Math.floor((cz + 7) / 16);
     for (let rz = vrz0; rz <= vrz1; rz++) {
       for (let rx = vrx0; rx <= vrx1; rx++) {
         const v = this.villageInRegion(world, rx, rz);

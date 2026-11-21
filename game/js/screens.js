@@ -188,21 +188,30 @@ class OptionsScreen extends MenuScreen {
     const u = this.game.ui, cx = u.w / 2, s = this.game.settings, g = this.game;
     const sl = (x, y, label, val, set) => ({ slider: true, x, y, w: 150, h: 20, value: val, label, onChange: (v) => { set(v); g.applySettings(); g.saveSettings(); } });
     const bt = (x, y, label, fn) => ({ x, y, w: 150, h: 20, label, onClick: () => { fn(); g.applySettings(); g.saveSettings(); } });
-    let y = 40;
+    this.titleY = 14;
+    let y = 28;
+    const step = 21;
+    const curveLabel = () => {
+      const c = s.earthCurve || 0;
+      return c <= 0 ? '平面' : (c < 0.00008 ? '轻度弧形' : '行星曲率');
+    };
     this.widgets = [
       sl(cx - 155, y, () => '视野: ' + Math.round(s.fov), (s.fov - 30) / 80, v => s.fov = Math.round(30 + v * 80)),
-      sl(cx + 5, y, () => '渲染距离: ' + s.renderDist + ' 区块', (s.renderDist - 2) / 14, v => s.renderDist = Math.round(2 + v * 14)),
-      sl(cx - 155, y += 24, () => '鼠标灵敏度: ' + Math.round(s.sens * 200) + '%', s.sens, v => s.sens = Math.max(0.05, v)),
+      sl(cx + 5, y, () => '近景视距: ' + s.renderDist + ' 区块', (s.renderDist - 2) / 14, v => s.renderDist = Math.round(2 + v * 14)),
+      bt(cx - 155, y += step, () => '遥远的地平线: ' + (s.distantHorizons !== false ? '开' : '关'), () => { s.distantHorizons = !(s.distantHorizons !== false); }),
+      sl(cx + 5, y, () => '远景LOD视距: ' + (s.lodRenderDist || 64) + ' 区块', ((s.lodRenderDist || 64) - 24) / 104, v => { s.lodRenderDist = Math.round((24 + v * 104) / 8) * 8; }),
+      sl(cx - 155, y += step, () => '鼠标灵敏度: ' + Math.round(s.sens * 200) + '%', s.sens, v => s.sens = Math.max(0.05, v)),
       sl(cx + 5, y, () => '亮度: ' + (s.gamma < 0.05 ? '昏暗' : s.gamma > 0.95 ? '明亮' : Math.round(s.gamma * 100) + '%'), s.gamma, v => s.gamma = v),
-      sl(cx - 155, y += 24, () => '音效音量: ' + Math.round(s.volume * 100) + '%', s.volume, v => s.volume = v),
+      sl(cx - 155, y += step, () => '音效音量: ' + Math.round(s.volume * 100) + '%', s.volume, v => s.volume = v),
       sl(cx + 5, y, () => '音乐音量: ' + Math.round(s.music * 100) + '%', s.music, v => s.music = v),
-      bt(cx - 155, y += 24, () => '云: ' + (s.clouds ? '开' : '关'), () => s.clouds = !s.clouds),
-      bt(cx + 5, y, () => '视角摇晃: ' + (s.bobbing ? '开' : '关'), () => s.bobbing = !s.bobbing),
-      bt(cx - 155, y += 24, () => '界面尺寸: ' + (s.guiScale || '自动'), () => { s.guiScale = (s.guiScale + 1) % 5; setTimeout(() => g.ui.resize(), 0); }),
+      bt(cx - 155, y += step, () => '云: ' + (s.clouds ? '开' : '关'), () => s.clouds = !s.clouds),
+      bt(cx + 5, y, () => '星球曲率: ' + curveLabel(), () => { const c = s.earthCurve || 0; s.earthCurve = c <= 0 ? 0.00004 : (c < 0.00008 ? 0.00012 : 0); }),
+      bt(cx - 155, y += step, () => '界面尺寸: ' + (s.guiScale || '自动'), () => { s.guiScale = (s.guiScale + 1) % 5; setTimeout(() => g.ui.resize(), 0); }),
       bt(cx + 5, y, () => '渲染分辨率: ' + Math.round(s.resScale * 100) + '%', () => { s.resScale = s.resScale >= 1 ? 0.5 : s.resScale + 0.25; }),
-      bt(cx - 155, y += 24, () => '高级提示框: ' + (s.advTooltips ? '开' : '关'), () => s.advTooltips = !s.advTooltips),
-      bt(cx + 5, y, () => '全屏', () => toggleFullscreen()),
-      { x: cx - 100, y: u.h - 30, w: 200, h: 20, label: '完成', onClick: () => this.done() },
+      bt(cx - 155, y += step, () => '视角摇晃: ' + (s.bobbing ? '开' : '关'), () => s.bobbing = !s.bobbing),
+      bt(cx + 5, y, () => '高级提示框: ' + (s.advTooltips ? '开' : '关'), () => s.advTooltips = !s.advTooltips),
+      { x: cx - 155, y: Math.max(y + step + 4, u.h - 24), w: 150, h: 20, label: '完成', onClick: () => this.done() },
+      { x: cx + 5, y: Math.max(y + step + 4, u.h - 24), w: 150, h: 20, label: '全屏', onClick: () => toggleFullscreen() },
     ];
   }
   done() { this.game.saveSettings(); this.game.ui.open(this.parent); }

@@ -27,7 +27,10 @@ const TUTORIAL = [
 
 class Game {
   constructor() {
-    this.settings = Object.assign({ fov: 70, renderDist: 8, sens: 0.5, volume: 0.8, music: 0.45, gamma: 0.5, guiScale: 0, clouds: true, bobbing: true, advTooltips: false, resScale: 1 }, this.loadSettings());
+    this.settings = Object.assign({ fov: 70, renderDist: 8, distantHorizons: true, lodRenderDist: 64, earthCurve: 0, sens: 0.5, volume: 0.8, music: 0.45, gamma: 0.5, guiScale: 0, clouds: true, bobbing: true, advTooltips: false, resScale: 1 }, this.loadSettings());
+    if (this.settings.distantHorizons === undefined) this.settings.distantHorizons = true;
+    if (!this.settings.lodRenderDist) this.settings.lodRenderDist = 64;
+    this.lodManager = null;
     this.state = 'boot';
     this.mode = 'survival';
     this.worldSessionId = 0;
@@ -54,6 +57,7 @@ class Game {
     Font.init(this.renderer.images.font);
     this.renderer.buildIcons();
     if (typeof WorldWorker !== 'undefined') this.worker = new WorldWorker(this);
+    if (typeof LodManager !== 'undefined') this.lodManager = new LodManager(this);
     this.ui = new UI(this, document.getElementById('ui'));
     this.particles = new Particles(this);
     this.applySettings();
@@ -91,6 +95,13 @@ class Game {
   applySettings() {
     const s = this.settings;
     this.renderer.renderDist = s.renderDist; this.renderer.gamma = s.gamma; this.renderer.showClouds = s.clouds;
+    this.renderer.lodEnabled = s.distantHorizons !== false;
+    this.renderer.lodRenderDist = s.lodRenderDist || 64;
+    this.renderer.earthCurve = s.earthCurve || 0;
+    if (this.lodManager && this.world && this.state === 'play') {
+      const c = this.player ? this.player.pos : [0, 100, 0];
+      this.lodManager.update(c, 2);
+    }
     Sound.setVolume(s.volume); Sound.setMusic(s.music);
     if (this.renderer.resScale !== s.resScale) { this.renderer.resScale = s.resScale; this.resize(); }
   }
@@ -102,18 +113,23 @@ class Game {
     if (this.world) this.unloadAll();
     if (typeof Structures !== 'undefined' && Structures.clearCaches) Structures.clearCaches();
     this.world = new World(seed, dimension);
+    this.renderer.world = this.world;
     this.world.grassMap = this.renderer.grassMap; this.world.foliageMap = this.renderer.foliageMap;
     this.world.listener = this;
     this.entities = []; this.blockEntities = new Map(); this.particles.list = [];
     this.genQueue = []; this.meshQueue = [];
+    this._lastCC = null;
     this._loadingPromises = new Map();
     this.spawnedChunks = new Set();
+    if (this.lodManager) this.lodManager.reset();
     if (this.worker) this.worker.resetSession(this.worldSessionId, this.world);
   }
   unloadAll() {
     for (const ch of this.world.chunks.values()) this.renderer.dropChunk(ch.cx, ch.cz);
     this.world.chunks.clear();
     this.renderer.sections.clear();
+    if (this.renderer.chunkUploadedMask) this.renderer.chunkUploadedMask.clear();
+    if (this.lodManager) this.lodManager.reset();
   }
   startTitle() {
     this.state = 'title';
@@ -162,6 +178,9 @@ class Game {
   async loadWorld(id) {
     const meta = await DB.getWorld(id);
     if (!meta) return;
+    this.state = 'loading';
+    this.loadProgress = 0;
+    this.player = null;
     this.ui.open(new LoadingScreen(this, '正在载入世界…'));
     this.worldMeta = meta;
     if (!meta.dimensions) meta.dimensions = {};
@@ -895,22 +914,30 @@ class Game {
 
   // ---- chunk streaming ------------------------------------------------------------
   updateChunks(budgetMs) {
-    const w = this.world, R = this.state === 'title' ? 6 : this.settings.renderDist;
-    const center = this.state === 'title' ? this.titleCam : this.player.pos;
+    const w = this.world;
+    const isLoading = this.state === 'loading';
+    // During loading, focus exclusively on the 5x5 spawn grid (needs 7x7 = radius 3 neighbors) so world entry is fast & never deadlocks at R=2
+    const R = isLoading ? 2 : (this.state === 'title' ? 6 : Math.max(2, this.settings.renderDist || 8));
+    const center = this.state === 'title' ? this.titleCam : (this.player ? this.player.pos : [0, 80, 0]);
     const pcx = Math.floor(center[0]) >> 4, pcz = Math.floor(center[2]) >> 4;
     const t0 = performance.now();
     const useWorker = !!(this.worker && this.worker.isReady());
 
-    // generation queue: nearest missing chunks within R+1
-    const ccKey = pcx + ',' + pcz + ',' + R;
-    if (this._lastCC !== ccKey) {
+    // Ensure generation radius covers all 3x3 neighbors of every chunk in the meshing radius (including corners (+-3, +-3) where distSq=18)
+    const genSpan = Math.max(R + 3, 4);
+    const genRadSq = Math.max((R + 2.65) * (R + 2.65), 25.0);
+    const meshRadSq = Math.max((R + 1.15) * (R + 1.15), 10.5);
+
+    const ccKey = pcx + ',' + pcz + ',' + R + ',' + (isLoading ? 1 : 0);
+    if (!this.genQueue.length || this._lastCC !== ccKey) {
       this._lastCC = ccKey;
       const q = [];
-      for (let dx = -R - 1; dx <= R + 1; dx++) for (let dz = -R - 1; dz <= R + 1; dz++) {
-        if (dx * dx + dz * dz > (R + 1.5) * (R + 1.5)) continue;
+      for (let dx = -genSpan; dx <= genSpan; dx++) for (let dz = -genSpan; dz <= genSpan; dz++) {
+        const d2 = dx * dx + dz * dz;
+        if (d2 > genRadSq) continue;
         const ck = ckey(pcx + dx, pcz + dz);
         if (!w.chunks.has(ck) && !w.loadingChunks.has(ck) && !(w.generatingChunks && w.generatingChunks.has(ck))) {
-          q.push([pcx + dx, pcz + dz, dx * dx + dz * dz]);
+          q.push([pcx + dx, pcz + dz, d2]);
         }
       }
       q.sort((a, b) => b[2] - a[2]);
@@ -919,7 +946,8 @@ class Game {
     this.genQueueLen = this.genQueue.length + (w.generatingChunks ? w.generatingChunks.size : 0);
 
     let gen = 0;
-    while (this.genQueue.length && (useWorker ? gen < 8 : (performance.now() - t0 < budgetMs * 0.5 || gen === 0))) {
+    const maxWorkerGenBatch = isLoading ? 16 : 8;
+    while (this.genQueue.length && (useWorker ? gen < maxWorkerGenBatch : (performance.now() - t0 < budgetMs * 0.5 || gen === 0))) {
       const [cx, cz, distSq] = this.genQueue.pop();
       const ck = ckey(cx, cz);
       if (w.chunks.has(ck) || w.loadingChunks.has(ck) || (w.generatingChunks && w.generatingChunks.has(ck))) continue;
@@ -931,18 +959,19 @@ class Game {
       gen++;
     }
 
-    // meshing: dirty chunks whose neighbours exist
+    // meshing: dirty chunks whose 3x3 neighbours exist
     const cand = [];
     for (const ch of w.chunks.values()) {
       if (!ch.dirty) continue;
       const dx = ch.cx - pcx, dz = ch.cz - pcz;
-      if (dx * dx + dz * dz > (R + 0.5) * (R + 0.5)) continue;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > meshRadSq) continue;
       let ok = true;
       for (let a = -1; a <= 1 && ok; a++) for (let b = -1; b <= 1; b++) if (!w.chunks.has(ckey(ch.cx + a, ch.cz + b))) { ok = false; break; }
-      if (ok) cand.push([ch, dx * dx + dz * dz]);
+      if (ok) cand.push([ch, d2]);
     }
     cand.sort((a, b) => a[1] - b[1]);
-    if (useWorker) {
+    if (useWorker && !isLoading) {
       let queuedSections = 0;
       for (const [ch, distSq] of cand) {
         for (let sy = 0; sy < SECTIONS; sy++) {
@@ -971,7 +1000,8 @@ class Game {
     this.meshPending = cand.length;
 
     // unload far chunks & evict cold savedChunks > 128
-    const maxLoadedRadiusSq = (R + 2) * (R + 2);
+    const keepR = Math.max(this.settings.renderDist || 8, 3);
+    const maxLoadedRadiusSq = (keepR + 3.5) * (keepR + 3.5);
     if (this.tickCount % 20 === 0 || w.chunks.size > 300) {
       for (const ch of [...w.chunks.values()]) {
         const dx = ch.cx - pcx, dz = ch.cz - pcz;
@@ -1001,6 +1031,9 @@ class Game {
       }
     }
     if (w.savedChunks && w.savedChunks.size > 128) this.evictColdSavedChunks();
+    if ((this.state === 'play' || this.state === 'loading') && this.lodManager && this.lodManager.isEnabled()) {
+      this.lodManager.update(center, isLoading ? 4 : 2);
+    }
   }
   meshChunk(ch) {
     const w = this.world;
@@ -1059,6 +1092,9 @@ class Game {
     if (w.generatingChunks) w.generatingChunks.delete(ck);
     w.chunks.set(ck, ch);
     w.initLight(ch);
+    if ((isSaved || ch.modified) && this.lodManager) {
+      this.lodManager.syncChunkSummary(ch);
+    }
     ch.bumpMask(0xFFFF);
     for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
       const n = w.getChunk(cx + a, cz + b);
@@ -1187,6 +1223,7 @@ class Game {
       return;
     }
     if (this.state === 'loading') {
+      if (!this.player) return;
       this.updateChunks(30);
       const p = this.player, pcx = Math.floor(p.pos[0]) >> 4, pcz = Math.floor(p.pos[2]) >> 4;
       let ready = 0, need = 0;
@@ -1479,6 +1516,9 @@ class Game {
 
   // ---- hooks from world/entities ------------------------------------------------------------
   onBlockChanged(x, y, z, old, id, oldMeta) {
+    if (old !== id && this.lodManager) {
+      this.lodManager.onBlockChanged(x, y, z);
+    }
     if (old !== id) {
       const k = `${x},${y},${z}`;
       const be = this.blockEntities.get(k);
@@ -2947,7 +2987,9 @@ class Game {
         tick: this.worldTime + a, day, fogColor: fog, skyColor: sky,
         sunDir: [0, 1, 0], sunset: [0, 0, 0, 0], voidColor: [0.02, 0.0, 0.04],
         celestial: 0.5, starBright: 0.65, sunAlpha: 0, rain: 0, moonPhase: 0,
-        fogNear: R * 0.45, fogFar: R * 0.95, nightTint: [0.92, 0.84, 1.0], cloudColor: [0, 0, 0], isEnd: true,
+        fogNear: (this.lodManager && this.lodManager.isEnabled() ? Math.max(R + 256, (this.settings.lodRenderDist || 64) * 16) : R) * 0.48,
+        fogFar: (this.lodManager && this.lodManager.isEnabled() ? Math.max(R + 256, (this.settings.lodRenderDist || 64) * 16) : R) * 0.96,
+        nightTint: [0.92, 0.84, 1.0], cloudColor: [0, 0, 0], isEnd: true,
       };
     }
     if (this.world && this.world.dimension === 'nether') {
@@ -2983,7 +3025,9 @@ class Game {
       const facing = Math.max(0, ld[0] * Math.sign(sunDir[0]));
       fog = fog.map((v, i) => lerp(v, sunset[i], facing * sunsetA * 0.6));
     }
-    let fogNear = R * 0.6, fogFar = R * 0.95;
+    const dhActive = !!(this.lodManager && this.lodManager.isEnabled());
+    const effR = dhActive ? Math.max(R + 256, (this.settings.lodRenderDist || 64) * 16) : R;
+    let fogNear = dhActive ? effR * 0.48 : R * 0.6, fogFar = dhActive ? effR * 0.96 : R * 0.95;
     if (rain > 0) { fogNear *= 1 - rain * 0.4; fogFar *= 1 - rain * 0.2; }
     const nightTint = [0.55, 0.62, 0.95];
     if (this.headInWater) {
@@ -3060,7 +3104,20 @@ class Game {
     });
     if (this.headInWater || this.headInLava) { gl.clearColor(env.fogColor[0], env.fogColor[1], env.fogColor[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); }
     else { gl.clear(gl.DEPTH_BUFFER_BIT); r.drawSky(env); }
+    if (this.state === 'play' && this.lodManager && this.lodManager.isEnabled()) {
+      const lp = this.lodManager._lastUpdatePos;
+      if (!lp || this.lodManager._needsTreeRefresh || Math.hypot(camPos[0] - lp[0], camPos[2] - lp[1]) > 2.0) {
+        this.lodManager.update(camPos, 1);
+      }
+    }
+    const lodActive = !!(this.lodManager && this.lodManager.isEnabled() && this.lodManager.visibleNodes && this.lodManager.visibleNodes.length > 0);
+    r.hasActiveLod = lodActive;
     r.drawTerrain(env);
+    if (lodActive) {
+      r.drawLodTerrain(env, this.lodManager.visibleNodes);
+    } else {
+      r.visLodNodes = [];
+    }
     this.drawEntities(a, env);
     if (this.state === 'play') this.drawSelection(env);
     // particles
@@ -3068,7 +3125,14 @@ class Game {
     const up = [Math.sin(yaw) * Math.sin(pitch), Math.cos(pitch), Math.cos(yaw) * Math.sin(pitch)];
     this.particles.build(r.particleBuf, a, camPos, right, up);
     r.drawDynamic(r.particleBuf, r.particleGL, env, { noCull: true });
+    if (!(lodActive && r.visLodNodes && r.visLodNodes.length > 0)) {
+      r.hasActiveLod = false;
+    }
     r.drawTranslucent(env);
+    if (r.hasActiveLod) {
+      r.drawLodTranslucent(env);
+    }
+    r.hasActiveLod = false;
     r.drawClouds(env, camPos[0], camPos[2]);
     if (this.state === 'play') {
       if (this.world.dimension === 'overworld') this.drawWeather(env, a);

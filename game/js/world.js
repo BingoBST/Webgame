@@ -35,6 +35,7 @@ class Chunk {
     this.meshes = new Array(SECTIONS).fill(null);
     this.modified = false;
     this.sectionCount = new Uint16Array(SECTIONS); // non-air block count per section
+    this.nonEmptyMask = 0;
   }
   idx(x, y, z) { return (y << 8) | (z << 4) | x; }
   bumpMask(mask) {
@@ -45,6 +46,9 @@ class Chunk {
     this.sectionCount.fill(0);
     const b = this.blocks;
     for (let i = 0; i < b.length; i++) if (b[i]) this.sectionCount[i >> 12]++;
+    let m = 0;
+    for (let s = 0; s < SECTIONS; s++) if (this.sectionCount[s] > 0) m |= (1 << s);
+    this.nonEmptyMask = m;
   }
 }
 
@@ -697,13 +701,51 @@ class World {
     ch.dungeon = [ch.cx * 16 + lx0 + W / 2, y0 + 1, ch.cz * 16 + lz0 + D / 2];
   }
 
-  // Trees are deterministic per chunk so neighbours can place their overhanging parts.
+  // Check deterministically whether chunk (cx, cz) overlaps a surface structure (Desert Pyramid or Village)
+  hasSurfaceStructureAtChunk(cx, cz) {
+    if (this.dimension !== 'overworld' || this.flat || typeof Structures === 'undefined') return false;
+    const k = ckey(cx, cz);
+    if (!this._surfStructCache) this._surfStructCache = new Map();
+    const cached = this._surfStructCache.get(k);
+    if (cached !== undefined) return cached;
+    const x0 = cx * 16, z0 = cz * 16;
+    if (typeof Structures.pyramidInRegion === 'function') {
+      const prx0 = Math.floor((cx - 2) / 18), prx1 = Math.floor((cx + 2) / 18);
+      const prz0 = Math.floor((cz - 2) / 18), prz1 = Math.floor((cz + 2) / 18);
+      for (let rz = prz0; rz <= prz1; rz++) {
+        for (let rx = prx0; rx <= prx1; rx++) {
+          const p = Structures.pyramidInRegion(this, rx, rz);
+          if (p && !(x0 + 15 < p.wx - 11 || x0 > p.wx + 11 || z0 + 15 < p.wz - 11 || z0 > p.wz + 11)) { this._surfStructCache.set(k, true); return true; }
+        }
+      }
+    }
+    if (typeof Structures.villageInRegion === 'function') {
+      const vrx0 = Math.floor((cx - 7) / 16), vrx1 = Math.floor((cx + 7) / 16);
+      const vrz0 = Math.floor((cz - 7) / 16), vrz1 = Math.floor((cz + 7) / 16);
+      for (let rz = vrz0; rz <= vrz1; rz++) {
+        for (let rx = vrx0; rx <= vrx1; rx++) {
+          const v = Structures.villageInRegion(this, rx, rz);
+          if (v && !(x0 + 15 < v.wx - 38 || x0 > v.wx + 38 || z0 + 15 < v.wz - 38 || z0 > v.wz + 38)) { this._surfStructCache.set(k, true); return true; }
+        }
+      }
+    }
+    if (this._surfStructCache.size >= 16384) this._surfStructCache.clear();
+    this._surfStructCache.set(k, false);
+    return false;
+  }
+
+  // Trees are deterministic per chunk so neighbours and Distant Horizons LOD can place exact matching canopies.
   treesFor(ncx, ncz) {
     const k = ckey(ncx, ncz);
     if (!this._treeCache) this._treeCache = new Map();
     let t = this._treeCache.get(k);
     if (t) return t;
     t = [];
+    if (this.hasSurfaceStructureAtChunk(ncx, ncz)) {
+      while (this._treeCache.size >= 16384) this._treeCache.delete(this._treeCache.keys().next().value);
+      this._treeCache.set(k, t);
+      return t;
+    }
     const r = RNG(hashStr('trees' + this.seed + ':' + ncx + ':' + ncz));
     const cc = this.column(ncx * 16 + 8, ncz * 16 + 8);
     const bi = this.biomeOf(cc);
@@ -715,10 +757,13 @@ class World {
       const c = this.column(X, Z);
       const b = this.biomeOf(c);
       if (c.h <= SEA || c.h > 125) continue;
-      if (b === BI.DESERT || b === BI.BEACH || b === BI.OCEAN || b === BI.SNOWPEAK) continue;
-      // slope check
+      if (b === BI.DESERT || b === BI.BEACH || b === BI.OCEAN || b === BI.FROZEN_OCEAN || b === BI.RIVER || b === BI.SNOWPEAK) continue;
+      // slope check (both immediate step and 2-block-span cliff slope matching generate() surface rules)
       const c2 = this.column(X + 1, Z), c3 = this.column(X, Z + 1);
       if (Math.abs(c2.h - c.h) > 2 || Math.abs(c3.h - c.h) > 2) continue;
+      const c0x = this.column(X - 1, Z), c0z = this.column(X, Z - 1);
+      const slope = Math.max(Math.abs(c0x.h - c2.h), Math.abs(c0z.h - c3.h));
+      if (slope > 5 || ((b === BI.MOUNTAIN || b === BI.SNOWPEAK) && slope > 3)) continue;
       let type = 'oak';
       if (b === BI.CHERRY_GROVE) type = 'cherry';
       else if (b === BI.TAIGA || b === BI.SNOWY || (b === BI.MOUNTAIN)) type = 'spruce';
@@ -726,7 +771,7 @@ class World {
       else if (b === BI.FOREST) type = r() < 0.25 ? 'birch' : (r() < 0.1 ? 'big' : 'oak');
       t.push({ x: X, y: c.h + 1, z: Z, type, h: (type === 'cherry' ? 5 : 4) + r.int(3), seed: r.int(1 << 30) });
     }
-    while (this._treeCache.size >= 512) this._treeCache.delete(this._treeCache.keys().next().value);
+    while (this._treeCache.size >= 16384) this._treeCache.delete(this._treeCache.keys().next().value);
     this._treeCache.set(k, t);
     return t;
   }
@@ -816,7 +861,7 @@ class World {
           const lx = tr.x - x0, lz = tr.z - z0;
           if (ch.structureMask && ch.structureMask[(lz << 4) | lx]) continue;
           const g = B[((tr.y - 1) << 8) | (lz << 4) | lx];
-          if (g !== 2 && g !== 3) continue;
+          if (g !== 2 && g !== 3 && g !== 0) continue;
         }
         this.placeTree(set, tr);
       }
@@ -1126,7 +1171,8 @@ class World {
     const old = ch.blocks[i], oldMeta = ch.meta[i];
     if (old === id && oldMeta === meta) return false;
     ch.blocks[i] = id; ch.meta[i] = meta;
-    if (!old && id) ch.sectionCount[y >> 4]++; else if (old && !id) ch.sectionCount[y >> 4]--;
+    const sy = y >> 4;
+    if (!old && id) { ch.sectionCount[sy]++; ch.nonEmptyMask |= (1 << sy); } else if (old && !id) { if (--ch.sectionCount[sy] <= 0) { ch.sectionCount[sy] = 0; ch.nonEmptyMask &= ~(1 << sy); } }
     ch.modified = true;
     this.modifiedChunkKeys.add(ckey(ch.cx, ch.cz));
     this.markBlock(ch, x & 15, y, z & 15);

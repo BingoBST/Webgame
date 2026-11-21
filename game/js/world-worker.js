@@ -1,14 +1,16 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// Step 3 (W0-C): Single Inline Blob Worker for Mesher.build & World.generate
+// Step 3 (W0-C) + Distant Horizons (DH-Web): Single Inline Blob Worker for
+// Mesher.build, World.generate, and Tier-4 LodMesher.build
 // - Automatic seamless fallback to main-thread sync execution if Blob Worker
 //   fails to construct or times out (e.g. strict file:// Same-Origin policies).
 // - Strict inFlight <= 1 inside Worker; main thread maintains deduplicated
 //   priority queue ordered by tier & distance.
 // - Guarded by worldSessionId & per-section secRev to discard stale results.
-// - Strict boundary: Worker ONLY runs Mesher.buildFromSnapshot (18^3 copy) and
-//   pure single-chunk World.generate(cx, cz); cross-chunk initLight(ch),
-//   mob spawning, and WebGL makeVao remain on the main thread.
+// - Strict boundary: Worker ONLY runs Mesher.buildFromSnapshot (18^3 copy),
+//   pure single-chunk World.generate(cx, cz), and pure 2D LodColumnSampler +
+//   LodMesher.build; cross-chunk initLight(ch), mob spawning, and WebGL VAO
+//   uploads remain on the main thread.
 // ---------------------------------------------------------------------------
 
 class WorldWorker {
@@ -25,6 +27,7 @@ class WorldWorker {
     this.queue = [];            // priority-sorted array of tasks
     this.taskByKey = new Map(); // key -> task object for O(1) deduplication/upgrade
     this.activeTask = null;
+    this._nonLodStreak = 0;
     this._taskTimer = null;
     this._initTimer = null;
     this._initWorker();
@@ -64,6 +67,27 @@ class WorldWorker {
     } catch (_) {}
   }
 
+  syncLodPalette(colors) {
+    if (!this.worker || this.fallback || !colors) return;
+    try {
+      const baseTex = typeof LOD_BASE_TEX !== 'undefined' ? LOD_BASE_TEX : null;
+      this.worker.postMessage({ type: 'syncLodPalette', colors: new Uint8Array(colors), baseTex });
+    } catch (_) {}
+  }
+
+  syncLodChunkSummary(cx, cz, summary) {
+    if (!this.worker || this.fallback || !summary) return;
+    try {
+      this.worker.postMessage({
+        type: 'syncLodChunkSummary',
+        worldSessionId: this.worldSessionId,
+        cx,
+        cz,
+        summary: new Uint32Array(summary),
+      });
+    } catch (_) {}
+  }
+
   _buildWorkerScript() {
     const fnList = [
       clamp, lerp, smoothstep, mod, hash3, hashStr, RNG,
@@ -72,7 +96,9 @@ class WorldWorker {
       ladderBoxes, buttonBoxes, leverBoxes, repeaterModel, comparatorModel,
       observerTex, pistonBoxes, pistonModel, pistonHeadBoxes, pistonHeadModel,
       pinkPetalsModel, brewingStandModel, netherPortalBoxes, netherWartTex, carrotTex, potatoTex, endPortalFrameBoxes, endPortalFrameModel, dragonEggModel, ironBarsBoxes, ironBarsModel,
-      fenceBoxes, railModel, anvilModel, bellModel, hopperModel, hopperBoxes, initAnimTable
+      fenceBoxes, railModel, anvilModel, bellModel, hopperModel, hopperBoxes, initAnimTable,
+      typeof lodKey === 'function' ? lodKey : null,
+      typeof initDefaultBlockLodColors === 'function' ? initDefaultBlockLodColors : null,
     ];
 
     const lines = [
@@ -82,6 +108,13 @@ class WorldWorker {
       `const SH_CUBE = 0, SH_CROSS = 1, SH_LIQUID = 2, SH_BOXES = 3, SH_TORCH = 4, SH_NONE = 5, SH_CROP = 6, SH_CACTUS = 7, SH_MODEL = 8, SH_WIRE = 9;`,
       `const AIR = 0, WATER = 7, LAVA = 8;`,
       `const VSTRIDE = ${VSTRIDE};`,
+      `const LOD_VSTRIDE = ${typeof LOD_VSTRIDE !== 'undefined' ? LOD_VSTRIDE : 16};`,
+      `const LOD_SEC_SIZE = ${typeof LOD_SEC_SIZE !== 'undefined' ? LOD_SEC_SIZE : 32};`,
+      `const LOD_PAD_SIZE = ${typeof LOD_PAD_SIZE !== 'undefined' ? LOD_PAD_SIZE : 34};`,
+      `const LOD_LEVELS = ${typeof LOD_LEVELS !== 'undefined' ? LOD_LEVELS : 4};`,
+      `const LOD_MAT_GRASS = 0, LOD_MAT_STONE = 1, LOD_MAT_SAND = 2, LOD_MAT_SNOW = 3, LOD_MAT_LEAVES = 4, LOD_MAT_WATER = 5, LOD_MAT_CUSTOM = 6;`,
+      `const LOD_BASE_TEX = ${typeof LOD_BASE_TEX !== 'undefined' ? JSON.stringify(LOD_BASE_TEX) : '{}'};`,
+      `const BLOCK_LOD_COLORS = new Uint8Array(${typeof BLOCK_LOD_COLORS !== 'undefined' ? JSON.stringify(Array.from(BLOCK_LOD_COLORS)) : '1024 * 6'});`,
       `const DIRS = ${JSON.stringify(DIRS)};`,
       `const OPP = ${JSON.stringify(OPP)};`,
       `const SLAB_BOXES = ${JSON.stringify(SLAB_BOXES)};`,
@@ -116,6 +149,7 @@ class WorldWorker {
       Chunk.toString(),
       World.toString(),
       MeshBuffer.toString(),
+      typeof LodMeshBuffer !== 'undefined' ? LodMeshBuffer.toString() : '',
     ];
 
     for (const fn of fnList) {
@@ -158,11 +192,73 @@ class WorldWorker {
       ${mProps.join(',\n')}
     };`);
 
+    // Serialize LodColumnSampler and LodMesher if present
+    if (typeof LodColumnSampler !== 'undefined' && typeof LodMesher !== 'undefined') {
+      const csProps = [];
+      for (const k of Object.keys(LodColumnSampler)) {
+        const v = LodColumnSampler[k];
+        if (typeof v === 'function') {
+          const fs = v.toString().trim();
+          csProps.push((fs.startsWith('function') || fs.startsWith('(')) ? `${k}: ${fs}` : fs);
+        }
+      }
+      lines.push(`const LodColumnSampler = {
+        yTop: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        yBot: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        waterY: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        waterType: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        colR: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        colG: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        colB: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        sideR: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        sideG: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        sideB: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        mat: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        blkLight: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        rawH: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        tempArr: new Float32Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        humidArr: new Float32Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        biomeArr: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        folR: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        folG: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        folB: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        structMask: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        treeTop: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        treeBot: new Int16Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        treeR: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        treeG: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        treeB: new Uint8Array(LOD_PAD_SIZE * LOD_PAD_SIZE),
+        gCont: new Float32Array(100),
+        gEro: new Float32Array(100),
+        gTemp: new Float32Array(100),
+        gHumid: new Float32Array(100),
+        _rgbTmp: new Uint8Array(3),
+        ${csProps.join(',\n')}
+      };`);
+
+      const lmProps = [];
+      for (const k of Object.keys(LodMesher)) {
+        const v = LodMesher[k];
+        if (typeof v === 'function') {
+          const fs = v.toString().trim();
+          lmProps.push((fs.startsWith('function') || fs.startsWith('(')) ? `${k}: ${fs}` : fs);
+        }
+      }
+      lines.push(`const LodMesher = {
+        opaqueBuf: new LodMeshBuffer(16384),
+        transBuf: new LodMeshBuffer(4096),
+        aoGrid: new Uint8Array(LOD_SEC_SIZE * LOD_SEC_SIZE),
+        visited: new Uint8Array(LOD_SEC_SIZE * LOD_SEC_SIZE),
+        ${lmProps.join(',\n')}
+      };`);
+    }
+
     // Reconstruct BLOCKS table inside Worker so Mesher & World.generate have identical block definitions
     lines.push(`initAnimTable();`);
     lines.push(`
       let workerWorld = null;
       let workerSessionId = 0;
+      const workerModSummaries = new Map();
 
       function applyBlocksBootstrap(blockDefs, itemDefs) {
         for (const d of blockDefs) {
@@ -242,6 +338,9 @@ class WorldWorker {
         try {
           if (msg.type === 'bootstrap') {
             applyBlocksBootstrap(msg.blocks, msg.items);
+            if (msg.lodColors && msg.lodColors.length) {
+              BLOCK_LOD_COLORS.set(msg.lodColors.subarray(0, Math.min(BLOCK_LOD_COLORS.length, msg.lodColors.length)));
+            }
             self.postMessage({ type: 'ready' });
             return;
           }
@@ -249,8 +348,24 @@ class WorldWorker {
             applyBlocksBootstrap(msg.block ? [msg.block] : [], msg.item ? [msg.item] : []);
             return;
           }
+          if (msg.type === 'syncLodPalette') {
+            if (msg.colors && msg.colors.length) {
+              BLOCK_LOD_COLORS.set(msg.colors.subarray(0, Math.min(BLOCK_LOD_COLORS.length, msg.colors.length)));
+            }
+            if (msg.baseTex && typeof LOD_BASE_TEX !== 'undefined') {
+              Object.assign(LOD_BASE_TEX, msg.baseTex);
+            }
+            return;
+          }
+          if (msg.type === 'syncLodChunkSummary') {
+            if (msg.worldSessionId === workerSessionId && msg.summary) {
+              workerModSummaries.set(ckey(msg.cx, msg.cz), new Uint32Array(msg.summary));
+            }
+            return;
+          }
           if (msg.type === 'initWorld') {
             workerSessionId = msg.worldSessionId;
+            workerModSummaries.clear();
             if (typeof Structures !== 'undefined' && Structures.clearCaches) Structures.clearCaches();
             workerWorld = new World(msg.seed);
             workerWorld.flat = !!msg.flat;
@@ -341,6 +456,32 @@ class WorldWorker {
             }, transfer);
             return;
           }
+          if (msg.type === 'lodBuild') {
+            if (!workerWorld || msg.worldSessionId !== workerSessionId || typeof LodColumnSampler === 'undefined') {
+              self.postMessage({ type: 'aborted', taskId: msg.taskId, worldSessionId: msg.worldSessionId });
+              return;
+            }
+            LodColumnSampler.sampleSection(workerWorld, msg.level, msg.sx, msg.sz, workerModSummaries);
+            const res = LodMesher.build(LodColumnSampler, msg.level, msg.dimension || 'overworld');
+            const transfer = [];
+            if (res.opaque) transfer.push(res.opaque.buffer);
+            if (res.trans) transfer.push(res.trans.buffer);
+            self.postMessage({
+              type: 'lodBuilt',
+              taskId: msg.taskId,
+              worldSessionId: msg.worldSessionId,
+              dimension: msg.dimension || 'overworld',
+              level: msg.level,
+              sx: msg.sx,
+              sz: msg.sz,
+              rev: msg.rev,
+              opaque: res.opaque,
+              trans: res.trans,
+              nOpaque: res.nOpaque,
+              nTrans: res.nTrans,
+            }, transfer);
+            return;
+          }
         } catch (err) {
           self.postMessage({ type: 'error', message: err && err.message ? err.message : String(err) });
         }
@@ -413,7 +554,8 @@ class WorldWorker {
 
     try {
       const { blockDefs, itemDefs } = this._serializeBlocksForBootstrap();
-      this.worker.postMessage({ type: 'bootstrap', blocks: blockDefs, items: itemDefs });
+      const lodColors = typeof BLOCK_LOD_COLORS !== 'undefined' ? new Uint8Array(BLOCK_LOD_COLORS) : null;
+      this.worker.postMessage({ type: 'bootstrap', blocks: blockDefs, items: itemDefs, lodColors });
     } catch (e) {
       this._enterFallback('Worker bootstrap failed: ' + e.message);
     }
@@ -437,7 +579,7 @@ class WorldWorker {
     this.activeTask = null;
     this.inFlight = 0;
 
-    // Drain any pending generate/mesh tasks synchronously on main thread
+    // Drain any pending generate/mesh/lodBuild tasks synchronously on main thread
     const g = this.game, w = g && g.world;
     if (!w) return;
     for (const t of pending) {
@@ -455,6 +597,9 @@ class WorldWorker {
           ch.meshingMask &= ~(1 << t.sy);
           g.meshChunk(ch);
         }
+      } else if (t.type === 'lodBuild' && g.lodManager) {
+        const node = g.lodManager.nodes.get(lodKey(t.level, t.sx, t.sz));
+        if (node) node.building = false;
       }
     }
   }
@@ -516,7 +661,7 @@ class WorldWorker {
     if (!w.generatingChunks) w.generatingChunks = new Set();
 
     const key = `gen:${cx}:${cz}`;
-    const tier = distSq <= 16 ? 1 : 3;
+    const tier = distSq <= 20 ? 1 : 3;
     const existing = this.taskByKey.get(key);
     if (existing) {
       if (tier < existing.tier || (tier === existing.tier && distSq < existing.distSq)) {
@@ -560,7 +705,7 @@ class WorldWorker {
       return;
     }
     const key = `mesh:${cx}:${sy}:${cz}`;
-    const tier = urgent ? 0 : 2;
+    const tier = urgent ? 0 : (distSq <= 9 ? 1.5 : 2);
     const secRev = ch.secRev ? ch.secRev[sy] : 0;
     ch.meshingMask |= (1 << sy);
 
@@ -594,6 +739,52 @@ class WorldWorker {
     this._pump();
   }
 
+  enqueueLodBuild(level, sx, sz, rev = 1, distSq = 0) {
+    const g = this.game, w = g && g.world;
+    if (!w) return;
+    if (!this.isReady()) {
+      if (g.lodManager && typeof LodColumnSampler !== 'undefined') {
+        LodColumnSampler.sampleSection(w, level, sx, sz, g.lodManager.modSummaries);
+        const res = LodMesher.build(LodColumnSampler, level, w.dimension || 'overworld');
+        g.lodManager.onSectionBuilt({
+          level, sx, sz, rev,
+          opaque: res.opaque, trans: res.trans, nOpaque: res.nOpaque, nTrans: res.nTrans,
+        });
+      }
+      return;
+    }
+    const key = `lod:${level}:${sx}:${sz}`;
+    // Tier 4 ensures near-chunk edits (Tier 0), near-chunk gen (Tier 1), and near-chunk mesh (Tier 2) always preempt LOD builds
+    const tier = 4;
+    const existing = this.taskByKey.get(key);
+    if (existing) {
+      existing.rev = rev;
+      if (distSq < existing.distSq) {
+        existing.distSq = distSq;
+        this._sortQueue();
+      }
+      return;
+    }
+
+    const task = {
+      taskId: (this._nextTaskId = (this._nextTaskId || 0) + 1),
+      type: 'lodBuild',
+      key,
+      tier,
+      distSq,
+      level,
+      sx,
+      sz,
+      rev,
+      worldSessionId: this.worldSessionId,
+      dimension: w.dimension || 'overworld',
+    };
+    this.taskByKey.set(key, task);
+    this.queue.push(task);
+    this._sortQueue();
+    this._pump();
+  }
+
   _sortQueue() {
     this.queue.sort((a, b) => (a.tier - b.tier) || (a.distSq - b.distSq));
   }
@@ -604,7 +795,12 @@ class WorldWorker {
     if (!w) return;
 
     while (this.queue.length) {
-      const task = this.queue.shift();
+      let pickIdx = 0;
+      if (g.state === 'play' && this._nonLodStreak >= 3 && this.queue[0].tier >= 2) {
+        const lodIdx = this.queue.findIndex(t => t.type === 'lodBuild');
+        if (lodIdx >= 0) pickIdx = lodIdx;
+      }
+      const task = pickIdx === 0 ? this.queue.shift() : this.queue.splice(pickIdx, 1)[0];
       this.taskByKey.delete(task.key);
       if (task.worldSessionId !== this.worldSessionId) {
         if (task.resolve) task.resolve(null);
@@ -618,6 +814,7 @@ class WorldWorker {
           if (task.resolve) task.resolve(w.chunks.get(ck) || null);
           continue;
         }
+        this._nonLodStreak++;
         this.inFlight = 1;
         this.activeTask = task;
         this._armTaskTimeout();
@@ -661,6 +858,7 @@ class WorldWorker {
         const snap = Mesher.gatherSnapshot(w, task.cx, task.sy, task.cz);
         const curRev = ch.secRev ? ch.secRev[task.sy] : 0;
         task.secRev = curRev;
+        this._nonLodStreak++;
         this.inFlight = 1;
         this.activeTask = task;
         this._armTaskTimeout();
@@ -680,6 +878,28 @@ class WorldWorker {
         }, [snap.ids.buffer, snap.metas.buffer, snap.lights.buffer, snap.tints.buffer]);
         return;
       }
+
+      if (task.type === 'lodBuild') {
+        if (!g.lodManager || !g.lodManager.isEnabled()) continue;
+        const k = lodKey(task.level, task.sx, task.sz);
+        const node = g.lodManager.nodes.get(k);
+        if (!node) continue;
+        this._nonLodStreak = 0;
+        this.inFlight = 1;
+        this.activeTask = task;
+        this._armTaskTimeout();
+        this.worker.postMessage({
+          type: 'lodBuild',
+          taskId: task.taskId,
+          worldSessionId: task.worldSessionId,
+          dimension: task.dimension,
+          level: task.level,
+          sx: task.sx,
+          sz: task.sz,
+          rev: node.rev,
+        });
+        return;
+      }
     }
   }
 
@@ -697,8 +917,17 @@ class WorldWorker {
     if (msg.type === 'ready') {
       if (this._initTimer) { clearTimeout(this._initTimer); this._initTimer = null; }
       this.ready = true;
+      if (typeof BLOCK_LOD_COLORS !== 'undefined') {
+        this.syncLodPalette(BLOCK_LOD_COLORS);
+      }
       if (this.game && this.game.world) {
         this._sendInitWorld(this.game.world);
+        if (this.game.lodManager && this.game.lodManager.modSummaries && this.game.lodManager.modSummaries.size) {
+          for (const [ck, sum] of this.game.lodManager.modSummaries) {
+            const cc = this.game.lodManager.modSummaryCoords && this.game.lodManager.modSummaryCoords.get(ck);
+            if (cc) this.syncLodChunkSummary(cc[0], cc[1], sum);
+          }
+        }
       }
       this._pump();
       return;
@@ -735,6 +964,9 @@ class WorldWorker {
       ch.foliage = msg.foliage;
       ch.biome = msg.biome;
       ch.sectionCount = msg.sectionCount;
+      let neMask = 0;
+      for (let s = 0; s < SECTIONS; s++) if (ch.sectionCount[s] > 0) neMask |= (1 << s);
+      ch.nonEmptyMask = neMask;
       ch.hasSurfaceStructure = !!msg.hasSurfaceStructure;
       if (msg.village) ch.village = msg.village;
       if (msg.dungeon) ch.dungeon = msg.dungeon;
@@ -766,6 +998,14 @@ class WorldWorker {
             this.enqueueMesh(msg.cx, msg.sy, msg.cz, 0, true);
           }
         }
+      }
+      this._pump();
+      return;
+    }
+
+    if (msg.type === 'lodBuilt') {
+      if (g.lodManager) {
+        g.lodManager.onSectionBuilt(msg);
       }
       this._pump();
       return;
